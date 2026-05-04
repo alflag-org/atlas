@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 import shutil
+import subprocess
 import tarfile
 import tempfile
 
@@ -34,6 +35,37 @@ def _safe_extract(tf: tarfile.TarFile, dest: Path) -> None:
     tf.extractall(dest)
 
 
+
+
+SIGNATURE_FILE = "manifest.yml.minisig"
+TRUSTED_MINISIGN_PUBKEY = Path("/etc/atlas/trust.d/atlas-release.pub")
+
+
+def verify_manifest_signature(staged_dir: Path) -> None:
+    manifest = staged_dir / "manifest.yml"
+    signature = staged_dir / SIGNATURE_FILE
+    if not manifest.exists():
+        raise ValueError("manifest.yml not found in bundle")
+    if not signature.exists():
+        raise ValueError(f"{SIGNATURE_FILE} not found in bundle")
+    if not TRUSTED_MINISIGN_PUBKEY.exists():
+        raise ValueError(f"trusted minisign public key not found: {TRUSTED_MINISIGN_PUBKEY}")
+
+    cmd = [
+        "minisign",
+        "-Vm",
+        str(manifest),
+        "-x",
+        str(signature),
+        "-P",
+        TRUSTED_MINISIGN_PUBKEY.read_text(encoding="utf-8").strip(),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except FileNotFoundError as e:
+        raise ValueError("minisign is required for signature verification") from e
+    except subprocess.CalledProcessError as e:
+        raise ValueError(f"manifest signature verification failed: {e.stderr.strip()}") from e
 def build_bundle(release_dir: Path, bundle_path: Path, payload_name: str = "payload.tar.zst") -> Path:
     release_dir = release_dir.resolve()
     if not (release_dir / "packs").exists():
@@ -65,9 +97,8 @@ def inspect_bundle(bundle: Path) -> dict[str, object]:
         staged = Path(td)
         with tarfile.open(bundle, "r:*") as tf:
             _safe_extract(tf, staged)
+        verify_manifest_signature(staged)
         manifest_path = staged / "manifest.yml"
-        if not manifest_path.exists():
-            raise ValueError("manifest.yml not found in bundle")
         manifest = load_yaml_file(manifest_path)
         payload = staged / manifest["payload"]
         with tarfile.open(payload, "r:*") as pt:
@@ -97,9 +128,8 @@ def pull_bundle(bundle: Path, staged_dir: Path) -> dict:
     staged_dir.mkdir(parents=True, exist_ok=True)
     with tarfile.open(bundle, "r:*") as tf:
         _safe_extract(tf, staged_dir)
+    verify_manifest_signature(staged_dir)
     manifest = staged_dir / "manifest.yml"
-    if not manifest.exists():
-        raise ValueError("manifest.yml not found in bundle")
     data = load_yaml_file(manifest)
     expected = data.get("checksum")
     payload = staged_dir / data["payload"]

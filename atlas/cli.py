@@ -7,7 +7,13 @@ import shutil
 
 from .config import ensure_dirs, resolve_paths
 from .models import RuntimeState, utcnow
-from .release import pull_bundle, rollback_to
+from .release import (
+    build_bundle,
+    inspect_bundle,
+    pull_bundle,
+    rollback_to,
+    verify_bundle,
+)
 from .runtime import apply_release_with_phases, run_command
 from .secrets import materialize_secrets
 
@@ -39,6 +45,24 @@ def cmd_status(_: argparse.Namespace) -> int:
     payload = dict(state.__dict__)
     payload["last_run"] = _last_run_summary(p.logs)
     print(json.dumps(payload, indent=2))
+    return 0
+
+
+def cmd_build(args: argparse.Namespace) -> int:
+    bundle = build_bundle(Path(args.release_dir), Path(args.bundle), payload_name=args.payload_name)
+    print(f"built bundle: {bundle}")
+    return 0
+
+
+def cmd_inspect_bundle(args: argparse.Namespace) -> int:
+    data = inspect_bundle(Path(args.bundle))
+    print(json.dumps(data, indent=2))
+    return 0
+
+
+def cmd_verify_bundle(args: argparse.Namespace) -> int:
+    verify_bundle(Path(args.bundle))
+    print("bundle verified")
     return 0
 
 
@@ -102,13 +126,26 @@ def cmd_run(args: argparse.Namespace) -> int:
     return result.code
 
 
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="atlas")
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
     status = sub.add_parser("status")
     status.set_defaults(func=cmd_status)
+
+    build = sub.add_parser("build")
+    build.add_argument("release_dir")
+    build.add_argument("bundle")
+    build.add_argument("--payload-name", default="payload.tar.zst")
+    build.set_defaults(func=cmd_build)
+
+    inspect_cmd = sub.add_parser("inspect-bundle")
+    inspect_cmd.add_argument("bundle")
+    inspect_cmd.set_defaults(func=cmd_inspect_bundle)
+
+    verify_cmd = sub.add_parser("verify-bundle")
+    verify_cmd.add_argument("bundle")
+    verify_cmd.set_defaults(func=cmd_verify_bundle)
 
     pull = sub.add_parser("pull")
     pull.add_argument("bundle")

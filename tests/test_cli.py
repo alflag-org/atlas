@@ -348,3 +348,40 @@ def test_invalid_yaml_has_file_and_location(monkeypatch, tmp_path):
     monkeypatch.setattr("sys.argv", ["atlas", "run", "hello"])
     with pytest.raises(ValueError, match=r"invalid YAML in .*node\\.yml line \\d+, column \\d+"):
         main()
+
+def test_build_inspect_verify_bundle(monkeypatch, tmp_path, capsys):
+    release_dir = tmp_path / "release"
+    cmd = release_dir / "packs/base/bin"
+    cmd.mkdir(parents=True)
+    hello = cmd / "hello"
+    hello.write_text("#!/usr/bin/env bash\n# atlas: allowed_roles=dns\necho hello\n")
+    hello.chmod(0o755)
+
+    bundle = tmp_path / "bundle.tar"
+    monkeypatch.setattr("sys.argv", ["atlas", "build", str(release_dir), str(bundle)])
+    assert main() == 0
+
+    monkeypatch.setattr("sys.argv", ["atlas", "inspect-bundle", str(bundle)])
+    assert main() == 0
+    out = capsys.readouterr().out
+    assert "manifest" in out and "base" in out and "payload" in out
+
+    monkeypatch.setattr("sys.argv", ["atlas", "verify-bundle", str(bundle)])
+    assert main() == 0
+
+
+def test_verify_bundle_nonzero_on_checksum_mismatch(monkeypatch, tmp_path):
+    bundle = make_bundle(tmp_path)
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    with tarfile.open(bundle, "r") as tf:
+        tf.extractall(staged)
+    (staged / "manifest.yml").write_text("payload: release.tar\nchecksum: deadbeef\n")
+    bad_bundle = tmp_path / "bad-bundle.tar"
+    with tarfile.open(bad_bundle, "w") as tf:
+        tf.add(staged / "manifest.yml", arcname="manifest.yml")
+        tf.add(staged / "release.tar", arcname="release.tar")
+
+    monkeypatch.setattr("sys.argv", ["atlas", "verify-bundle", str(bad_bundle)])
+    with pytest.raises(SystemExit):
+        main()

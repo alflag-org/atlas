@@ -20,6 +20,11 @@ def _safe_extract(tf: tarfile.TarFile, dest: Path) -> None:
         target = (dest / member.name).resolve()
         if not str(target).startswith(str(base)):
             raise ValueError(f"unsafe tar path detected: {member.name}")
+        if member.uid < 0 or member.gid < 0 or member.uid > 65535 or member.gid > 65535:
+            raise ValueError(f"unsafe tar ownership detected: {member.name}")
+        mode = member.mode
+        if mode < 0 or mode > 0o777:
+            raise ValueError(f"unsafe tar mode detected: {member.name}")
     tf.extractall(dest)
 
 

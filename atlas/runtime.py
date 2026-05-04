@@ -48,7 +48,23 @@ def _check_allowed(meta: dict[str, object], node: Node, allow_destructive: bool)
         raise ValueError("destructive command; pass --allow-destructive")
 
 
-def run_command(active: Path, locks: Path, logs: Path, etc: Path, name: str, args: list[str], timeout: int = 300, allow_destructive: bool = False) -> RunResult:
+def _effective_timeout(requested: int, meta: dict[str, object]) -> int:
+    header_limit = meta.get("timeout")
+    if header_limit is None:
+        return requested
+    limit = int(header_limit)
+    return min(requested, limit)
+
+
+def _redact(text: str, secrets: list[str]) -> str:
+    redacted = text
+    for secret in secrets:
+        if secret:
+            redacted = redacted.replace(secret, "***REDACTED***")
+    return redacted
+
+
+def run_command(active: Path, locks: Path, logs: Path, etc: Path, name: str, args: list[str], timeout: int = 300, allow_destructive: bool = False, redact_values: list[str] | None = None) -> RunResult:
     index = _load_command_index(active)
     if name not in index:
         raise ValueError(f"unknown command: {name}")
@@ -61,9 +77,11 @@ def run_command(active: Path, locks: Path, logs: Path, etc: Path, name: str, arg
         raise ValueError(f"script not found: {script}")
 
     logs.mkdir(parents=True, exist_ok=True)
+    effective_timeout = _effective_timeout(timeout, meta)
     with file_lock(locks / f"{name}.lock"):
-        proc = subprocess.run([str(script), *args], capture_output=True, text=True, timeout=timeout, env=os.environ.copy())
-    out = RunResult(name, proc.returncode, proc.stdout, proc.stderr)
+        proc = subprocess.run([str(script), *args], capture_output=True, text=True, timeout=effective_timeout, env=os.environ.copy())
+    secrets = redact_values or []
+    out = RunResult(name, proc.returncode, _redact(proc.stdout, secrets), _redact(proc.stderr, secrets))
     (logs / f"{name}.log").write_text(f"exit={out.code}\nSTDOUT\n{out.stdout}\nSTDERR\n{out.stderr}\n")
     return out
 

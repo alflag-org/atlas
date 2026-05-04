@@ -94,12 +94,84 @@ def test_tar_path_traversal_blocked(tmp_path):
 def test_materialize_secrets(monkeypatch, tmp_path):
     _, etc = setup_node(monkeypatch, tmp_path)
     bundle = make_bundle(tmp_path)
-    (etc / "secrets.yml").write_text('secrets:\n  - target: "/tmp/atlas-secret.txt"\n    env: "ATLAS_SECRET_TOKEN"\n    mode: "0600"\n')
+    target = etc / "secrets" / "atlas-secret.txt"
+    (etc / "secrets.yml").write_text(f'secrets:\n  - target: "{target}"\n    env: "ATLAS_SECRET_TOKEN"\n    mode: "0600"\n')
     monkeypatch.setenv("ATLAS_SECRET_TOKEN", "super-secret")
     monkeypatch.setattr("sys.argv", ["atlas", "pull", str(bundle), "--version", "v1"]); assert main() == 0
     monkeypatch.setattr("sys.argv", ["atlas", "apply", "--version", "v1"]); assert main() == 0
     monkeypatch.setattr("sys.argv", ["atlas", "run", "--materialize-secrets", "hello"]); assert main() == 0
-    assert Path('/tmp/atlas-secret.txt').read_text() == 'super-secret'
+    assert target.read_text() == 'super-secret'
+
+
+def test_secret_path_traversal_blocked(monkeypatch, tmp_path):
+    _, etc = setup_node(monkeypatch, tmp_path)
+    bundle = make_bundle(tmp_path)
+    (etc / "secrets.yml").write_text('secrets:\n  - target: "/tmp/outside-secret.txt"\n    env: "ATLAS_SECRET_TOKEN"\n')
+    monkeypatch.setenv("ATLAS_SECRET_TOKEN", "super-secret")
+    monkeypatch.setattr("sys.argv", ["atlas", "pull", str(bundle), "--version", "v1"]); assert main() == 0
+    monkeypatch.setattr("sys.argv", ["atlas", "apply", "--version", "v1"]); assert main() == 0
+    monkeypatch.setattr("sys.argv", ["atlas", "run", "--materialize-secrets", "hello"])
+    with pytest.raises(ValueError, match=r"outside allowed root"):
+        main()
+
+
+def test_secret_redaction(monkeypatch, tmp_path):
+    _, etc = setup_node(monkeypatch, tmp_path)
+    payload_dir = tmp_path / "payload"
+    payload_dir.mkdir(parents=True)
+    cmd = payload_dir / "packs/base/bin"
+    cmd.mkdir(parents=True)
+    hello = cmd / "hello"
+    hello.write_text("#!/usr/bin/env bash\necho super-secret\n")
+    hello.chmod(0o755)
+
+    payload_tgz = tmp_path / "release.tar"
+    with tarfile.open(payload_tgz, "w") as tf:
+        tf.add(payload_dir, arcname=".")
+    import hashlib
+    h = hashlib.sha256(payload_tgz.read_bytes()).hexdigest()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"payload": "release.tar", "checksum": h}))
+    bundle = tmp_path / "bundle.tar"
+    with tarfile.open(bundle, "w") as tf:
+        tf.add(manifest, arcname="manifest.json")
+        tf.add(payload_tgz, arcname="release.tar")
+
+    target = etc / "secrets" / "atlas-secret.txt"
+    (etc / "secrets.yml").write_text(f'secrets:\n  - target: "{target}"\n    env: "ATLAS_SECRET_TOKEN"\n')
+    monkeypatch.setenv("ATLAS_SECRET_TOKEN", "super-secret")
+    monkeypatch.setattr("sys.argv", ["atlas", "pull", str(bundle), "--version", "v1"]); assert main() == 0
+    monkeypatch.setattr("sys.argv", ["atlas", "apply", "--version", "v1"]); assert main() == 0
+    monkeypatch.setattr("sys.argv", ["atlas", "run", "--materialize-secrets", "hello"]); assert main() == 0
+    out = (tmp_path / "opt/logs/hello.log").read_text()
+    assert "super-secret" not in out
+    assert "***REDACTED***" in out
+
+
+def test_metadata_invalid_header(monkeypatch, tmp_path):
+    setup_node(monkeypatch, tmp_path)
+    payload_dir = tmp_path / "payload"
+    payload_dir.mkdir(parents=True)
+    cmd = payload_dir / "packs/base/bin"
+    cmd.mkdir(parents=True)
+    hello = cmd / "hello"
+    hello.write_text("#!/usr/bin/env bash\n# atlas: timeout=999999\necho hello\n")
+    hello.chmod(0o755)
+    payload_tgz = tmp_path / "release.tar"
+    with tarfile.open(payload_tgz, "w") as tf:
+        tf.add(payload_dir, arcname=".")
+    import hashlib
+    h = hashlib.sha256(payload_tgz.read_bytes()).hexdigest()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"payload": "release.tar", "checksum": h}))
+    bundle = tmp_path / "bundle.tar"
+    with tarfile.open(bundle, "w") as tf:
+        tf.add(manifest, arcname="manifest.json")
+        tf.add(payload_tgz, arcname="release.tar")
+    monkeypatch.setattr("sys.argv", ["atlas", "pull", str(bundle), "--version", "v1"]); assert main() == 0
+    monkeypatch.setattr("sys.argv", ["atlas", "apply", "--version", "v1"])
+    with pytest.raises(ValueError, match=r"timeout header out of range"):
+        main()
 
 
 def test_apply_failure_rolls_back_active_state_and_shims(monkeypatch, tmp_path):

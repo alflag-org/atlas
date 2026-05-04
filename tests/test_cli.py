@@ -100,3 +100,28 @@ def test_materialize_secrets(monkeypatch, tmp_path):
     monkeypatch.setattr("sys.argv", ["atlas", "apply", "--version", "v1"]); assert main() == 0
     monkeypatch.setattr("sys.argv", ["atlas", "run", "--materialize-secrets", "hello"]); assert main() == 0
     assert Path('/tmp/atlas-secret.txt').read_text() == 'super-secret'
+
+
+def test_apply_failure_rolls_back_active_state_and_shims(monkeypatch, tmp_path):
+    root, _ = setup_node(monkeypatch, tmp_path)
+    b1 = make_bundle(tmp_path / "a")
+    b2 = make_bundle(tmp_path / "b")
+    monkeypatch.setattr("sys.argv", ["atlas", "pull", str(b1), "--version", "v1"]); assert main() == 0
+    monkeypatch.setattr("sys.argv", ["atlas", "apply", "--version", "v1"]); assert main() == 0
+
+    before_state = json.loads((root / "state/runtime.json").read_text())
+    before_active = (root / "active").resolve()
+    before_shim = (root / "shims/hello").read_text()
+
+    monkeypatch.setattr("sys.argv", ["atlas", "pull", str(b2), "--version", "v2"]); assert main() == 0
+    import atlas.runtime as runtime_mod
+    monkeypatch.setattr(runtime_mod, "generate_shims", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("shim failure")))
+
+    monkeypatch.setattr("sys.argv", ["atlas", "apply", "--version", "v2"])
+    with pytest.raises(RuntimeError):
+        main()
+
+    after_state = json.loads((root / "state/runtime.json").read_text())
+    assert after_state["current_version"] == before_state["current_version"]
+    assert (root / "active").resolve() == before_active
+    assert (root / "shims/hello").read_text() == before_shim

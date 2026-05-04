@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y minisign
+
+      - name: Install project and tooling dependencies
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . pytest ruff mypy pyright build
+
+      - name: Run pytest
+        run: |
+          set -euxo pipefail
+          pytest -q
+
+      - name: Run ruff check
+        run: |
+          set -euxo pipefail
+          ruff check .
+
+      - name: Run ruff format check
+        run: |
+          set -euxo pipefail
+          ruff format --check .
+
+      - name: Run mypy
+        run: |
+          set -euxo pipefail
+          mypy atlas
+
+      - name: Run pyright
+        run: |
+          set -euxo pipefail
+          pyright
+
+      - name: Build wheel and sdist
+        run: |
+          set -euxo pipefail
+          python -m build
+
+      - name: Prepare sample release input
+        run: |
+          set -euxo pipefail
+          mkdir -p .ci/release/packs/sample
+          cat > .ci/release/packs/sample/pack.yml <<'EOF'
+          pack_id: sample
+          version: 1
+          commands:
+            hello:
+              run: ["echo", "hello"]
+          EOF
+
+      - name: Run atlas build
+        run: |
+          set -euxo pipefail
+          atlas build .ci/release .ci/sample.bundle
+
+      - name: Generate key and signature for sample bundle
+        run: |
+          set -euxo pipefail
+          mkdir -p /etc/atlas/trust.d .ci/minisign
+          minisign -G -p .ci/minisign/atlas-release.pub -s .ci/minisign/atlas-release.key -W
+          cp .ci/minisign/atlas-release.pub /etc/atlas/trust.d/atlas-release.pub
+
+          tar -xf .ci/sample.bundle -C .ci
+          minisign -S -m .ci/manifest.yml -s .ci/minisign/atlas-release.key -x .ci/manifest.yml.minisig
+          tar -cf .ci/sample.signed.bundle -C .ci manifest.yml manifest.yml.minisig payload.tar.zst
+
+      - name: Run atlas verify-bundle
+        run: |
+          set -euxo pipefail
+          atlas verify-bundle .ci/sample.signed.bundle

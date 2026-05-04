@@ -69,9 +69,10 @@ def cmd_rollback(_: argparse.Namespace) -> int:
 def cmd_run(args: argparse.Namespace) -> int:
     p = resolve_paths()
     ensure_dirs(p)
+    redact_values: list[str] = []
     if args.materialize_secrets:
-        materialize_secrets(p.etc)
-    result = run_command(p.active, p.locks, p.logs, p.etc, args.command, args.args, timeout=args.timeout, allow_destructive=args.allow_destructive)
+        _, redact_values = materialize_secrets(p.etc)
+    result = run_command(p.active, p.locks, p.logs, p.etc, args.command, args.args, timeout=args.timeout, allow_destructive=args.allow_destructive, redact_values=redact_values)
     if result.stdout:
         print(result.stdout, end="")
     if result.stderr:

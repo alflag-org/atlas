@@ -3,14 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 import os
 
-from .models import parse_yaml_like
+from .models import SECRETS_SCHEMA, load_yaml_config
 
 
 def materialize_secrets(etc_dir: Path) -> list[Path]:
     spec = etc_dir / "secrets.yml"
     if not spec.exists():
         return []
-    data = parse_yaml_like(spec.read_text())
+    data = load_yaml_config(spec, SECRETS_SCHEMA)
     secret_items = data.get("secrets", [])
     written: list[Path] = []
     for item in secret_items:

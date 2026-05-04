@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-import json
+import yaml
 
 
 _ALLOWED_HEADER_KEYS = {"roles", "destructive", "timeout"}
@@ -68,6 +68,6 @@ def discover_commands(release_dir: Path) -> dict[str, dict[str, object]]:
 
 def write_command_index(release_dir: Path) -> Path:
     data = discover_commands(release_dir)
-    target = release_dir / "command-index.json"
-    target.write_text(json.dumps(data, indent=2))
+    target = release_dir / "command-index.yml"
+    target.write_text(yaml.safe_dump(data, sort_keys=False))
     return target

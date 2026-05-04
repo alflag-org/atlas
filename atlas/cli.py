@@ -35,7 +35,7 @@ def _last_run_summary(logs_dir: Path) -> dict[str, object] | None:
 def cmd_status(_: argparse.Namespace) -> int:
     p = resolve_paths()
     ensure_dirs(p)
-    state = RuntimeState.load(p.state / "runtime.json")
+    state = RuntimeState.load(p.state / "runtime.yml")
     payload = dict(state.__dict__)
     payload["last_run"] = _last_run_summary(p.logs)
     print(json.dumps(payload, indent=2))
@@ -45,7 +45,7 @@ def cmd_status(_: argparse.Namespace) -> int:
 def cmd_pull(args: argparse.Namespace) -> int:
     p = resolve_paths()
     ensure_dirs(p)
-    state_path = p.state / "runtime.json"
+    state_path = p.state / "runtime.yml"
     state = RuntimeState.load(state_path)
     version = args.version
     staged = p.releases / version
@@ -61,7 +61,7 @@ def cmd_pull(args: argparse.Namespace) -> int:
 def cmd_apply(args: argparse.Namespace) -> int:
     p = resolve_paths()
     ensure_dirs(p)
-    state_path = p.state / "runtime.json"
+    state_path = p.state / "runtime.yml"
     state = RuntimeState.load(state_path)
     version = args.version
     release_dir = p.releases / version
@@ -75,7 +75,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
 def cmd_rollback(_: argparse.Namespace) -> int:
     p = resolve_paths()
     ensure_dirs(p)
-    state_path = p.state / "runtime.json"
+    state_path = p.state / "runtime.yml"
     state = RuntimeState.load(state_path)
     if not state.previous_version:
         raise SystemExit("no previous_version to rollback to")

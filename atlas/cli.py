@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import shutil
 
-from .config import ensure_dirs, resolve_paths
+from .config import ensure_dirs, execute_layout_migration, plan_layout_migration, resolve_paths
 from .models import RuntimeState, utcnow
 from .release import pull_bundle, rollback_to
 from .runtime import apply_release_with_phases, run_command
@@ -80,6 +80,27 @@ def cmd_run(args: argparse.Namespace) -> int:
     return result.code
 
 
+def cmd_migrate_layout(args: argparse.Namespace) -> int:
+    p = resolve_paths()
+    ensure_dirs(p)
+    planned = plan_layout_migration(p)
+    if not planned:
+        print("no migration targets found")
+        return 0
+
+    print("layout migration plan:")
+    for src, dst, action in planned:
+        print(f"- {src} -> {dst} [{action}]")
+
+    if args.execute:
+        print("executing migration...")
+        for src, dst, result in execute_layout_migration(p):
+            print(f"  {src} -> {dst}: {result}")
+    else:
+        print("dry-run only. pass --execute to apply changes.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="atlas")
     sub = parser.add_subparsers(dest="subcommand", required=True)
@@ -106,6 +127,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--allow-destructive", action="store_true")
     run.add_argument("--materialize-secrets", action="store_true")
     run.set_defaults(func=cmd_run)
+
+    migrate_layout = sub.add_parser("migrate-layout")
+    mode = migrate_layout.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="show migration plan only (default)")
+    mode.add_argument("--execute", action="store_true", help="perform migration")
+    migrate_layout.set_defaults(func=cmd_migrate_layout)
     return parser
 
 

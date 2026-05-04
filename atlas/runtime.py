@@ -122,7 +122,8 @@ def run_command(active: Path, locks: Path, logs: Path, etc: Path, name: str, arg
     secrets = redact_values or []
     out = RunResult(name, proc.returncode, _redact(proc.stdout, secrets), _redact(proc.stderr, secrets))
     (logs / f"{name}.log").write_text(f"exit={out.code}\nSTDOUT\n{out.stdout}\nSTDERR\n{out.stderr}\n")
-    state = RuntimeState.load(active.parent / "state" / "runtime.yml")
+    state_root = Path(os.environ.get("ATLAS_VAR_DIR", "/var/lib/atlas"))
+    state = RuntimeState.load(state_root / "state.yml")
     _append_run_record(
         logs,
         command=name,

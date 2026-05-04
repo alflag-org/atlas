@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y minisign
+
+      - name: Install build dependencies
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          pip install -e . build
+
+      - name: Build wheel/sdist
+        run: |
+          set -euxo pipefail
+          python -m build
+
+      - name: Build sample bundle
+        run: |
+          set -euxo pipefail
+          mkdir -p .release/release/packs/sample
+          cat > .release/release/packs/sample/pack.yml <<'EOF'
+          pack_id: sample
+          version: 1
+          commands:
+            hello:
+              run: ["echo", "hello"]
+          EOF
+          atlas build .release/release .release/sample.bundle
+
+      - name: Generate checksums
+        run: |
+          set -euxo pipefail
+          sha256sum dist/* .release/sample.bundle > release-checksums.txt
+
+      - name: Sign release assets (keyless via Sigstore)
+        uses: sigstore/gh-action-sigstore-python@v3.0.0
+        with:
+          inputs: |
+            dist/*
+            .release/sample.bundle
+            release-checksums.txt
+
+      - name: Create GitHub Release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*
+            .release/sample.bundle
+            release-checksums.txt
+            dist/*.sigstore.json
+            .release/sample.bundle.sigstore.json
+            release-checksums.txt.sigstore.json

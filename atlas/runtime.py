@@ -30,11 +30,17 @@ def _load_command_index(active: Path) -> dict[str, dict[str, object]]:
         return {}
     raw = load_yaml_file(idx)
     normalized: dict[str, dict[str, object]] = {}
-    for name, val in raw.items():
+    raw_commands = raw.get("commands", raw) if isinstance(raw, dict) else {}
+    for name, val in raw_commands.items():
         if isinstance(val, str):
-            normalized[name] = {"path": val, "pack": "", "destructive": False, "roles": []}
+            normalized[name] = {"path": val, "pack": "", "destructive": False}
         else:
-            normalized[name] = val
+            entry = dict(val)
+            if "roles" in entry and "allowed_roles" not in entry:
+                entry["allowed_roles"] = entry.pop("roles")
+            if "timeout" in entry and "timeout_sec" not in entry:
+                entry["timeout_sec"] = entry.pop("timeout")
+            normalized[name] = entry
     return normalized
 
 
@@ -42,7 +48,7 @@ def _check_allowed(meta: dict[str, object], node: Node, allow_destructive: bool)
     pack = str(meta.get("pack", ""))
     if pack and pack not in node.packs:
         raise ValueError(f"pack not enabled for this host: {pack}")
-    roles = meta.get("roles", []) or []
+    roles = meta.get("allowed_roles", []) or []
     if roles and node.role not in roles:
         raise ValueError(f"role not allowed: {node.role}")
     destructive = bool(meta.get("destructive", False))
@@ -51,7 +57,7 @@ def _check_allowed(meta: dict[str, object], node: Node, allow_destructive: bool)
 
 
 def _effective_timeout(requested: int, meta: dict[str, object]) -> int:
-    header_limit = meta.get("timeout")
+    header_limit = meta.get("timeout_sec")
     if header_limit is None:
         return requested
     limit = int(header_limit)
@@ -116,7 +122,8 @@ def run_command(active: Path, locks: Path, logs: Path, etc: Path, name: str, arg
     logs.mkdir(parents=True, exist_ok=True)
     effective_timeout = _effective_timeout(timeout, meta)
     started = time.perf_counter()
-    with file_lock(locks / f"{name}.lock"):
+    lock_name = str(meta.get("lock", name))
+    with file_lock(locks / f"{lock_name}.lock"):
         proc = subprocess.run([str(script), *args], capture_output=True, text=True, timeout=effective_timeout, env=os.environ.copy())
     duration_ms = int((time.perf_counter() - started) * 1000)
     secrets = redact_values or []
@@ -149,7 +156,8 @@ def _prepare_phase(release_dir: Path, staging_root: Path, version: str) -> Path:
 
 def _validate_phase(staged: Path) -> None:
     idx = write_command_index(staged)
-    commands: dict[str, dict[str, object]] = load_yaml_file(idx)
+    raw = load_yaml_file(idx)
+    commands: dict[str, dict[str, object]] = raw.get("commands", raw)
     for name, meta in commands.items():
         rel_path = Path(str(meta.get("path", "")))
         target = (staged / rel_path).resolve()

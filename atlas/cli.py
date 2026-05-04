@@ -4,6 +4,73 @@ import argparse
 import json
 from pathlib import Path
 import shutil
+import subprocess
+
+SYSTEMD_UNIT_FILES = ("atlas-pull.service", "atlas-pull.timer")
+
+
+def _systemctl_available() -> bool:
+    return shutil.which("systemctl") is not None
+
+
+def _run_or_print(cmd: list[str], dry_run: bool) -> None:
+    print("$ " + " ".join(cmd))
+    if not dry_run:
+        subprocess.run(cmd, check=True)
+
+
+def _systemd_template_dir() -> Path:
+    return Path(__file__).resolve().parents[1] / "packaging" / "systemd"
+
+
+def cmd_install_systemd(args: argparse.Namespace) -> int:
+    if not _systemctl_available():
+        message = "systemctl not found; skipping systemd install"
+        if args.strict:
+            raise SystemExit(message)
+        print(message)
+        return 0
+
+    template_dir = _systemd_template_dir()
+    unit_dir = Path(args.unit_dir)
+    unit_dir.mkdir(parents=True, exist_ok=True)
+
+    for unit_name in SYSTEMD_UNIT_FILES:
+        src = template_dir / unit_name
+        if not src.exists():
+            raise SystemExit(f"missing systemd template: {src}")
+        dst = unit_dir / unit_name
+        print(f"install {src} -> {dst}")
+        if not args.dry_run:
+            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
+    _run_or_print(["systemctl", "daemon-reload"], args.dry_run)
+    _run_or_print(["systemctl", "enable", "atlas-pull.timer"], args.dry_run)
+    _run_or_print(["systemctl", "start", "atlas-pull.timer"], args.dry_run)
+    return 0
+
+
+def cmd_uninstall_systemd(args: argparse.Namespace) -> int:
+    if not _systemctl_available():
+        message = "systemctl not found; skipping systemd uninstall"
+        if args.strict:
+            raise SystemExit(message)
+        print(message)
+        return 0
+
+    unit_dir = Path(args.unit_dir)
+    _run_or_print(["systemctl", "stop", "atlas-pull.timer"], args.dry_run)
+    _run_or_print(["systemctl", "disable", "atlas-pull.timer"], args.dry_run)
+
+    for unit_name in SYSTEMD_UNIT_FILES:
+        target = unit_dir / unit_name
+        print(f"remove {target}")
+        if not args.dry_run and target.exists():
+            target.unlink()
+
+    _run_or_print(["systemctl", "daemon-reload"], args.dry_run)
+    return 0
+
 
 from .config import ensure_dirs, resolve_paths
 from .models import RuntimeState, utcnow
@@ -166,6 +233,18 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--allow-destructive", action="store_true")
     run.add_argument("--materialize-secrets", action="store_true")
     run.set_defaults(func=cmd_run)
+
+    install_systemd = sub.add_parser("install-systemd")
+    install_systemd.add_argument("--unit-dir", default="/etc/systemd/system")
+    install_systemd.add_argument("--dry-run", action="store_true")
+    install_systemd.add_argument("--strict", action="store_true")
+    install_systemd.set_defaults(func=cmd_install_systemd)
+
+    uninstall_systemd = sub.add_parser("uninstall-systemd")
+    uninstall_systemd.add_argument("--unit-dir", default="/etc/systemd/system")
+    uninstall_systemd.add_argument("--dry-run", action="store_true")
+    uninstall_systemd.add_argument("--strict", action="store_true")
+    uninstall_systemd.set_defaults(func=cmd_uninstall_systemd)
 
     return parser
 

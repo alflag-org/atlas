@@ -483,3 +483,31 @@ def test_apply_rejects_files_symlink_traversal(monkeypatch, tmp_path):
     monkeypatch.setattr("sys.argv", ["atlas", "apply", "--version", "v3"])
     with pytest.raises(ValueError, match=r"symlink traversal"):
         main()
+
+
+def test_install_systemd_dry_run_without_systemctl(monkeypatch, capsys):
+    monkeypatch.setattr("atlas.cli.shutil.which", lambda _name: None)
+    monkeypatch.setattr("sys.argv", ["atlas", "install-systemd", "--dry-run"])
+    assert main() == 0
+    assert "systemctl not found; skipping systemd install" in capsys.readouterr().out
+
+
+def test_install_systemd_strict_without_systemctl(monkeypatch):
+    monkeypatch.setattr("atlas.cli.shutil.which", lambda _name: None)
+    monkeypatch.setattr("sys.argv", ["atlas", "install-systemd", "--strict"])
+    with pytest.raises(SystemExit, match="systemctl not found"):
+        main()
+
+
+def test_install_uninstall_systemd_dry_run(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr("atlas.cli.shutil.which", lambda _name: "/bin/systemctl")
+    monkeypatch.setattr("sys.argv", ["atlas", "install-systemd", "--dry-run", "--unit-dir", str(tmp_path)])
+    assert main() == 0
+    monkeypatch.setattr("sys.argv", ["atlas", "uninstall-systemd", "--dry-run", "--unit-dir", str(tmp_path)])
+    assert main() == 0
+    out = capsys.readouterr().out
+    assert "$ systemctl daemon-reload" in out
+    assert "$ systemctl enable atlas-pull.timer" in out
+    assert "$ systemctl start atlas-pull.timer" in out
+    assert "$ systemctl stop atlas-pull.timer" in out
+    assert "$ systemctl disable atlas-pull.timer" in out

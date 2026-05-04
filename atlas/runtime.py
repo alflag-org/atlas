@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import shutil
 from pathlib import Path
 import json
 import os
 import subprocess
+import time
 
 from .lock import file_lock
 from .models import Node, RuntimeState, utcnow
@@ -64,6 +66,41 @@ def _redact(text: str, secrets: list[str]) -> str:
     return redacted
 
 
+def _append_run_record(
+    logs: Path,
+    *,
+    command: str,
+    args: list[str],
+    caller: str,
+    exit_code: int,
+    duration_ms: int,
+    release_version: str,
+    node_role: str,
+    stdout: str,
+    stderr: str,
+) -> None:
+    timestamp = datetime.now(timezone.utc).isoformat()
+    base = f"{command}-{int(time.time() * 1000)}"
+    stdout_path = logs / f"{base}.stdout.log"
+    stderr_path = logs / f"{base}.stderr.log"
+    stdout_path.write_text(stdout)
+    stderr_path.write_text(stderr)
+    record = {
+        "timestamp": timestamp,
+        "command": command,
+        "args": args,
+        "caller": caller,
+        "exit_code": exit_code,
+        "duration_ms": duration_ms,
+        "release_version": release_version,
+        "node_role": node_role,
+        "stdout_path": str(stdout_path.name),
+        "stderr_path": str(stderr_path.name),
+    }
+    with (logs / "runs.jsonl").open("a", encoding="utf-8") as fp:
+        fp.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
 def run_command(active: Path, locks: Path, logs: Path, etc: Path, name: str, args: list[str], timeout: int = 300, allow_destructive: bool = False, redact_values: list[str] | None = None) -> RunResult:
     index = _load_command_index(active)
     if name not in index:
@@ -78,11 +115,26 @@ def run_command(active: Path, locks: Path, logs: Path, etc: Path, name: str, arg
 
     logs.mkdir(parents=True, exist_ok=True)
     effective_timeout = _effective_timeout(timeout, meta)
+    started = time.perf_counter()
     with file_lock(locks / f"{name}.lock"):
         proc = subprocess.run([str(script), *args], capture_output=True, text=True, timeout=effective_timeout, env=os.environ.copy())
+    duration_ms = int((time.perf_counter() - started) * 1000)
     secrets = redact_values or []
     out = RunResult(name, proc.returncode, _redact(proc.stdout, secrets), _redact(proc.stderr, secrets))
     (logs / f"{name}.log").write_text(f"exit={out.code}\nSTDOUT\n{out.stdout}\nSTDERR\n{out.stderr}\n")
+    state = RuntimeState.load(active.parent / "state" / "runtime.json")
+    _append_run_record(
+        logs,
+        command=name,
+        args=args,
+        caller="atlas run",
+        exit_code=out.code,
+        duration_ms=duration_ms,
+        release_version=state.current_version or "",
+        node_role=node.role,
+        stdout=out.stdout,
+        stderr=out.stderr,
+    )
     return out
 
 

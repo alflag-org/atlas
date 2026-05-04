@@ -235,3 +235,40 @@ def test_secrets_schema_missing_type_and_unknown_key(monkeypatch, tmp_path):
     monkeypatch.setattr("sys.argv", ["atlas", "run", "--materialize-secrets", "hello"])
     with pytest.raises(ValueError, match=r"secrets\.yml: invalid key 'secrets': expected type list"):
         main()
+
+
+def test_node_json_fallback_when_yaml_missing(monkeypatch, tmp_path):
+    root = tmp_path / "opt"
+    etc = tmp_path / "etc"
+    etc.mkdir(parents=True)
+    (etc / "node.json").write_text(json.dumps({"name": "n1", "role": "dns", "packs": ["base"]}))
+    monkeypatch.setenv("ATLAS_ROOT", str(root))
+    monkeypatch.setenv("ATLAS_ETC", str(etc))
+    bundle = make_bundle(tmp_path)
+    monkeypatch.setattr("sys.argv", ["atlas", "pull", str(bundle), "--version", "v1"]); assert main() == 0
+    monkeypatch.setattr("sys.argv", ["atlas", "apply", "--version", "v1"]); assert main() == 0
+    monkeypatch.setattr("sys.argv", ["atlas", "run", "hello"]); assert main() == 0
+
+
+def test_migrate_layout_dry_run_and_execute(monkeypatch, tmp_path, capsys):
+    new_root = tmp_path / "varlib"
+    etc = tmp_path / "etc"
+    legacy_root = Path("/opt/atlas")
+    (legacy_root / "state").mkdir(parents=True, exist_ok=True)
+    (legacy_root / "logs").mkdir(parents=True, exist_ok=True)
+    (legacy_root / "locks").mkdir(parents=True, exist_ok=True)
+    (legacy_root / "state/runtime.json").write_text("{}")
+
+    monkeypatch.setenv("ATLAS_ROOT", str(new_root))
+    monkeypatch.setenv("ATLAS_ETC", str(etc))
+
+    monkeypatch.setattr("sys.argv", ["atlas", "migrate-layout", "--dry-run"])
+    assert main() == 0
+    out = capsys.readouterr().out
+    assert "layout migration plan" in out
+    assert "dry-run only" in out
+    assert (legacy_root / "state/runtime.json").exists()
+
+    monkeypatch.setattr("sys.argv", ["atlas", "migrate-layout", "--execute"])
+    assert main() == 0
+    assert (new_root / "state/runtime.json").exists()

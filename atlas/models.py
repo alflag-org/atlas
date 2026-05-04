@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 import json
 
+from .config import load_compat_config
+
 
 class SchemaError(ValueError):
     pass
@@ -133,9 +135,10 @@ SECRETS_SCHEMA = ModelSchema(
 
 
 def load_yaml_config(path: Path, schema: ModelSchema) -> dict[str, Any]:
-    if not path.exists():
+    data, loaded = load_compat_config(path.parent, path.stem)
+    if loaded is None:
         return validate_config({}, schema, schema.name)
-    return validate_config(parse_yaml_like(path.read_text()), schema, schema.name)
+    return validate_config(data, schema, loaded.name)
 
 
 def utcnow() -> str:

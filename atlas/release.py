@@ -1,8 +1,15 @@
 from __future__ import annotations
 
-from pathlib import Path
 import hashlib
+from pathlib import Path
+import shutil
 import tarfile
+import tempfile
+
+import yaml
+
+from .indexer import write_command_index
+from .models import load_yaml_file
 
 
 def sha256_file(path: Path) -> str:
@@ -27,6 +34,65 @@ def _safe_extract(tf: tarfile.TarFile, dest: Path) -> None:
     tf.extractall(dest)
 
 
+def build_bundle(release_dir: Path, bundle_path: Path, payload_name: str = "payload.tar.zst") -> Path:
+    release_dir = release_dir.resolve()
+    if not (release_dir / "packs").exists():
+        raise ValueError(f"packs directory not found: {release_dir / 'packs'}")
+    write_command_index(release_dir)
+
+    bundle_path.parent.mkdir(parents=True, exist_ok=True)
+    payload_path = bundle_path.parent / payload_name
+    with tarfile.open(payload_path, "w") as pt:
+        for p in release_dir.iterdir():
+            pt.add(p, arcname=p.name)
+
+    checksum = sha256_file(payload_path)
+    manifest = {"payload": payload_name, "checksum": checksum}
+    manifest_path = bundle_path.parent / "manifest.yml"
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+
+    with tarfile.open(bundle_path, "w") as tf:
+        tf.add(manifest_path, arcname="manifest.yml")
+        tf.add(payload_path, arcname=payload_name)
+
+    payload_path.unlink(missing_ok=True)
+    manifest_path.unlink(missing_ok=True)
+    return bundle_path
+
+
+def inspect_bundle(bundle: Path) -> dict[str, object]:
+    with tempfile.TemporaryDirectory() as td:
+        staged = Path(td)
+        with tarfile.open(bundle, "r:*") as tf:
+            _safe_extract(tf, staged)
+        manifest_path = staged / "manifest.yml"
+        if not manifest_path.exists():
+            raise ValueError("manifest.yml not found in bundle")
+        manifest = load_yaml_file(manifest_path)
+        payload = staged / manifest["payload"]
+        with tarfile.open(payload, "r:*") as pt:
+            names = pt.getnames()
+        packs = sorted({Path(name).parts[1] for name in names if name.startswith("packs/") and len(Path(name).parts) > 1})
+        return {
+            "manifest": manifest,
+            "payload": {
+                "file": manifest["payload"],
+                "size_bytes": payload.stat().st_size,
+                "sha256": sha256_file(payload),
+            },
+            "packs": packs,
+        }
+
+
+def verify_bundle(bundle: Path) -> None:
+    data = inspect_bundle(bundle)
+    manifest = data["manifest"]
+    expected = manifest.get("checksum")
+    actual = data["payload"]["sha256"]
+    if expected and expected != actual:
+        raise SystemExit(f"payload checksum mismatch: expected={expected} actual={actual}")
+
+
 def pull_bundle(bundle: Path, staged_dir: Path) -> dict:
     staged_dir.mkdir(parents=True, exist_ok=True)
     with tarfile.open(bundle, "r:*") as tf:
@@ -34,7 +100,6 @@ def pull_bundle(bundle: Path, staged_dir: Path) -> dict:
     manifest = staged_dir / "manifest.yml"
     if not manifest.exists():
         raise ValueError("manifest.yml not found in bundle")
-    from .models import load_yaml_file
     data = load_yaml_file(manifest)
     expected = data.get("checksum")
     payload = staged_dir / data["payload"]

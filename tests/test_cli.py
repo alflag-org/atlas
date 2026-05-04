@@ -146,6 +146,43 @@ def test_secret_redaction(monkeypatch, tmp_path):
     out = (tmp_path / "opt/logs/hello.log").read_text()
     assert "super-secret" not in out
     assert "***REDACTED***" in out
+    run_logs = (tmp_path / "opt/logs/runs.jsonl").read_text()
+    assert "super-secret" not in run_logs
+
+
+def test_run_jsonl_has_required_fields_even_on_failure(monkeypatch, tmp_path):
+    _, _etc = setup_node(monkeypatch, tmp_path)
+    payload_dir = tmp_path / "payload"
+    payload_dir.mkdir(parents=True)
+    (payload_dir / "command-index.json").write_text(json.dumps({"boom": {"path": "packs/base/bin/boom", "pack": "base", "roles": ["dns"], "destructive": False}}))
+    cmd = payload_dir / "packs/base/bin"
+    cmd.mkdir(parents=True)
+    boom = cmd / "boom"
+    boom.write_text("#!/usr/bin/env bash\necho err 1>&2\nexit 7\n")
+    boom.chmod(0o755)
+
+    payload_tgz = tmp_path / "release.tar"
+    with tarfile.open(payload_tgz, "w") as tf:
+        tf.add(payload_dir, arcname=".")
+    import hashlib
+    h = hashlib.sha256(payload_tgz.read_bytes()).hexdigest()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"payload": "release.tar", "checksum": h}))
+    bundle = tmp_path / "bundle.tar"
+    with tarfile.open(bundle, "w") as tf:
+        tf.add(manifest, arcname="manifest.json")
+        tf.add(payload_tgz, arcname="release.tar")
+
+    monkeypatch.setattr("sys.argv", ["atlas", "pull", str(bundle), "--version", "v1"]); assert main() == 0
+    monkeypatch.setattr("sys.argv", ["atlas", "apply", "--version", "v1"]); assert main() == 0
+    monkeypatch.setattr("sys.argv", ["atlas", "run", "boom"])
+    assert main() == 7
+
+    line = (tmp_path / "opt/logs/runs.jsonl").read_text().strip().splitlines()[-1]
+    record = json.loads(line)
+    for key in ["timestamp", "command", "args", "caller", "exit_code", "duration_ms", "release_version", "node_role"]:
+        assert key in record
+        assert record[key] is not None
 
 
 def test_metadata_invalid_header(monkeypatch, tmp_path):

@@ -12,11 +12,33 @@ from .runtime import apply_release_with_phases, run_command
 from .secrets import materialize_secrets
 
 
+def _last_run_summary(logs_dir: Path) -> dict[str, object] | None:
+    runs = logs_dir / "runs.jsonl"
+    if not runs.exists():
+        return None
+    lines = [ln for ln in runs.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    if not lines:
+        return None
+    last = json.loads(lines[-1])
+    return {
+        "timestamp": last.get("timestamp"),
+        "command": last.get("command"),
+        "args": last.get("args", []),
+        "caller": last.get("caller"),
+        "exit_code": last.get("exit_code"),
+        "duration_ms": last.get("duration_ms"),
+        "release_version": last.get("release_version"),
+        "node_role": last.get("node_role"),
+    }
+
+
 def cmd_status(_: argparse.Namespace) -> int:
     p = resolve_paths()
     ensure_dirs(p)
     state = RuntimeState.load(p.state / "runtime.json")
-    print(json.dumps(state.__dict__, indent=2))
+    payload = dict(state.__dict__)
+    payload["last_run"] = _last_run_summary(p.logs)
+    print(json.dumps(payload, indent=2))
     return 0
 
 

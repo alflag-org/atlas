@@ -1,0 +1,10 @@
+[project]
+name = "atlas-agent"
+version = "0.2.0"
+requires-python = ">=3.11"
+
+[project.scripts]
+atlas = "atlas.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

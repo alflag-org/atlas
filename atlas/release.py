@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -38,18 +39,23 @@ def _safe_extract(tf: tarfile.TarFile, dest: Path) -> None:
 
 
 SIGNATURE_FILE = "manifest.yml.minisig"
-TRUSTED_MINISIGN_PUBKEY = Path("/etc/atlas/trust.d/atlas-release.pub")
+
+
+def trusted_minisign_pubkey_path() -> Path:
+    etc_dir = Path(os.environ.get("ATLAS_ETC_DIR", "/etc/atlas"))
+    return etc_dir / "trust.d" / "atlas-release.pub"
 
 
 def verify_manifest_signature(staged_dir: Path) -> None:
+    trusted_pubkey = trusted_minisign_pubkey_path()
     manifest = staged_dir / "manifest.yml"
     signature = staged_dir / SIGNATURE_FILE
     if not manifest.exists():
         raise ValueError("manifest.yml not found in bundle")
     if not signature.exists():
         raise ValueError(f"{SIGNATURE_FILE} not found in bundle")
-    if not TRUSTED_MINISIGN_PUBKEY.exists():
-        raise ValueError(f"trusted minisign public key not found: {TRUSTED_MINISIGN_PUBKEY}")
+    if not trusted_pubkey.exists():
+        raise ValueError(f"trusted minisign public key not found: {trusted_pubkey}")
 
     cmd = [
         "minisign",
@@ -58,7 +64,7 @@ def verify_manifest_signature(staged_dir: Path) -> None:
         "-x",
         str(signature),
         "-P",
-        TRUSTED_MINISIGN_PUBKEY.read_text(encoding="utf-8").strip(),
+        trusted_pubkey.read_text(encoding="utf-8").strip(),
     ]
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)

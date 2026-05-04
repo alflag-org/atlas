@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import hashlib
-import json
 import tarfile
 
 
@@ -32,10 +31,11 @@ def pull_bundle(bundle: Path, staged_dir: Path) -> dict:
     staged_dir.mkdir(parents=True, exist_ok=True)
     with tarfile.open(bundle, "r:*") as tf:
         _safe_extract(tf, staged_dir)
-    manifest = staged_dir / "manifest.json"
+    manifest = staged_dir / "manifest.yml"
     if not manifest.exists():
-        raise ValueError("manifest.json not found in bundle")
-    data = json.loads(manifest.read_text())
+        raise ValueError("manifest.yml not found in bundle")
+    from .models import load_yaml_file
+    data = load_yaml_file(manifest)
     expected = data.get("checksum")
     payload = staged_dir / data["payload"]
     if expected and sha256_file(payload) != expected:

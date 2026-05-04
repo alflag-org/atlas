@@ -1,41 +1,54 @@
 # atlas
 
-Atlas product-spec の最小実装（継続拡張中）。
+Atlas の現行実装ドキュメントです（**実装済み機能のみ記載**）。
 
-## 実装済み
-- `atlas pull`: bundle 展開、manifest checksum 検証、payload 展開
-- `atlas apply`: active 切替、runtime state 更新、shim 自動生成
-- `atlas run`: command-index メタに基づく pack/role/destructive チェック、lock 付き実行、ログ保存
+## 実装済み機能
+
+- `atlas build`: `packs/` を走査して `command-index.yml` を生成し bundle を作成
+- `atlas inspect-bundle` / `atlas verify-bundle`: 署名・checksum を検証
+- `atlas pull`: bundle 展開と checksum 検証
+- `atlas apply`: validate → activate → pack files 展開 → shim 生成
+- `atlas run`: command metadata に基づく `pack/role/destructive/timeout/lock` 制御
 - `atlas rollback` / `atlas status`
-- `/etc/atlas/node.yml` 読み込み
+- `atlas install-systemd` / `atlas uninstall-systemd`
+- `atlas run --materialize-secrets` による secrets 実体化
 
-## 残件（次段）
-- secrets 実体化フレームワーク
-- command-index / manifest の YAML サポート
-- 署名検証
-- systemd timer 連携
+## 導入手順
 
-## 移行ガイド（v0.2系 → 次期版）
-- 設定ファイル読み込みは移行期間中、`*.yml` を優先し、未存在時のみ `*.json` をフォールバックします。
-  - 例: `/etc/atlas/node.yml` が無ければ `/etc/atlas/node.json` を読み込みます。
-- state/log/lock のデフォルト配置先は `/var/lib/atlas` になりました（旧: `/opt/atlas`）。
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install -e .
+```
 
-### 自動移行コマンド
-1. 事前確認（dry-run）
+## 最短利用
 
-   ```bash
-   atlas migrate-layout --dry-run
-   ```
+`docs/getting-started.md` の手順をそのまま実行してください。
 
-2. 実行
+## bundle 作成
 
-   ```bash
-   atlas migrate-layout --execute
-   ```
+```bash
+atlas build <release_dir> <bundle_path>
+```
 
-`migrate-layout` は旧パスの以下を対象に、移行先とアクション（move/skip）を表示します。
-- `/opt/atlas/state` → `/var/lib/atlas/state`
-- `/opt/atlas/logs` → `/var/lib/atlas/logs`
-- `/opt/atlas/locks` → `/var/lib/atlas/locks`
+詳細: `docs/bundle-format.md`, `docs/release.md`
 
-移行先がすでに存在する場合は安全のため `skip` されます。
+## コマンド追加
+
+1. `packs/<pack>/bin/<command>` を追加して実行権限を付与
+2. node の `packs` に `<pack>` を追加
+3. `atlas build` → `atlas pull` → `atlas apply`
+
+詳細: `docs/command-metadata.md`, `docs/packs.md`
+
+## systemd 有効化
+
+```bash
+sudo atlas install-systemd
+```
+
+詳細: `docs/systemd.md`
+
+## セキュリティ方針
+
+実装済みの範囲は `docs/security.md` を参照してください。

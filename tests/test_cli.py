@@ -125,3 +125,41 @@ def test_apply_failure_rolls_back_active_state_and_shims(monkeypatch, tmp_path):
     assert after_state["current_version"] == before_state["current_version"]
     assert (root / "active").resolve() == before_active
     assert (root / "shims/hello").read_text() == before_shim
+
+
+def test_node_schema_missing_required_type_and_unknown_key(monkeypatch, tmp_path):
+    _, etc = setup_node(monkeypatch, tmp_path)
+
+    # type mismatch: packs should be a list
+    (etc / "node.yml").write_text("name: n1\nrole: dns\npacks: base\n")
+    bundle = make_bundle(tmp_path)
+    monkeypatch.setattr("sys.argv", ["atlas", "pull", str(bundle), "--version", "v1"]); assert main() == 0
+    monkeypatch.setattr("sys.argv", ["atlas", "apply", "--version", "v1"]); assert main() == 0
+    monkeypatch.setattr("sys.argv", ["atlas", "run", "hello"])
+    with pytest.raises(ValueError, match=r"node\.yml: invalid key 'packs': expected type list"):
+        main()
+
+    # unknown key
+    (etc / "node.yml").write_text("name: n1\nrole: dns\npacks:\n  - base\nextra: x\n")
+    monkeypatch.setattr("sys.argv", ["atlas", "run", "hello"])
+    with pytest.raises(ValueError, match=r"node\.yml: invalid key 'extra': unknown key"):
+        main()
+
+
+def test_secrets_schema_missing_type_and_unknown_key(monkeypatch, tmp_path):
+    _, etc = setup_node(monkeypatch, tmp_path)
+    bundle = make_bundle(tmp_path)
+    monkeypatch.setattr("sys.argv", ["atlas", "pull", str(bundle), "--version", "v1"]); assert main() == 0
+    monkeypatch.setattr("sys.argv", ["atlas", "apply", "--version", "v1"]); assert main() == 0
+
+    # unknown top-level key
+    (etc / "secrets.yml").write_text("oops: 1\n")
+    monkeypatch.setattr("sys.argv", ["atlas", "run", "--materialize-secrets", "hello"])
+    with pytest.raises(ValueError, match=r"secrets\.yml: invalid key 'oops': unknown key"):
+        main()
+
+    # type mismatch
+    (etc / "secrets.yml").write_text("secrets: nope\n")
+    monkeypatch.setattr("sys.argv", ["atlas", "run", "--materialize-secrets", "hello"])
+    with pytest.raises(ValueError, match=r"secrets\.yml: invalid key 'secrets': expected type list"):
+        main()

@@ -4,6 +4,7 @@ import tarfile
 import pytest
 
 from atlas.cli import main
+import atlas.release as release_mod
 from atlas.release import pull_bundle
 
 
@@ -27,9 +28,12 @@ def make_bundle(tmp_path: Path, include_index: bool = True):
     manifest = tmp_path / "manifest.yml"
     manifest.write_text(f"payload: release.tar\nchecksum: {h}\n")
 
+    sig = tmp_path / "manifest.yml.minisig"
+    sig.write_text("dummy-signature")
     bundle = tmp_path / "bundle.tar"
     with tarfile.open(bundle, "w") as tf:
         tf.add(manifest, arcname="manifest.yml")
+        tf.add(sig, arcname="manifest.yml.minisig")
         tf.add(payload_tgz, arcname="release.tar")
     return bundle
 
@@ -45,6 +49,12 @@ def setup_node(monkeypatch, tmp_path, role="dns", packs="  - base\n"):
     monkeypatch.setenv("ATLAS_ETC_DIR", str(etc))
     return opt, var, etc
 
+
+
+
+@pytest.fixture(autouse=True)
+def _mock_signature_verification(monkeypatch):
+    monkeypatch.setattr(release_mod, "verify_manifest_signature", lambda staged_dir: None)
 
 def test_pull_apply_run_and_status(monkeypatch, tmp_path, capsys):
     opt, var, _ = setup_node(monkeypatch, tmp_path)
@@ -136,9 +146,12 @@ def test_secret_redaction(monkeypatch, tmp_path):
     h = hashlib.sha256(payload_tgz.read_bytes()).hexdigest()
     manifest = tmp_path / "manifest.yml"
     manifest.write_text(f"payload: release.tar\nchecksum: {h}\n")
+    sig = tmp_path / "manifest.yml.minisig"
+    sig.write_text("dummy-signature")
     bundle = tmp_path / "bundle.tar"
     with tarfile.open(bundle, "w") as tf:
         tf.add(manifest, arcname="manifest.yml")
+        tf.add(sig, arcname="manifest.yml.minisig")
         tf.add(payload_tgz, arcname="release.tar")
 
     target = etc / "secrets" / "atlas-secret.txt"
@@ -172,9 +185,12 @@ def test_run_jsonl_has_required_fields_even_on_failure(monkeypatch, tmp_path):
     h = hashlib.sha256(payload_tgz.read_bytes()).hexdigest()
     manifest = tmp_path / "manifest.yml"
     manifest.write_text(f"payload: release.tar\nchecksum: {h}\n")
+    sig = tmp_path / "manifest.yml.minisig"
+    sig.write_text("dummy-signature")
     bundle = tmp_path / "bundle.tar"
     with tarfile.open(bundle, "w") as tf:
         tf.add(manifest, arcname="manifest.yml")
+        tf.add(sig, arcname="manifest.yml.minisig")
         tf.add(payload_tgz, arcname="release.tar")
 
     monkeypatch.setattr("sys.argv", ["atlas", "pull", str(bundle), "--version", "v1"]); assert main() == 0
@@ -205,9 +221,12 @@ def test_metadata_invalid_header(monkeypatch, tmp_path):
     h = hashlib.sha256(payload_tgz.read_bytes()).hexdigest()
     manifest = tmp_path / "manifest.yml"
     manifest.write_text(f"payload: release.tar\nchecksum: {h}\n")
+    sig = tmp_path / "manifest.yml.minisig"
+    sig.write_text("dummy-signature")
     bundle = tmp_path / "bundle.tar"
     with tarfile.open(bundle, "w") as tf:
         tf.add(manifest, arcname="manifest.yml")
+        tf.add(sig, arcname="manifest.yml.minisig")
         tf.add(payload_tgz, arcname="release.tar")
     monkeypatch.setattr("sys.argv", ["atlas", "pull", str(bundle), "--version", "v1"]); assert main() == 0
     monkeypatch.setattr("sys.argv", ["atlas", "apply", "--version", "v1"])
@@ -379,7 +398,9 @@ def test_verify_bundle_nonzero_on_checksum_mismatch(monkeypatch, tmp_path):
     (staged / "manifest.yml").write_text("payload: release.tar\nchecksum: deadbeef\n")
     bad_bundle = tmp_path / "bad-bundle.tar"
     with tarfile.open(bad_bundle, "w") as tf:
+        (staged / "manifest.yml.minisig").write_text("dummy-signature")
         tf.add(staged / "manifest.yml", arcname="manifest.yml")
+        tf.add(staged / "manifest.yml.minisig", arcname="manifest.yml.minisig")
         tf.add(staged / "release.tar", arcname="release.tar")
 
     monkeypatch.setattr("sys.argv", ["atlas", "verify-bundle", str(bad_bundle)])
@@ -413,8 +434,11 @@ def test_apply_copies_only_active_pack_files(monkeypatch, tmp_path):
     manifest = tmp_path / "manifest2.yml"
     manifest.write_text(f"payload: release2.tar\nchecksum: {h}\n")
     bundle2 = tmp_path / "bundle2.tar"
+    sig = tmp_path / "manifest2.yml.minisig"
+    sig.write_text("dummy-signature")
     with tarfile.open(bundle2, "w") as tf:
         tf.add(manifest, arcname="manifest.yml")
+        tf.add(sig, arcname="manifest.yml.minisig")
         tf.add(payload_tgz, arcname="release2.tar")
 
     monkeypatch.setattr("sys.argv", ["atlas", "pull", str(bundle2), "--version", "v2"]); assert main() == 0
@@ -448,8 +472,11 @@ def test_apply_rejects_files_symlink_traversal(monkeypatch, tmp_path):
     manifest = tmp_path / "manifest3.yml"
     manifest.write_text(f"payload: release3.tar\nchecksum: {h}\n")
     bundle3 = tmp_path / "bundle3.tar"
+    sig = tmp_path / "manifest3.yml.minisig"
+    sig.write_text("dummy-signature")
     with tarfile.open(bundle3, "w") as tf:
         tf.add(manifest, arcname="manifest.yml")
+        tf.add(sig, arcname="manifest.yml.minisig")
         tf.add(payload_tgz, arcname="release3.tar")
 
     monkeypatch.setattr("sys.argv", ["atlas", "pull", str(bundle3), "--version", "v3"]); assert main() == 0

@@ -67,7 +67,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
     release_dir = p.releases / version
     if not release_dir.exists():
         raise SystemExit(f"release not found: {version}")
-    generated = apply_release_with_phases(release_dir, version, p.current, p.shims, state_path, p.staging)
+    generated = apply_release_with_phases(release_dir, version, p.current, p.shims, p.libexec, state_path, p.staging)
     print(f"active release is now {version} (generated {generated} shims)")
     return 0
 

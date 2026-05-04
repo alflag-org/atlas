@@ -7,10 +7,8 @@ import shutil
 
 from .config import ensure_dirs, resolve_paths
 from .models import RuntimeState, utcnow
-from .release import activate_release, pull_bundle, rollback_to
-from .runtime import run_command
-from .shims import generate_shims
-from .indexer import write_command_index
+from .release import pull_bundle, rollback_to
+from .runtime import apply_release_with_phases, run_command
 from .secrets import materialize_secrets
 
 
@@ -47,15 +45,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
     release_dir = p.releases / version
     if not release_dir.exists():
         raise SystemExit(f"release not found: {version}")
-    old = state.current_version
-    write_command_index(release_dir)
-    activate_release(release_dir, p.active)
-    generated = generate_shims(p.active, p.shims)
-    state.previous_version = old
-    state.current_version = version
-    state.last_apply_status = "success"
-    state.last_apply_at = utcnow()
-    state.save(state_path)
+    generated = apply_release_with_phases(release_dir, version, p.active, p.shims, state_path, p.staged)
     print(f"active release is now {version} (generated {generated} shims)")
     return 0
 

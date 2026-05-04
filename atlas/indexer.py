@@ -4,7 +4,7 @@ from pathlib import Path
 import yaml
 
 
-_ALLOWED_HEADER_KEYS = {"roles", "destructive", "timeout"}
+_ALLOWED_HEADER_KEYS = {"name", "timeout", "lock", "allowed_roles", "destructive", "direct_exec"}
 _MAX_TIMEOUT_SECONDS = 3600
 
 
@@ -14,6 +14,20 @@ def _parse_bool(value: str) -> bool:
     if value == "false":
         return False
     raise ValueError("boolean must be 'true' or 'false'")
+
+
+def _parse_int(value: str) -> int:
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError("integer required") from exc
+
+
+def _parse_list(value: str) -> list[str]:
+    items = [r.strip() for r in value.split(",") if r.strip()]
+    if not items:
+        raise ValueError("list must contain at least one value")
+    return items
 
 
 def _parse_header_metadata(cmd: Path) -> dict[str, object]:
@@ -30,22 +44,41 @@ def _parse_header_metadata(cmd: Path) -> dict[str, object]:
             raise ValueError(f"unsupported header metadata key for {cmd}: {key}")
         if key in meta:
             raise ValueError(f"duplicated header metadata key for {cmd}: {key}")
-        if key == "roles":
-            roles = [r.strip() for r in raw.split(",") if r.strip()]
-            if not roles:
-                raise ValueError(f"roles header must contain at least one role for {cmd}")
-            meta[key] = roles
+        if key == "name":
+            if not raw:
+                raise ValueError(f"invalid header metadata for {cmd}: name must not be empty")
+            meta[key] = raw
+        elif key == "allowed_roles":
+            try:
+                meta[key] = _parse_list(raw)
+            except ValueError as exc:
+                raise ValueError(f"invalid header metadata type for {cmd}: allowed_roles must be list[str]") from exc
         elif key == "destructive":
-            meta[key] = _parse_bool(raw.lower())
+            try:
+                meta[key] = _parse_bool(raw.lower())
+            except ValueError as exc:
+                raise ValueError(f"invalid header metadata type for {cmd}: destructive must be bool") from exc
+        elif key == "direct_exec":
+            try:
+                meta[key] = _parse_bool(raw.lower())
+            except ValueError as exc:
+                raise ValueError(f"invalid header metadata type for {cmd}: direct_exec must be bool") from exc
         elif key == "timeout":
-            timeout = int(raw)
+            try:
+                timeout = _parse_int(raw)
+            except ValueError as exc:
+                raise ValueError(f"invalid header metadata type for {cmd}: timeout must be int") from exc
             if timeout < 1 or timeout > _MAX_TIMEOUT_SECONDS:
                 raise ValueError(f"timeout header out of range for {cmd}: {timeout}")
-            meta[key] = timeout
+            meta["timeout_sec"] = timeout
+        elif key == "lock":
+            if not raw:
+                raise ValueError(f"invalid header metadata for {cmd}: lock must not be empty")
+            meta[key] = raw
     return meta
 
 
-def discover_commands(release_dir: Path) -> dict[str, dict[str, object]]:
+def discover_commands(release_dir: Path) -> dict[str, dict[str, dict[str, object]]]:
     result: dict[str, dict[str, object]] = {}
     packs_dir = release_dir / "packs"
     if not packs_dir.exists():
@@ -56,14 +89,21 @@ def discover_commands(release_dir: Path) -> dict[str, dict[str, object]]:
             continue
         for cmd in bindir.iterdir():
             if cmd.is_file() and cmd.stat().st_mode & 0o111:
-                result[cmd.name] = {
+                meta: dict[str, object] = {
                     "path": str(cmd.relative_to(release_dir)),
                     "pack": pack.name,
-                    "roles": [],
+                    "name": cmd.name,
+                    "timeout_sec": _MAX_TIMEOUT_SECONDS,
+                    "lock": cmd.name,
                     "destructive": False,
+                    "direct_exec": False,
                 }
-                result[cmd.name].update(_parse_header_metadata(cmd))
-    return result
+                meta.update(_parse_header_metadata(cmd))
+                name = str(meta["name"])
+                if name in result:
+                    raise ValueError(f"duplicated command name: {name}")
+                result[name] = meta
+    return {"commands": result}
 
 
 def write_command_index(release_dir: Path) -> Path:

@@ -178,6 +178,7 @@ def apply_release_with_phases(
     version: str,
     active_dir: Path,
     shims_dir: Path,
+    libexec_dir: Path,
     state_path: Path,
     staging_root: Path,
 ) -> int:
@@ -190,7 +191,7 @@ def apply_release_with_phases(
     write_command_index(release_dir)
     try:
         activate_release(release_dir, active_dir)
-        generated = generate_shims(active_dir, shims_dir)
+        generated = generate_shims(active_dir, shims_dir, libexec_dir)
         state.previous_version = old
         state.current_version = version
         state.last_apply_status = "success"

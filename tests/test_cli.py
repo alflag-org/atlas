@@ -59,7 +59,9 @@ def test_pull_apply_run_and_status(monkeypatch, tmp_path, capsys):
     assert main() == 0
     out = capsys.readouterr().out
     assert "hello" in out and "current_version" in out
-    assert (opt / "shims/hello").exists()
+    shim = opt / "shims/hello"
+    assert shim.is_symlink()
+    assert shim.resolve() == (opt / "libexec/atlas-shim")
 
 
 def test_rollback(monkeypatch, tmp_path):
@@ -222,7 +224,7 @@ def test_apply_failure_rolls_back_active_state_and_shims(monkeypatch, tmp_path):
 
     before_state = json.loads((var / "state.yml").read_text())
     before_active = (opt / "current").resolve()
-    before_shim = (opt / "shims/hello").read_text()
+    before_shim_target = (opt / "shims/hello").resolve()
 
     monkeypatch.setattr("sys.argv", ["atlas", "pull", str(b2), "--version", "v2"]); assert main() == 0
     import atlas.runtime as runtime_mod
@@ -235,7 +237,51 @@ def test_apply_failure_rolls_back_active_state_and_shims(monkeypatch, tmp_path):
     after_state = json.loads((var / "state.yml").read_text())
     assert after_state["current_version"] == before_state["current_version"]
     assert (opt / "current").resolve() == before_active
-    assert (opt / "shims/hello").read_text() == before_shim
+    assert (opt / "shims/hello").resolve() == before_shim_target
+
+
+def test_generate_shims_only_enabled_and_cleans_old_files(tmp_path):
+    from atlas.shims import generate_shims
+
+    active = tmp_path / "active"
+    shims = tmp_path / "shims"
+    libexec = tmp_path / "libexec"
+    active.mkdir()
+    shims.mkdir()
+    (shims / "old-shim").write_text("legacy")
+    (active / "command-index.yml").write_text(
+        "commands:\n"
+        "  hello:\n"
+        "    path: packs/base/bin/hello\n"
+        "    enabled: true\n"
+        "  disabled:\n"
+        "    path: packs/base/bin/disabled\n"
+        "    enabled: false\n"
+    )
+
+    generated = generate_shims(active, shims, libexec)
+
+    assert generated == 1
+    assert not (shims / "old-shim").exists()
+    assert (shims / "hello").is_symlink()
+    assert not (shims / "disabled").exists()
+
+
+def test_generate_shims_fails_on_reserved_or_system_name_collisions(tmp_path):
+    from atlas.shims import generate_shims
+
+    active = tmp_path / "active"
+    shims = tmp_path / "shims"
+    libexec = tmp_path / "libexec"
+    active.mkdir()
+
+    (active / "command-index.yml").write_text("commands:\n  atlas:\n    path: packs/base/bin/hello\n")
+    with pytest.raises(ValueError, match=r"reserved command name"):
+        generate_shims(active, shims, libexec)
+
+    (active / "command-index.yml").write_text("commands:\n  ls:\n    path: packs/base/bin/hello\n")
+    with pytest.raises(ValueError, match=r"conflicts with system binary"):
+        generate_shims(active, shims, libexec)
 
 
 def test_node_schema_missing_required_type_and_unknown_key(monkeypatch, tmp_path):

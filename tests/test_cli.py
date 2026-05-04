@@ -385,3 +385,74 @@ def test_verify_bundle_nonzero_on_checksum_mismatch(monkeypatch, tmp_path):
     monkeypatch.setattr("sys.argv", ["atlas", "verify-bundle", str(bad_bundle)])
     with pytest.raises(SystemExit):
         main()
+
+
+def test_apply_copies_only_active_pack_files(monkeypatch, tmp_path):
+    import atlas.runtime as runtime_mod
+    runtime_mod._ALLOWED_FILE_PREFIXES = (tmp_path,)
+    opt, var, etc = setup_node(monkeypatch, tmp_path, packs="  - base\n")
+    bundle = make_bundle(tmp_path)
+
+    payload_dir = tmp_path / "payload2"
+    payload_dir.mkdir(parents=True)
+    cmd = payload_dir / "packs/base/bin"
+    cmd.mkdir(parents=True)
+    hello = cmd / "hello"
+    hello.write_text("#!/usr/bin/env bash\necho hello\n")
+    hello.chmod(0o755)
+    (payload_dir / "packs/base/files" / tmp_path.relative_to('/') / "managed.txt").parent.mkdir(parents=True)
+    (payload_dir / "packs/base/files" / tmp_path.relative_to('/') / "managed.txt").write_text("ok")
+    (payload_dir / "packs/other/files" / tmp_path.relative_to('/') / "other.txt").parent.mkdir(parents=True)
+    (payload_dir / "packs/other/files" / tmp_path.relative_to('/') / "other.txt").write_text("ng")
+
+    payload_tgz = tmp_path / "release2.tar"
+    with tarfile.open(payload_tgz, "w") as tf:
+        tf.add(payload_dir, arcname=".")
+    import hashlib
+    h = hashlib.sha256(payload_tgz.read_bytes()).hexdigest()
+    manifest = tmp_path / "manifest2.yml"
+    manifest.write_text(f"payload: release2.tar\nchecksum: {h}\n")
+    bundle2 = tmp_path / "bundle2.tar"
+    with tarfile.open(bundle2, "w") as tf:
+        tf.add(manifest, arcname="manifest.yml")
+        tf.add(payload_tgz, arcname="release2.tar")
+
+    monkeypatch.setattr("sys.argv", ["atlas", "pull", str(bundle2), "--version", "v2"]); assert main() == 0
+    monkeypatch.setattr("sys.argv", ["atlas", "apply", "--version", "v2"]); assert main() == 0
+
+    assert (tmp_path / "managed.txt").read_text() == "ok"
+    assert not (tmp_path / "other.txt").exists()
+
+
+def test_apply_rejects_files_symlink_traversal(monkeypatch, tmp_path):
+    import atlas.runtime as runtime_mod
+    runtime_mod._ALLOWED_FILE_PREFIXES = (tmp_path,)
+    setup_node(monkeypatch, tmp_path, packs="  - base\n")
+
+    payload_dir = tmp_path / "payload3"
+    payload_dir.mkdir(parents=True)
+    cmd = payload_dir / "packs/base/bin"
+    cmd.mkdir(parents=True)
+    hello = cmd / "hello"
+    hello.write_text("#!/usr/bin/env bash\necho hello\n")
+    hello.chmod(0o755)
+    files_dir = payload_dir / "packs/base/files"
+    files_dir.mkdir(parents=True)
+    (files_dir / "bad").symlink_to("/etc/passwd")
+
+    payload_tgz = tmp_path / "release3.tar"
+    with tarfile.open(payload_tgz, "w") as tf:
+        tf.add(payload_dir, arcname=".")
+    import hashlib
+    h = hashlib.sha256(payload_tgz.read_bytes()).hexdigest()
+    manifest = tmp_path / "manifest3.yml"
+    manifest.write_text(f"payload: release3.tar\nchecksum: {h}\n")
+    bundle3 = tmp_path / "bundle3.tar"
+    with tarfile.open(bundle3, "w") as tf:
+        tf.add(manifest, arcname="manifest.yml")
+        tf.add(payload_tgz, arcname="release3.tar")
+
+    monkeypatch.setattr("sys.argv", ["atlas", "pull", str(bundle3), "--version", "v3"]); assert main() == 0
+    monkeypatch.setattr("sys.argv", ["atlas", "apply", "--version", "v3"])
+    with pytest.raises(ValueError, match=r"symlink traversal"):
+        main()

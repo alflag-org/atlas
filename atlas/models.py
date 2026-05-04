@@ -4,12 +4,13 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-import json
-
-from .config import load_compat_config
-
+import yaml
 
 class SchemaError(ValueError):
+    pass
+
+
+class YamlConfigError(ValueError):
     pass
 
 
@@ -56,41 +57,20 @@ def validate_config(data: dict[str, Any], schema: ModelSchema, file_name: str) -
     return out
 
 
-def parse_yaml_like(content: str) -> dict[str, Any]:
-    data: dict[str, Any] = {}
-    lines = [ln.rstrip("\n") for ln in content.splitlines() if ln.strip() and not ln.strip().startswith("#")]
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if ":" not in line:
-            i += 1
-            continue
-        k, v = line.split(":", 1)
-        key = k.strip()
-        v = v.strip()
-        if v:
-            data[key] = v
-            i += 1
-            continue
-        items: list[Any] = []
-        i += 1
-        while i < len(lines) and lines[i].startswith("  - "):
-            item_line = lines[i][4:]
-            if ":" in item_line:
-                obj: dict[str, Any] = {}
-                k2, v2 = item_line.split(":", 1)
-                obj[k2.strip()] = v2.strip().strip('"')
-                i += 1
-                while i < len(lines) and lines[i].startswith("    ") and ":" in lines[i]:
-                    k3, v3 = lines[i].strip().split(":", 1)
-                    obj[k3.strip()] = v3.strip().strip('"')
-                    i += 1
-                items.append(obj)
-            else:
-                items.append(item_line.strip())
-                i += 1
-        data[key] = items
-    return data
+def load_yaml_file(path: Path) -> dict[str, Any]:
+    if not path.exists() or not path.read_text().strip():
+        return {}
+    try:
+        loaded = yaml.safe_load(path.read_text())
+    except yaml.YAMLError as e:
+        mark = getattr(e, "problem_mark", None)
+        location = f" line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+        raise YamlConfigError(f"invalid YAML in {path}{location}: {e}") from e
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise YamlConfigError(f"invalid YAML in {path}: top-level value must be a mapping")
+    return loaded
 
 
 NODE_SCHEMA = ModelSchema(
@@ -135,10 +115,10 @@ SECRETS_SCHEMA = ModelSchema(
 
 
 def load_yaml_config(path: Path, schema: ModelSchema) -> dict[str, Any]:
-    data, loaded = load_compat_config(path.parent, path.stem)
-    if loaded is None:
+    if not path.exists():
         return validate_config({}, schema, schema.name)
-    return validate_config(data, schema, loaded.name)
+    data = load_yaml_file(path)
+    return validate_config(data, schema, path.name)
 
 
 def utcnow() -> str:
@@ -171,8 +151,9 @@ class RuntimeState:
     def load(cls, path: Path) -> "RuntimeState":
         if not path.exists():
             return cls()
-        return cls(**json.loads(path.read_text()))
+        return cls(**load_yaml_file(path))
 
     def save(self, path: Path) -> None:
         self.updated_at = utcnow()
-        path.write_text(json.dumps(asdict(self), indent=2))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.safe_dump(asdict(self), sort_keys=False))

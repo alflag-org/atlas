@@ -21,21 +21,6 @@ class AtlasPaths:
     cache: Path
 
 
-def load_compat_config(etc: Path, stem: str) -> tuple[dict, Path | None]:
-    """Load config with migration-period compatibility order (YAML first, JSON fallback)."""
-    yml = etc / f"{stem}.yml"
-    if yml.exists():
-        from .models import parse_yaml_like
-
-        return parse_yaml_like(yml.read_text()), yml
-    json_path = etc / f"{stem}.json"
-    if json_path.exists():
-        import json
-
-        return json.loads(json_path.read_text()), json_path
-    return {}, None
-
-
 def resolve_paths() -> AtlasPaths:
     config = Path(os.environ.get("ATLAS_ETC_DIR", "/etc/atlas"))
     install = Path(os.environ.get("ATLAS_OPT_DIR", "/opt/atlas"))

@@ -10,7 +10,7 @@ import subprocess
 import time
 
 from .lock import file_lock
-from .models import Node, RuntimeState, utcnow
+from .models import Node, RuntimeState, load_yaml_file, utcnow
 from .indexer import write_command_index
 from .release import activate_release
 from .shims import generate_shims
@@ -25,10 +25,10 @@ class RunResult:
 
 
 def _load_command_index(active: Path) -> dict[str, dict[str, object]]:
-    idx = active / "command-index.json"
+    idx = active / "command-index.yml"
     if not idx.exists():
         return {}
-    raw = json.loads(idx.read_text())
+    raw = load_yaml_file(idx)
     normalized: dict[str, dict[str, object]] = {}
     for name, val in raw.items():
         if isinstance(val, str):
@@ -149,7 +149,7 @@ def _prepare_phase(release_dir: Path, staging_root: Path, version: str) -> Path:
 
 def _validate_phase(staged: Path) -> None:
     idx = write_command_index(staged)
-    commands: dict[str, dict[str, object]] = json.loads(idx.read_text())
+    commands: dict[str, dict[str, object]] = load_yaml_file(idx)
     for name, meta in commands.items():
         rel_path = Path(str(meta.get("path", "")))
         target = (staged / rel_path).resolve()

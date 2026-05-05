@@ -1,82 +1,60 @@
 name: Release
-
 on:
   push:
     tags:
       - 'v*'
 
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
-
 permissions:
   contents: write
-  id-token: write
 
 jobs:
-  build-and-release:
+  release:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install system dependencies
-        run: |
+          cache: pip
+      - run: |
           set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y minisign
-
-      - name: Install build dependencies
-        run: |
+      - run: |
           set -euxo pipefail
           python -m pip install --upgrade pip
-          pip install -e . build
-
-      - name: Build wheel/sdist
+          pip install -e . pytest ruff mypy pyright build
+      - run: pytest -q
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy atlas
+      - run: pyright
+      - run: python -m build
+      - name: Build signed sample bundle
+        env:
+          ATLAS_ETC_DIR: ${{ github.workspace }}/.release/etc/atlas
+          ATLAS_MINISIGN_SECRET_KEY: ${{ secrets.ATLAS_MINISIGN_SECRET_KEY }}
         run: |
           set -euxo pipefail
-          python -m build
-
-      - name: Build sample bundle
-        run: |
-          set -euxo pipefail
-          mkdir -p .release/release/packs/sample
-          cat > .release/release/packs/sample/pack.yml <<'EOF'
-          pack_id: sample
-          version: 1
-          commands:
-            hello:
-              run: ["echo", "hello"]
-          EOF
-          atlas build .release/release .release/sample.bundle
-
-      - name: Generate checksums
-        run: |
-          set -euxo pipefail
+          test -n "$ATLAS_MINISIGN_SECRET_KEY"
+          mkdir -p .release/release/packs/sample/bin .release/minisign "${ATLAS_ETC_DIR}/trust.d"
+          printf '%s' "$ATLAS_MINISIGN_SECRET_KEY" > .release/minisign/atlas-release.key
+          minisign -p .release/minisign/atlas-release.pub -R .release/minisign/atlas-release.key
+          cp .release/minisign/atlas-release.pub "${ATLAS_ETC_DIR}/trust.d/atlas-release.pub"
+          cat > .release/release/packs/sample/bin/hello <<'SH'
+          #!/usr/bin/env bash
+          # atlas: name=hello
+          # atlas: timeout=60
+          echo hello
+          SH
+          chmod +x .release/release/packs/sample/bin/hello
+          atlas build .release/release .release/sample.bundle --sign --secret-key .release/minisign/atlas-release.key
+          atlas verify-bundle .release/sample.bundle
           sha256sum dist/* .release/sample.bundle > release-checksums.txt
-
-      - name: Sign release assets (keyless via Sigstore)
-        uses: sigstore/gh-action-sigstore-python@v3.0.0
-        with:
-          inputs: |
-            dist/*
-            .release/sample.bundle
-            release-checksums.txt
-
-      - name: Create GitHub Release and upload assets
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
           fail_on_unmatched_files: true
           files: |
             dist/*
             .release/sample.bundle
             release-checksums.txt
-            dist/*.sigstore.json
-            .release/sample.bundle.sigstore.json
-            release-checksums.txt.sigstore.json

@@ -37,7 +37,20 @@ def resolve_paths() -> AtlasPaths:
     locks = state / "locks"
     cache = state / "cache"
 
-    return AtlasPaths(config, install, state, releases, current, libexec, shims, state_file, staging, logs, locks, cache)
+    return AtlasPaths(
+        config,
+        install,
+        state,
+        releases,
+        current,
+        libexec,
+        shims,
+        state_file,
+        staging,
+        logs,
+        locks,
+        cache,
+    )
 
 
 def ensure_dirs(paths: AtlasPaths) -> None:

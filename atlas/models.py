@@ -4,7 +4,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-import yaml
+import yaml  # type: ignore[import-untyped]
+
 
 class SchemaError(ValueError):
     pass
@@ -33,26 +34,38 @@ def _err(file_name: str, key: str, message: str) -> SchemaError:
     return SchemaError(f"{file_name}: invalid key '{key}': {message}")
 
 
-def validate_config(data: dict[str, Any], schema: ModelSchema, file_name: str) -> dict[str, Any]:
+def validate_config(
+    data: dict[str, Any], schema: ModelSchema, file_name: str
+) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key in data:
         if key not in schema.fields and not schema.allow_unknown:
             raise _err(file_name, key, "unknown key")
 
-    for key, field in schema.fields.items():
+    for key, field_schema in schema.fields.items():
         if key not in data:
-            if field.required:
+            if field_schema.required:
                 raise _err(file_name, key, "missing required key")
-            out[key] = field.default
+            out[key] = field_schema.default
             continue
         value = data[key]
-        if not isinstance(value, field.typ):
-            expected = field.typ if isinstance(field.typ, tuple) else (field.typ,)
+        if not isinstance(value, field_schema.typ):
+            expected = (
+                field_schema.typ
+                if isinstance(field_schema.typ, tuple)
+                else (field_schema.typ,)
+            )
             expected_name = "|".join(t.__name__ for t in expected)
-            raise _err(file_name, key, f"expected type {expected_name}, got {type(value).__name__}")
-        if field.allowed is not None and value not in field.allowed:
-            allowed = ", ".join(sorted(str(v) for v in field.allowed))
-            raise _err(file_name, key, f"unexpected value '{value}', allowed: [{allowed}]")
+            raise _err(
+                file_name,
+                key,
+                f"expected type {expected_name}, got {type(value).__name__}",
+            )
+        if field_schema.allowed is not None and value not in field_schema.allowed:
+            allowed = ", ".join(sorted(str(v) for v in field_schema.allowed))
+            raise _err(
+                file_name, key, f"unexpected value '{value}', allowed: [{allowed}]"
+            )
         out[key] = value
     return out
 
@@ -69,7 +82,9 @@ def load_yaml_file(path: Path) -> dict[str, Any]:
     if loaded is None:
         return {}
     if not isinstance(loaded, dict):
-        raise YamlConfigError(f"invalid YAML in {path}: top-level value must be a mapping")
+        raise YamlConfigError(
+            f"invalid YAML in {path}: top-level value must be a mapping"
+        )
     return loaded
 
 
@@ -93,7 +108,7 @@ MANIFEST_SCHEMA = ModelSchema(
 COMMAND_INDEX_SCHEMA = ModelSchema(
     name="command-index.yml",
     fields={
-        "commands": FieldSchema(list, required=False, default=[]),
+        "commands": FieldSchema(dict, required=False, default={}),
     },
 )
 
@@ -102,7 +117,9 @@ PACK_SCHEMA = ModelSchema(
     fields={
         "name": FieldSchema(str, required=True),
         "version": FieldSchema(str, required=False, default=""),
-        "enabled": FieldSchema(str, required=False, default="true", allowed={"true", "false"}),
+        "enabled": FieldSchema(
+            str, required=False, default="true", allowed={"true", "false"}
+        ),
     },
 )
 

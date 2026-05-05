@@ -3,12 +3,12 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import tarfile
 import tempfile
+from typing import Any, cast
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from .indexer import write_command_index
 from .models import load_yaml_file
@@ -34,8 +34,6 @@ def _safe_extract(tf: tarfile.TarFile, dest: Path) -> None:
         if mode < 0 or mode > 0o777:
             raise ValueError(f"unsafe tar mode detected: {member.name}")
     tf.extractall(dest)
-
-
 
 
 SIGNATURE_FILE = "manifest.yml.minisig"
@@ -71,8 +69,47 @@ def verify_manifest_signature(staged_dir: Path) -> None:
     except FileNotFoundError as e:
         raise ValueError("minisign is required for signature verification") from e
     except subprocess.CalledProcessError as e:
-        raise ValueError(f"manifest signature verification failed: {e.stderr.strip()}") from e
-def build_bundle(release_dir: Path, bundle_path: Path, payload_name: str = "payload.tar.zst") -> Path:
+        raise ValueError(
+            f"manifest signature verification failed: {e.stderr.strip()}"
+        ) from e
+
+
+def sign_bundle(bundle_path: Path, secret_key: Path) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        staged = Path(td)
+        with tarfile.open(bundle_path, "r:*") as tf:
+            _safe_extract(tf, staged)
+        manifest = staged / "manifest.yml"
+        sig = staged / SIGNATURE_FILE
+        subprocess.run(
+            [
+                "minisign",
+                "-S",
+                "-m",
+                str(manifest),
+                "-s",
+                str(secret_key),
+                "-x",
+                str(sig),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload_name = load_yaml_file(manifest)["payload"]
+        with tarfile.open(bundle_path, "w") as tf:
+            tf.add(manifest, arcname="manifest.yml")
+            tf.add(sig, arcname=SIGNATURE_FILE)
+            tf.add(staged / payload_name, arcname=payload_name)
+
+
+def build_bundle(
+    release_dir: Path,
+    bundle_path: Path,
+    payload_name: str = "payload.tar.zst",
+    sign: bool = False,
+    secret_key: Path | None = None,
+) -> Path:
     release_dir = release_dir.resolve()
     if not (release_dir / "packs").exists():
         raise ValueError(f"packs directory not found: {release_dir / 'packs'}")
@@ -87,18 +124,24 @@ def build_bundle(release_dir: Path, bundle_path: Path, payload_name: str = "payl
     checksum = sha256_file(payload_path)
     manifest = {"payload": payload_name, "checksum": checksum}
     manifest_path = bundle_path.parent / "manifest.yml"
-    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    manifest_path.write_text(
+        yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8"
+    )
 
     with tarfile.open(bundle_path, "w") as tf:
         tf.add(manifest_path, arcname="manifest.yml")
         tf.add(payload_path, arcname=payload_name)
+    if sign:
+        if secret_key is None:
+            raise ValueError("--secret-key is required when --sign is used")
+        sign_bundle(bundle_path, secret_key)
 
     payload_path.unlink(missing_ok=True)
     manifest_path.unlink(missing_ok=True)
     return bundle_path
 
 
-def inspect_bundle(bundle: Path) -> dict[str, object]:
+def inspect_bundle(bundle: Path) -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as td:
         staged = Path(td)
         with tarfile.open(bundle, "r:*") as tf:
@@ -109,7 +152,13 @@ def inspect_bundle(bundle: Path) -> dict[str, object]:
         payload = staged / manifest["payload"]
         with tarfile.open(payload, "r:*") as pt:
             names = pt.getnames()
-        packs = sorted({Path(name).parts[1] for name in names if name.startswith("packs/") and len(Path(name).parts) > 1})
+        packs = sorted(
+            {
+                Path(name).parts[1]
+                for name in names
+                if name.startswith("packs/") and len(Path(name).parts) > 1
+            }
+        )
         return {
             "manifest": manifest,
             "payload": {
@@ -123,14 +172,17 @@ def inspect_bundle(bundle: Path) -> dict[str, object]:
 
 def verify_bundle(bundle: Path) -> None:
     data = inspect_bundle(bundle)
-    manifest = data["manifest"]
+    manifest = cast(dict[str, Any], data["manifest"])
     expected = manifest.get("checksum")
-    actual = data["payload"]["sha256"]
+    payload_info = cast(dict[str, Any], data["payload"])
+    actual = payload_info["sha256"]
     if expected and expected != actual:
-        raise SystemExit(f"payload checksum mismatch: expected={expected} actual={actual}")
+        raise SystemExit(
+            f"payload checksum mismatch: expected={expected} actual={actual}"
+        )
 
 
-def pull_bundle(bundle: Path, staged_dir: Path) -> dict:
+def pull_bundle(bundle: Path, staged_dir: Path) -> dict[str, Any]:
     staged_dir.mkdir(parents=True, exist_ok=True)
     with tarfile.open(bundle, "r:*") as tf:
         _safe_extract(tf, staged_dir)

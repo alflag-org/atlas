@@ -11,7 +11,15 @@ _CONFLICT_DIRS = (Path("/usr/bin"), Path("/bin"), Path("/usr/local/bin"))
 
 def _load_active_commands(index_path: Path) -> list[str]:
     raw = load_yaml_file(index_path)
-    entries = raw.get("commands", raw) if isinstance(raw, dict) else {}
+    if (
+        not isinstance(raw, dict)
+        or set(raw.keys()) != {"commands"}
+        or not isinstance(raw["commands"], dict)
+    ):
+        raise ValueError(
+            "command-index.yml must have only a top-level 'commands' mapping"
+        )
+    entries = raw["commands"]
     commands: list[str] = []
     for name, meta in entries.items():
         if isinstance(meta, dict) and meta.get("enabled") is False:
@@ -26,7 +34,9 @@ def _validate_shim_collisions(commands: list[str]) -> None:
             raise ValueError(f"reserved command name cannot be shimmed: {cmd}")
         for bindir in _CONFLICT_DIRS:
             if (bindir / cmd).exists():
-                raise ValueError(f"shim command conflicts with system binary: {cmd} ({bindir / cmd})")
+                raise ValueError(
+                    f"shim command conflicts with system binary: {cmd} ({bindir / cmd})"
+                )
 
 
 def _ensure_single_shim_impl(libexec_dir: Path) -> Path:
@@ -48,7 +58,7 @@ def generate_shims(active_dir: Path, shims_dir: Path, libexec_dir: Path) -> int:
 
     if shims_dir.exists():
         for existing in shims_dir.iterdir():
-            if existing.is_file() and not existing.is_symlink():
+            if existing.is_symlink() or existing.is_file():
                 existing.unlink()
 
     shims_dir.mkdir(parents=True, exist_ok=True)

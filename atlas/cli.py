@@ -6,6 +6,19 @@ from pathlib import Path
 import shutil
 import subprocess
 
+from .config import ensure_dirs, resolve_paths
+from .models import RuntimeState, utcnow
+from .release import (
+    build_bundle,
+    inspect_bundle,
+    pull_bundle,
+    rollback_to,
+    sign_bundle,
+    verify_bundle,
+)
+from .runtime import apply_release_with_phases, run_command
+from .secrets import materialize_secrets
+
 SYSTEMD_UNIT_FILES = ("atlas-pull.service", "atlas-pull.timer")
 
 
@@ -72,19 +85,6 @@ def cmd_uninstall_systemd(args: argparse.Namespace) -> int:
     return 0
 
 
-from .config import ensure_dirs, resolve_paths
-from .models import RuntimeState, utcnow
-from .release import (
-    build_bundle,
-    inspect_bundle,
-    pull_bundle,
-    rollback_to,
-    verify_bundle,
-)
-from .runtime import apply_release_with_phases, run_command
-from .secrets import materialize_secrets
-
-
 def _last_run_summary(logs_dir: Path) -> dict[str, object] | None:
     runs = logs_dir / "runs.jsonl"
     if not runs.exists():
@@ -101,7 +101,10 @@ def _last_run_summary(logs_dir: Path) -> dict[str, object] | None:
         "exit_code": last.get("exit_code"),
         "duration_ms": last.get("duration_ms"),
         "release_version": last.get("release_version"),
+        "node_name": last.get("node_name"),
         "node_role": last.get("node_role"),
+        "pack": last.get("pack"),
+        "destructive": last.get("destructive"),
     }
 
 
@@ -116,7 +119,13 @@ def cmd_status(_: argparse.Namespace) -> int:
 
 
 def cmd_build(args: argparse.Namespace) -> int:
-    bundle = build_bundle(Path(args.release_dir), Path(args.bundle), payload_name=args.payload_name)
+    bundle = build_bundle(
+        Path(args.release_dir),
+        Path(args.bundle),
+        payload_name=args.payload_name,
+        sign=args.sign,
+        secret_key=Path(args.secret_key) if args.secret_key else None,
+    )
     print(f"built bundle: {bundle}")
     return 0
 
@@ -124,6 +133,12 @@ def cmd_build(args: argparse.Namespace) -> int:
 def cmd_inspect_bundle(args: argparse.Namespace) -> int:
     data = inspect_bundle(Path(args.bundle))
     print(json.dumps(data, indent=2))
+    return 0
+
+
+def cmd_sign_bundle(args: argparse.Namespace) -> int:
+    sign_bundle(Path(args.bundle), Path(args.secret_key))
+    print(f"signed bundle: {args.bundle}")
     return 0
 
 
@@ -158,8 +173,46 @@ def cmd_apply(args: argparse.Namespace) -> int:
     release_dir = p.releases / version
     if not release_dir.exists():
         raise SystemExit(f"release not found: {version}")
-    generated = apply_release_with_phases(release_dir, version, p.current, p.shims, p.libexec, state_path, p.staging)
-    print(f"active release is now {version} (generated {generated} shims)")
+    generated = apply_release_with_phases(
+        release_dir,
+        version,
+        p.current,
+        p.shims,
+        p.libexec,
+        state_path,
+        p.staging,
+        dry_run=args.dry_run,
+    )
+    if args.plan:
+        print(
+            f"plan: version={version} current={state.current_version} previous={state.previous_version} daemon_reload={bool(shutil.which('systemctl'))}"
+        )
+        return 0
+    if args.dry_run:
+        print(f"dry-run ok for {version}")
+    else:
+        print(f"active release is now {version} (generated {generated} shims)")
+    return 0
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    from .models import load_yaml_file
+
+    p = resolve_paths()
+    ensure_dirs(p)
+    cfg = load_yaml_file(p.config / "atlas.yml")
+    release = cfg.get("release", {})
+    source = str(release.get("source", ""))
+    version = str(release.get("version", ""))
+    auto_apply = bool(release.get("auto_apply", True))
+    if source.startswith("https://"):
+        raise SystemExit("https source is configured but not yet supported")
+    if not source.startswith("file://"):
+        raise SystemExit("release.source must start with file:// or https://")
+    bundle = Path(source[len("file://") :])
+    cmd_pull(argparse.Namespace(bundle=str(bundle), version=version))
+    if not args.no_apply and auto_apply:
+        cmd_apply(argparse.Namespace(version=version, dry_run=args.dry_run, plan=False))
     return 0
 
 
@@ -171,7 +224,10 @@ def cmd_rollback(_: argparse.Namespace) -> int:
     if not state.previous_version:
         raise SystemExit("no previous_version to rollback to")
     rollback_to(p.releases, state.previous_version, p.current)
-    state.current_version, state.previous_version = state.previous_version, state.current_version
+    state.current_version, state.previous_version = (
+        state.previous_version,
+        state.current_version,
+    )
     state.last_apply_status = "rollback"
     state.last_apply_at = utcnow()
     state.save(state_path)
@@ -185,7 +241,17 @@ def cmd_run(args: argparse.Namespace) -> int:
     redact_values: list[str] = []
     if args.materialize_secrets:
         _, redact_values = materialize_secrets(p.config)
-    result = run_command(p.current, p.locks, p.logs, p.config, args.command, args.args, timeout=args.timeout, allow_destructive=args.allow_destructive, redact_values=redact_values)
+    result = run_command(
+        p.current,
+        p.locks,
+        p.logs,
+        p.config,
+        args.command,
+        args.args,
+        timeout=args.timeout,
+        allow_destructive=args.allow_destructive,
+        redact_values=redact_values,
+    )
     if result.stdout:
         print(result.stdout, end="")
     if result.stderr:
@@ -204,6 +270,8 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("release_dir")
     build.add_argument("bundle")
     build.add_argument("--payload-name", default="payload.tar.zst")
+    build.add_argument("--sign", action="store_true")
+    build.add_argument("--secret-key")
     build.set_defaults(func=cmd_build)
 
     inspect_cmd = sub.add_parser("inspect-bundle")
@@ -214,6 +282,11 @@ def build_parser() -> argparse.ArgumentParser:
     verify_cmd.add_argument("bundle")
     verify_cmd.set_defaults(func=cmd_verify_bundle)
 
+    sign_cmd = sub.add_parser("sign-bundle")
+    sign_cmd.add_argument("bundle")
+    sign_cmd.add_argument("--secret-key", required=True)
+    sign_cmd.set_defaults(func=cmd_sign_bundle)
+
     pull = sub.add_parser("pull")
     pull.add_argument("bundle")
     pull.add_argument("--version", required=True)
@@ -221,7 +294,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     apply = sub.add_parser("apply")
     apply.add_argument("--version", required=True)
+    apply.add_argument("--plan", action="store_true")
+    apply.add_argument("--dry-run", action="store_true")
     apply.set_defaults(func=cmd_apply)
+
+    update = sub.add_parser("update")
+    update.add_argument("--dry-run", action="store_true")
+    update.add_argument("--no-apply", action="store_true")
+    update.set_defaults(func=cmd_update)
 
     rollback = sub.add_parser("rollback")
     rollback.set_defaults(func=cmd_rollback)

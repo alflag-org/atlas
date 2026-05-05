@@ -6,7 +6,7 @@ Atlas の現行実装ドキュメントです（**実装済み機能のみ記載
 
 - `atlas build`: `packs/` を走査して `command-index.yml` を生成し bundle を作成
 - `atlas inspect-bundle` / `atlas verify-bundle`: 署名・checksum を検証
-- `atlas pull`: bundle 展開と checksum 検証
+- `atlas update`: bundle 展開と checksum 検証
 - `atlas apply`: validate → activate → pack files 展開 → shim 生成
 - `atlas run`: command metadata に基づく `pack/role/destructive/timeout/lock` 制御
 - `atlas rollback` / `atlas status`
@@ -37,7 +37,7 @@ atlas build <release_dir> <bundle_path>
 
 1. `packs/<pack>/bin/<command>` を追加して実行権限を付与
 2. node の `packs` に `<pack>` を追加
-3. `atlas build` → `atlas pull` → `atlas apply`
+3. `atlas build` → `atlas update` → `atlas apply`
 
 詳細: `docs/command-metadata.md`, `docs/packs.md`
 
@@ -52,3 +52,8 @@ sudo atlas install-systemd
 ## セキュリティ方針
 
 実装済みの範囲は `docs/security.md` を参照してください。
+
+
+## v0.1 の適用範囲
+- `atlas apply` は `packs/<pack>/files` の配置と shim 生成のみを行います。
+- `templates` / `hooks` / systemd unit lifecycle は未対応です。

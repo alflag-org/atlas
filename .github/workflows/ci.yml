@@ -5,100 +5,44 @@ on:
     branches: ["**"]
   pull_request:
 
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   test-and-validate:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install system dependencies
-        run: |
+          cache: pip
+      - run: |
           set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y minisign
-
-      - name: Install project and tooling dependencies
-        run: |
+      - run: |
           set -euxo pipefail
           python -m pip install --upgrade pip
           pip install -e . pytest ruff mypy pyright build
-
-      - name: Run pytest
-        run: |
-          set -euxo pipefail
-          pytest -q
-
-      - name: Run ruff check
-        run: |
-          set -euxo pipefail
-          ruff check .
-
-      - name: Run ruff format check
-        run: |
-          set -euxo pipefail
-          ruff format --check .
-
-      - name: Run mypy
-        run: |
-          set -euxo pipefail
-          mypy atlas
-
-      - name: Run pyright
-        run: |
-          set -euxo pipefail
-          pyright
-
-      - name: Build wheel and sdist
-        run: |
-          set -euxo pipefail
-          python -m build
-
-      - name: Prepare sample release input
-        run: |
-          set -euxo pipefail
-          mkdir -p .ci/release/packs/sample
-          cat > .ci/release/packs/sample/pack.yml <<'EOF'
-          pack_id: sample
-          version: 1
-          commands:
-            hello:
-              run: ["echo", "hello"]
-          EOF
-
-      - name: Run atlas build
-        run: |
-          set -euxo pipefail
-          atlas build .ci/release .ci/sample.bundle
-
-      - name: Generate key and signature for sample bundle
+      - run: pytest -q
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy atlas
+      - run: pyright
+      - run: python -m build
+      - name: Build and verify signed sample bundle
         env:
           ATLAS_ETC_DIR: ${{ github.workspace }}/.ci/etc/atlas
         run: |
           set -euxo pipefail
-          mkdir -p "${ATLAS_ETC_DIR}/trust.d" .ci/minisign
+          mkdir -p .ci/release/packs/sample/bin "${ATLAS_ETC_DIR}/trust.d" .ci/minisign
+          cat > .ci/release/packs/sample/bin/hello <<'SH'
+          #!/usr/bin/env bash
+          # atlas: name=hello
+          # atlas: timeout=60
+          # atlas: allowed_roles=sample
+          echo hello
+          SH
+          chmod +x .ci/release/packs/sample/bin/hello
           minisign -G -p .ci/minisign/atlas-release.pub -s .ci/minisign/atlas-release.key -W
           cp .ci/minisign/atlas-release.pub "${ATLAS_ETC_DIR}/trust.d/atlas-release.pub"
-
-          tar -xf .ci/sample.bundle -C .ci
-          minisign -S -m .ci/manifest.yml -s .ci/minisign/atlas-release.key -x .ci/manifest.yml.minisig
-          tar -cf .ci/sample.signed.bundle -C .ci manifest.yml manifest.yml.minisig payload.tar.zst
-
-      - name: Run atlas verify-bundle
-        env:
-          ATLAS_ETC_DIR: ${{ github.workspace }}/.ci/etc/atlas
-        run: |
-          set -euxo pipefail
-          atlas verify-bundle .ci/sample.signed.bundle
+          atlas build .ci/release .ci/sample.bundle --sign --secret-key .ci/minisign/atlas-release.key
+          atlas verify-bundle .ci/sample.bundle

@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches:
+      - "**"
   pull_request:
 
 jobs:
@@ -46,3 +47,27 @@ jobs:
           cp .ci/minisign/atlas-release.pub "${ATLAS_ETC_DIR}/trust.d/atlas-release.pub"
           atlas build .ci/release .ci/sample.bundle --sign --secret-key .ci/minisign/atlas-release.key
           atlas verify-bundle .ci/sample.bundle
+      - name: Exercise update/apply/systemd dry-run flows
+        env:
+          ATLAS_OPT_DIR: ${{ github.workspace }}/.ci/opt/atlas
+          ATLAS_VAR_DIR: ${{ github.workspace }}/.ci/var/lib/atlas
+          ATLAS_ETC_DIR: ${{ github.workspace }}/.ci/etc/atlas
+        run: |
+          set -euxo pipefail
+          mkdir -p "${ATLAS_ETC_DIR}" "${ATLAS_VAR_DIR}" .ci/systemd
+          cat > "${ATLAS_ETC_DIR}/node.yml" <<'YAML'
+          name: ci-node
+          role: sample
+          packs:
+            - sample
+          YAML
+          cat > "${ATLAS_ETC_DIR}/atlas.yml" <<YAML
+          release:
+            source: file://${GITHUB_WORKSPACE}/.ci/sample.bundle
+            version: v1
+            auto_apply: false
+          YAML
+          atlas update --dry-run
+          atlas update --no-apply
+          atlas apply --version v1 --dry-run
+          atlas install-systemd --dry-run --unit-dir .ci/systemd

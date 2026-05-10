@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
-import sys
 
 from atlas.cli import main
 
@@ -32,7 +31,7 @@ def test_shims_symlink_to_script_runner(monkeypatch, tmp_path: Path) -> None:
     assert nested.resolve() == runner
 
     content = runner.read_text(encoding="utf-8")
-    assert "exec /opt/atlas/bin/atlas run" in content
+    assert f'exec "{home / "bin/atlas"}" run' in content
 
 
 def test_shim_executes_command(monkeypatch, tmp_path: Path) -> None:
@@ -51,20 +50,9 @@ def test_shim_executes_command(monkeypatch, tmp_path: Path) -> None:
     release_src = Path("examples/scripts-release").resolve()
     assert main(["scripts", "install", str(release_src)]) == 0
 
-    runner = home / "bin/script-runner"
-    runner.write_text(
-        "#!/usr/bin/env bash\n"
-        "set -euo pipefail\n\n"
-        "name=\"$(basename \"$0\")\"\n"
-        f"exec {sys.executable} -m atlas.cli run \"$name\" \"$@\"\n",
-        encoding="utf-8",
-    )
-    runner.chmod(0o755)
-
     import os
     env = dict(os.environ)
     env["PATH"] = f"{home / 'shims'}:{env.get('PATH', '')}"
-    env["PYTHONPATH"] = "src"
     proc = subprocess.run(
         ["sample", "hello", "--name=test"],
         capture_output=True,

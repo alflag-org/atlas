@@ -8,7 +8,7 @@ import sys
 from .config import load_config
 from .paths import ensure_dirs, get_paths
 from .runner import resolve_command_path, run_command
-from .runtime import install_runtime, runtime_status
+from .runtime import current_python_version, install_runtime, runtime_status
 from .scripts import discover_commands, install_release, read_version, resolve_source
 from .shims import ensure_script_runner, regenerate_shims
 
@@ -74,9 +74,19 @@ def cmd_runtime_status(_: argparse.Namespace) -> int:
 def cmd_runtime_install(_: argparse.Namespace) -> int:
     p = get_paths()
     ensure_dirs(p)
+    configured = None
+    config_path = p.etc / "config.yml"
+    if config_path.exists():
+        configured = load_config(config_path).runtime.python_version
     core, scripts = install_runtime(p.runtime)
     print(f"installed core python: {core}")
     print(f"installed scripts python: {scripts}")
+    if configured is not None:
+        actual = current_python_version()
+        print(f"configured python version: {configured}")
+        print(f"actual python version: {actual}")
+        if not actual.startswith(f"{configured}.") and not actual.startswith(configured):
+            print("warning: configured runtime.python.version does not match current interpreter")
     return 0
 
 

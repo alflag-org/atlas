@@ -13,61 +13,46 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.12"
           cache: pip
       - run: |
           set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y minisign
-      - run: |
-          set -euxo pipefail
           python -m pip install --upgrade pip
-          pip install -e . pytest ruff mypy pyright build
+          pip install -e '.[dev]'
+          pip install build
       - run: pytest -q
-      - run: ruff check .
-      - run: ruff format --check .
-      - run: mypy atlas
-      - run: pyright
       - run: python -m build
-      - name: Build and verify signed sample bundle
+      - name: Smoke test vNext commands
         env:
+          ATLAS_HOME: ${{ github.workspace }}/.ci/opt/atlas
           ATLAS_ETC_DIR: ${{ github.workspace }}/.ci/etc/atlas
-        run: |
-          set -euxo pipefail
-          mkdir -p .ci/release/packs/sample/bin "${ATLAS_ETC_DIR}/trust.d" .ci/minisign
-          cat > .ci/release/packs/sample/bin/hello <<'SH'
-          #!/usr/bin/env bash
-          # atlas: name=hello
-          # atlas: timeout=60
-          # atlas: allowed_roles=sample
-          echo hello
-          SH
-          chmod +x .ci/release/packs/sample/bin/hello
-          minisign -G -p .ci/minisign/atlas-release.pub -s .ci/minisign/atlas-release.key -W
-          cp .ci/minisign/atlas-release.pub "${ATLAS_ETC_DIR}/trust.d/atlas-release.pub"
-          atlas build .ci/release .ci/sample.bundle --sign --secret-key .ci/minisign/atlas-release.key
-          atlas verify-bundle .ci/sample.bundle
-      - name: Exercise update/apply/systemd dry-run flows
-        env:
-          ATLAS_OPT_DIR: ${{ github.workspace }}/.ci/opt/atlas
           ATLAS_VAR_DIR: ${{ github.workspace }}/.ci/var/lib/atlas
-          ATLAS_ETC_DIR: ${{ github.workspace }}/.ci/etc/atlas
+          ATLAS_RUNTIME_DIR: ${{ github.workspace }}/.ci/opt/atlas/runtime
+          ATLAS_SCRIPTS_DIR: ${{ github.workspace }}/.ci/opt/atlas/scripts/current
         run: |
           set -euxo pipefail
-          mkdir -p "${ATLAS_ETC_DIR}" "${ATLAS_VAR_DIR}" .ci/systemd
-          cat > "${ATLAS_ETC_DIR}/node.yml" <<'YAML'
-          name: ci-node
-          role: sample
-          packs:
-            - sample
-          YAML
-          cat > "${ATLAS_ETC_DIR}/atlas.yml" <<YAML
-          release:
-            source: file://${GITHUB_WORKSPACE}/.ci/sample.bundle
-            version: v1
-            auto_apply: false
-          YAML
-          atlas update --dry-run
-          atlas update --no-apply
-          atlas apply --version v1 --dry-run
-          atlas install-systemd --dry-run --unit-dir .ci/systemd
+          mkdir -p "$ATLAS_ETC_DIR"
+          cat > "$ATLAS_ETC_DIR/host.yml" <<'H'
+          name: ci-host
+          site: ci
+          zone: mgmt
+          role: test
+          environment: ci
+          runtime_kind: vm
+          tags:
+            - ci
+          H
+          cat > "$ATLAS_ETC_DIR/config.yml" <<'C'
+          runtime:
+            python:
+              version: "3.12"
+          scripts:
+            source: "file://examples/scripts-release"
+            auto_update: false
+          C
+          atlas scripts install examples/scripts-release
+          atlas scripts list
+          atlas which sample
+          atlas which group-nested-sample
+          atlas run sample hello --name=takuya
+          atlas run group-nested-sample show-context

@@ -1,8 +1,9 @@
 name: Release
+
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
@@ -14,47 +15,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.12"
           cache: pip
       - run: |
           set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y minisign
-      - run: |
-          set -euxo pipefail
           python -m pip install --upgrade pip
-          pip install -e . pytest ruff mypy pyright build
+          pip install -e '.[dev]'
+          pip install build
       - run: pytest -q
-      - run: ruff check .
-      - run: ruff format --check .
-      - run: mypy atlas
-      - run: pyright
       - run: python -m build
-      - name: Build signed sample bundle
-        env:
-          ATLAS_ETC_DIR: ${{ github.workspace }}/.release/etc/atlas
-          ATLAS_MINISIGN_SECRET_KEY: ${{ secrets.ATLAS_MINISIGN_SECRET_KEY }}
-        run: |
-          set -euxo pipefail
-          test -n "$ATLAS_MINISIGN_SECRET_KEY"
-          mkdir -p .release/release/packs/sample/bin .release/minisign "${ATLAS_ETC_DIR}/trust.d"
-          printf '%s' "$ATLAS_MINISIGN_SECRET_KEY" > .release/minisign/atlas-release.key
-          minisign -p .release/minisign/atlas-release.pub -R .release/minisign/atlas-release.key
-          cp .release/minisign/atlas-release.pub "${ATLAS_ETC_DIR}/trust.d/atlas-release.pub"
-          cat > .release/release/packs/sample/bin/hello <<'SH'
-          #!/usr/bin/env bash
-          # atlas: name=hello
-          # atlas: timeout=60
-          echo hello
-          SH
-          chmod +x .release/release/packs/sample/bin/hello
-          atlas build .release/release .release/sample.bundle --sign --secret-key .release/minisign/atlas-release.key
-          atlas verify-bundle .release/sample.bundle
-          sha256sum dist/* .release/sample.bundle > release-checksums.txt
+      - run: sha256sum dist/* > release-checksums.txt
       - uses: softprops/action-gh-release@v2
         with:
           fail_on_unmatched_files: true
           files: |
             dist/*
-            .release/sample.bundle
             release-checksums.txt

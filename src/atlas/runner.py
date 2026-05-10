@@ -73,12 +73,7 @@ def run_command(paths: AtlasPaths, command_name: str, args: list[str]) -> int:
         [str(python_exe), str(command_path), *args],
         env=env,
         text=True,
-        capture_output=True,
     )
     duration_ms = int((time.perf_counter() - started) * 1000)
-    if proc.stdout:
-        print(proc.stdout, end="")
-    if proc.stderr:
-        print(proc.stderr, end="", file=os.sys.stderr)
     _append_run_log(paths, command_name, args, version, proc.returncode, duration_ms)
     return proc.returncode

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from atlas.scripts import discover_commands
+from atlas.scripts import discover_commands, install_release
 
 
 def _touch(path: Path) -> None:
@@ -47,3 +47,19 @@ def test_discovery_rejects_reserved_name(tmp_path: Path) -> None:
     _touch(commands / "atlas.py")
     with pytest.raises(ValueError, match="reserved"):
         discover_commands(commands)
+
+
+def test_install_rejects_release_symlink(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    commands = source / "commands"
+    modules = source / "modules"
+    commands.mkdir(parents=True)
+    modules.mkdir(parents=True)
+    (source / "VERSION").write_text("2026.05.10-001\n", encoding="utf-8")
+    _touch(commands / "sample.py")
+    target = source / "target.txt"
+    target.write_text("x", encoding="utf-8")
+    (modules / "bad-link.py").symlink_to(target)
+
+    with pytest.raises(ValueError, match="symlink is not allowed"):
+        install_release(source, tmp_path / "releases", tmp_path / "current")

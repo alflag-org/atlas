@@ -74,6 +74,9 @@ def install_release(source: Path, releases_root: Path, current_link: Path) -> Pa
     version = read_version(source)
     commands = source / "commands"
     discover_commands(commands)
+    for item in source.rglob("*"):
+        if item.is_symlink():
+            raise ValueError(f"symlink is not allowed in scripts release: {item}")
 
     target = releases_root / version
     if target.exists():

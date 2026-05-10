@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
+import sys
 import venv
 
 
@@ -25,3 +26,7 @@ def runtime_status(runtime_root: Path) -> dict[str, str]:
     core = python_bin(runtime_root / "python" / "envs" / "core")
     scripts = python_bin(runtime_root / "python" / "envs" / "scripts")
     return {"core": str(core), "scripts": str(scripts)}
+
+
+def current_python_version() -> str:
+    return f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"

@@ -6,12 +6,11 @@ from .scripts import discover_commands
 
 
 def ensure_script_runner(path: Path, atlas_bin: Path) -> None:
-    _ = atlas_bin
     content = (
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n\n"
         "name=\"$(basename \"$0\")\"\n"
-        "exec /opt/atlas/bin/atlas run \"$name\" \"$@\"\n"
+        f"exec \"{atlas_bin}\" run \"$name\" \"$@\"\n"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")

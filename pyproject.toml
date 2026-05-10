@@ -1,11 +1,35 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "atlas-agent"
-version = "0.2.0"
+name = "atlas"
+version = "0.3.0"
 requires-python = ">=3.11"
-dependencies = ["PyYAML>=6.0"]
+dependencies = [
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+scripts = [
+  "fire>=0.7",
+]
+dev = [
+  "pytest>=8",
+  "fire>=0.7",
+]
 
 [project.scripts]
 atlas = "atlas.cli:main"
 
+[tool.setuptools.packages.find]
+where = ["src"]
+include = [
+  "atlas",
+  "atlas.*",
+  "atlas_core",
+  "atlas_core.*",
+]
+
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = ["src"]

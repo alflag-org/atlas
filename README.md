@@ -1,59 +1,25 @@
 # atlas
 
-Atlas の現行実装ドキュメントです（**実装済み機能のみ記載**）。
+Atlas is a lightweight scripts runtime manager focused on Python runtime and Python Fire scripts.
 
-## 実装済み機能
+## Main commands
 
-- `atlas build`: `packs/` を走査して `command-index.yml` を生成し bundle を作成
-- `atlas inspect-bundle` / `atlas verify-bundle`: 署名・checksum を検証
-- `atlas update`: bundle 展開と checksum 検証
-- `atlas apply`: validate → activate → pack files 展開 → shim 生成
-- `atlas run`: command metadata に基づく `pack/role/destructive/timeout/lock` 制御
-- `atlas rollback` / `atlas status`
-- `atlas install-systemd` / `atlas uninstall-systemd`
-- `atlas run --materialize-secrets` による secrets 実体化
+- `atlas status`
+- `atlas runtime status`
+- `atlas runtime install`
+- `atlas scripts install <source>`
+- `atlas scripts update`
+- `atlas scripts list`
+- `atlas scripts shims`
+- `atlas run <command-name> [args...]`
+- `atlas which <command-name>`
 
-## 導入手順
-
-```bash
-python -m venv .venv
-. .venv/bin/activate
-pip install -e .
-```
-
-## 最短利用
-
-`docs/getting-started.md` の手順をそのまま実行してください。
-
-## bundle 作成
+## Example
 
 ```bash
-atlas build <release_dir> <bundle_path>
+atlas scripts install examples/scripts-release
+atlas scripts list
+atlas which sample
+atlas run sample hello --name=takuya
+atlas run group-nested-sample show-context
 ```
-
-詳細: `docs/bundle-format.md`, `docs/release.md`
-
-## コマンド追加
-
-1. `packs/<pack>/bin/<command>` を追加して実行権限を付与
-2. node の `packs` に `<pack>` を追加
-3. `atlas build` → `atlas update` → `atlas apply`
-
-詳細: `docs/command-metadata.md`, `docs/packs.md`
-
-## systemd 有効化
-
-```bash
-sudo atlas install-systemd
-```
-
-詳細: `docs/systemd.md`
-
-## セキュリティ方針
-
-実装済みの範囲は `docs/security.md` を参照してください。
-
-
-## v0.1 の適用範囲
-- `atlas apply` は `packs/<pack>/files` の配置と shim 生成のみを行います。
-- `templates` / `hooks` / systemd unit lifecycle は未対応です。

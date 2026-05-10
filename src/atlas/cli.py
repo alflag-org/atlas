@@ -5,6 +5,8 @@ from pathlib import Path
 import shutil
 import sys
 
+from atlas_core.host import get_host
+
 from .config import load_config
 from .paths import ensure_dirs, get_paths
 from .runner import resolve_command_path, run_command
@@ -45,18 +47,16 @@ def cmd_status(_: argparse.Namespace) -> int:
         count = len(discover_commands(p.scripts / "commands"))
     host_name = "unknown"
     if host_path.exists():
-        import yaml
-
-        raw = yaml.safe_load(host_path.read_text(encoding="utf-8")) or {}
-        if isinstance(raw, dict):
-            host_name = str(raw.get("name", "unknown"))
+        try:
+            host_name = get_host(str(host_path)).name
+        except (FileNotFoundError, ValueError):
+            host_name = "unknown"
     print(f"config file path: {config_path}")
     print(f"host file path: {host_path}")
     print(f"host name: {host_name}")
     print(f"scripts current path: {p.scripts}")
     print(f"scripts version: {version}")
     print(f"commands count: {count}")
-    print(f"python core path: {p.core_python}")
     print(f"python scripts path: {p.scripts_python}")
     print(f"shims path: {p.shims}")
     return 0
@@ -66,7 +66,6 @@ def cmd_runtime_status(_: argparse.Namespace) -> int:
     p = get_paths()
     st = runtime_status(p.runtime)
     print("python:")
-    print(f"  core: {st['core']}")
     print(f"  scripts: {st['scripts']}")
     return 0
 
@@ -78,8 +77,7 @@ def cmd_runtime_install(_: argparse.Namespace) -> int:
     config_path = p.etc / "config.yml"
     if config_path.exists():
         configured = load_config(config_path).runtime.python_version
-    core, scripts = install_runtime(p.runtime)
-    print(f"installed core python: {core}")
+    scripts = install_runtime(p.runtime)
     print(f"installed scripts python: {scripts}")
     if configured is not None:
         actual = current_python_version()

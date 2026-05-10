@@ -17,7 +17,6 @@ class AtlasPaths:
     shims: Path
     bin_dir: Path
     script_runner: Path
-    core_python: Path
     scripts_python: Path
 
 
@@ -32,7 +31,6 @@ def get_paths() -> AtlasPaths:
     shims = home / "shims"
     bin_dir = home / "bin"
     script_runner = bin_dir / "script-runner"
-    core_python = runtime / "python" / "envs" / "core" / "bin" / "python"
     scripts_python = runtime / "python" / "envs" / "scripts" / "bin" / "python"
     return AtlasPaths(
         home=home,
@@ -45,7 +43,6 @@ def get_paths() -> AtlasPaths:
         shims=shims,
         bin_dir=bin_dir,
         script_runner=script_runner,
-        core_python=core_python,
         scripts_python=scripts_python,
     )
 

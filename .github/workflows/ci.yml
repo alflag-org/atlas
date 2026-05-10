@@ -21,6 +21,7 @@ jobs:
           pip install -e '.[dev]'
           pip install build
       - run: pytest -q
+      - run: ruff check src tests
       - run: python -m build
       - name: Smoke test vNext commands
         env:

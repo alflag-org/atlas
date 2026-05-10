@@ -2,6 +2,22 @@
 
 Atlas is a lightweight scripts runtime manager focused on Python runtime and Python Fire scripts.
 
+## Development Environment (mise)
+
+```bash
+mise install
+mise run setup
+mise run check
+```
+
+Task overview:
+
+- `mise run setup`: install dev dependencies (`pip install -e '.[dev]'`) and build tool.
+- `mise run lint`: run `ruff check src tests`.
+- `mise run test`: run `pytest -q`.
+- `mise run build`: run `python -m build`.
+- `mise run check`: run lint + test + build.
+
 ## Main commands
 
 - `atlas status`
@@ -13,6 +29,12 @@ Atlas is a lightweight scripts runtime manager focused on Python runtime and Pyt
 - `atlas scripts shims`
 - `atlas run <command-name> [args...]`
 - `atlas which <command-name>`
+
+## Runtime Version Semantics
+
+`runtime.python.version` in `/etc/atlas/config.yml` is currently an expected version string.
+`atlas runtime install` creates the scripts venv with the current interpreter, then prints a warning when the configured value does not match.
+Atlas does not yet install or select a Python interpreter version by itself.
 
 ## Example
 

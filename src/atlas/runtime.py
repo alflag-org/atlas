@@ -10,22 +10,19 @@ def python_bin(venv_dir: Path) -> Path:
     return venv_dir / "bin" / "python"
 
 
-def install_runtime(runtime_root: Path) -> tuple[Path, Path]:
-    core = runtime_root / "python" / "envs" / "core"
+def install_runtime(runtime_root: Path) -> Path:
     scripts = runtime_root / "python" / "envs" / "scripts"
-    core.parent.mkdir(parents=True, exist_ok=True)
-    venv.create(core, with_pip=True, clear=False)
+    scripts.parent.mkdir(parents=True, exist_ok=True)
     venv.create(scripts, with_pip=True, clear=False)
 
     scripts_py = python_bin(scripts)
     subprocess.run([str(scripts_py), "-m", "pip", "install", "fire", "PyYAML"], check=True)
-    return python_bin(core), scripts_py
+    return scripts_py
 
 
 def runtime_status(runtime_root: Path) -> dict[str, str]:
-    core = python_bin(runtime_root / "python" / "envs" / "core")
     scripts = python_bin(runtime_root / "python" / "envs" / "scripts")
-    return {"core": str(core), "scripts": str(scripts)}
+    return {"scripts": str(scripts)}
 
 
 def current_python_version() -> str:

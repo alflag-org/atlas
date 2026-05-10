@@ -16,6 +16,7 @@ scripts = [
 ]
 dev = [
   "pytest>=8",
+  "ruff>=0.6",
   "fire>=0.7",
 ]
 

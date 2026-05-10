@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import re
 import shutil
@@ -79,15 +80,38 @@ def install_release(source: Path, releases_root: Path, current_link: Path) -> Pa
             raise ValueError(f"symlink is not allowed in scripts release: {item}")
 
     target = releases_root / version
-    if target.exists():
-        shutil.rmtree(target)
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, target)
+    pid = os.getpid()
+    staging = releases_root / f"{version}.tmp.{pid}"
+    backup = releases_root / f"{version}.bak.{pid}"
+    if staging.exists():
+        shutil.rmtree(staging)
+    if backup.exists():
+        shutil.rmtree(backup)
+    shutil.copytree(source, staging)
+
+    replaced = False
+    if target.exists():
+        target.rename(backup)
+        replaced = True
+    try:
+        staging.rename(target)
+    except Exception:
+        if replaced and backup.exists() and not target.exists():
+            backup.rename(target)
+        raise
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+        if backup.exists():
+            shutil.rmtree(backup)
 
     current_link.parent.mkdir(parents=True, exist_ok=True)
-    if current_link.exists() or current_link.is_symlink():
-        current_link.unlink()
-    current_link.symlink_to(target, target_is_directory=True)
+    tmp_link = current_link.parent / f"{current_link.name}.tmp.{pid}"
+    if tmp_link.exists() or tmp_link.is_symlink():
+        tmp_link.unlink()
+    tmp_link.symlink_to(target, target_is_directory=True)
+    tmp_link.replace(current_link)
     return target
 
 

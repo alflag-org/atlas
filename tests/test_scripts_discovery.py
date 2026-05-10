@@ -63,3 +63,24 @@ def test_install_rejects_release_symlink(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="symlink is not allowed"):
         install_release(source, tmp_path / "releases", tmp_path / "current")
+
+
+def test_install_overwrites_same_version_atomically(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    commands = source / "commands"
+    commands.mkdir(parents=True)
+    (source / "VERSION").write_text("2026.05.10-001\n", encoding="utf-8")
+    (commands / "sample.py").write_text("print('v1')\n", encoding="utf-8")
+
+    releases = tmp_path / "releases"
+    current = tmp_path / "current"
+    install_release(source, releases, current)
+    target = releases / "2026.05.10-001"
+    assert target.exists()
+    assert current.resolve() == target
+    assert (target / "commands/sample.py").read_text(encoding="utf-8") == "print('v1')\n"
+
+    (commands / "sample.py").write_text("print('v2')\n", encoding="utf-8")
+    install_release(source, releases, current)
+    assert current.resolve() == target
+    assert (target / "commands/sample.py").read_text(encoding="utf-8") == "print('v2')\n"

@@ -18,6 +18,29 @@ Task overview:
 - `mise run build`: run `python -m build`.
 - `mise run check`: run lint + test + build.
 
+## Local Environment With Docker
+
+```bash
+docker compose build atlas
+docker compose run --rm atlas
+```
+
+The Docker image provisions an Atlas environment with `/etc/atlas`, `/opt/atlas`, and `/var/lib/atlas`.
+During the image build it installs the Python scripts runtime and installs `examples/scripts-release` as the current scripts release.
+
+Useful commands:
+
+```bash
+docker compose run --rm atlas atlas status
+docker compose run --rm atlas atlas runtime status
+docker compose run --rm atlas atlas scripts list
+docker compose run --rm atlas atlas run sample hello --name=docker
+docker compose run --rm check
+```
+
+`docker compose run --rm check` validates the containerized Atlas environment and then runs the same checks as `mise run check`: Ruff, pytest, and package build.
+Use `docker compose run --build --rm atlas` or `docker compose run --build --rm check` after source changes.
+
 ## Main commands
 
 - `atlas status`

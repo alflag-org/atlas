@@ -1,0 +1,20 @@
+x-atlas-service: &atlas-service
+  image: atlas-local
+  build:
+    context: .
+  working_dir: /workspace
+  environment:
+    ATLAS_HOME: /opt/atlas
+    ATLAS_ETC_DIR: /etc/atlas
+    ATLAS_VAR_DIR: /var/lib/atlas
+    ATLAS_RUNTIME_DIR: /opt/atlas/runtime
+    ATLAS_SCRIPTS_DIR: /opt/atlas/scripts/current
+
+services:
+  atlas:
+    <<: *atlas-service
+    command: sh -c "atlas status && atlas scripts list && atlas run sample hello --name=docker"
+
+  check:
+    <<: *atlas-service
+    command: sh -c "atlas status && atlas run sample hello --name=docker-check && ruff check src tests && pytest -q && python -m build"

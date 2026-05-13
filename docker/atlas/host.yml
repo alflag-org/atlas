@@ -1,0 +1,9 @@
+name: docker-local
+site: dev
+zone: local
+role: test
+environment: dev
+runtime_kind: container
+tags:
+  - docker
+  - local

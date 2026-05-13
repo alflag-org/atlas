@@ -10,7 +10,7 @@ from atlas_core.host import get_host
 from .config import load_config
 from .paths import ensure_dirs, get_paths
 from .runner import resolve_command_path, run_command
-from .runtime import current_python_version, install_runtime, runtime_status
+from .runtime import install_runtime, runtime_status
 from .scripts import discover_commands, install_release, read_version, resolve_source
 from .shims import ensure_script_runner, regenerate_shims
 
@@ -64,8 +64,18 @@ def cmd_status(_: argparse.Namespace) -> int:
 
 def cmd_runtime_status(_: argparse.Namespace) -> int:
     p = get_paths()
-    st = runtime_status(p.runtime)
+    config_path = p.etc / "config.yml"
+    configured = None
+    if config_path.exists():
+        cfg = load_config(config_path)
+        configured = cfg.runtime.python_version
+    st = runtime_status(p.runtime, configured)
     print("python:")
+    if configured is not None:
+        print(f"  configured version: {st['configured_version']}")
+        print(f"  provider: {st['provider']}")
+        print(f"  provider available: {st['provider_available']}")
+        print(f"  installed: {st['python']}")
     print(f"  scripts: {st['scripts']}")
     return 0
 
@@ -73,18 +83,11 @@ def cmd_runtime_status(_: argparse.Namespace) -> int:
 def cmd_runtime_install(_: argparse.Namespace) -> int:
     p = get_paths()
     ensure_dirs(p)
-    configured = None
-    config_path = p.etc / "config.yml"
-    if config_path.exists():
-        configured = load_config(config_path).runtime.python_version
-    scripts = install_runtime(p.runtime)
+    cfg = load_config(p.etc / "config.yml")
+    configured = cfg.runtime.python_version
+    scripts = install_runtime(p.runtime, configured)
     print(f"installed scripts python: {scripts}")
-    if configured is not None:
-        actual = current_python_version()
-        print(f"configured python version: {configured}")
-        print(f"actual python version: {actual}")
-        if not actual.startswith(f"{configured}.") and not actual.startswith(configured):
-            print("warning: configured runtime.python.version does not match current interpreter")
+    print(f"configured python version: {configured}")
     return 0
 
 
@@ -98,7 +101,16 @@ def _scripts_paths():
 def cmd_scripts_install(args: argparse.Namespace) -> int:
     p, releases_root, current_link = _scripts_paths()
     ensure_dirs(p)
-    source = resolve_source(args.source)
+    config_path = p.etc / "config.yml"
+    source_arg = args.source.strip()
+    local_arg = Path(source_arg[7:]) if source_arg.startswith("file://") else Path(source_arg)
+    needs_registry_config = (
+        config_path.exists()
+        and not local_arg.exists()
+        and not source_arg.startswith(("git+", "http://", "https://"))
+    )
+    config = load_config(config_path) if needs_registry_config else None
+    source = resolve_source(args.source, config=config, cache_dir=p.cache)
     install_release(source, releases_root, current_link)
     _sync_atlas_core(p.home)
     _ensure_atlas_launcher(p.bin_dir / "atlas")
@@ -112,7 +124,7 @@ def cmd_scripts_install(args: argparse.Namespace) -> int:
 def cmd_scripts_update(_: argparse.Namespace) -> int:
     p, releases_root, current_link = _scripts_paths()
     cfg = load_config(p.etc / "config.yml")
-    source = resolve_source(cfg.scripts.source)
+    source = resolve_source(cfg.scripts.source, config=cfg, cache_dir=p.cache)
     install_release(source, releases_root, current_link)
     _sync_atlas_core(p.home)
     _ensure_atlas_launcher(p.bin_dir / "atlas")

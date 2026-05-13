@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import io
+import os
 from pathlib import Path
+import subprocess
+import tarfile
+import zipfile
 
 import pytest
 
-from atlas.scripts import discover_commands, install_release
+from atlas.config import AtlasConfig, RegistryEntry, RuntimeConfig, ScriptsConfig
+from atlas.scripts import discover_commands, install_release, resolve_source
 
 
 def _touch(path: Path) -> None:
@@ -84,3 +90,163 @@ def test_install_overwrites_same_version_atomically(tmp_path: Path) -> None:
     install_release(source, releases, current)
     assert current.resolve() == target
     assert (target / "commands/sample.py").read_text(encoding="utf-8") == "print('v2')\n"
+
+
+def _release(path: Path) -> Path:
+    commands = path / "commands"
+    modules = path / "modules"
+    commands.mkdir(parents=True)
+    modules.mkdir(parents=True)
+    (path / "VERSION").write_text("2026.05.10-001\n", encoding="utf-8")
+    _touch(commands / "sample.py")
+    return path
+
+
+def test_resolve_local_tar_archive(tmp_path: Path) -> None:
+    source = _release(tmp_path / "release")
+    archive = tmp_path / "release.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        tf.add(source, arcname="release")
+
+    resolved = resolve_source(str(archive), cache_dir=tmp_path / "cache")
+
+    assert (resolved / "VERSION").read_text(encoding="utf-8").strip() == "2026.05.10-001"
+    assert [entry.name for entry in discover_commands(resolved / "commands")] == ["sample"]
+
+
+def test_resolve_local_zip_archive(tmp_path: Path) -> None:
+    source = _release(tmp_path / "release")
+    archive = tmp_path / "release.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        for item in source.rglob("*"):
+            zf.write(item, item.relative_to(source.parent))
+
+    resolved = resolve_source(str(archive), cache_dir=tmp_path / "cache")
+
+    assert (resolved / "VERSION").exists()
+    assert (resolved / "commands/sample.py").exists()
+
+
+def test_resolve_archive_rejects_path_traversal(tmp_path: Path) -> None:
+    archive = tmp_path / "bad.tar"
+    payload = b"bad"
+    with tarfile.open(archive, "w") as tf:
+        info = tarfile.TarInfo("../bad.py")
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+
+    with pytest.raises(ValueError, match="path traversal"):
+        resolve_source(str(archive), cache_dir=tmp_path / "cache")
+
+
+def test_resolve_archive_rejects_links(tmp_path: Path) -> None:
+    archive = tmp_path / "bad.tar"
+    with tarfile.open(archive, "w") as tf:
+        info = tarfile.TarInfo("release/modules/link.py")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "/etc/passwd"
+        tf.addfile(info)
+
+    with pytest.raises(ValueError, match="link is not allowed"):
+        resolve_source(str(archive), cache_dir=tmp_path / "cache")
+
+
+def test_resolve_http_archive(monkeypatch, tmp_path: Path) -> None:
+    source = _release(tmp_path / "release")
+    archive = tmp_path / "release.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        tf.add(source, arcname="release")
+    data = archive.read_bytes()
+
+    monkeypatch.setattr("atlas.scripts.urlopen", lambda _: io.BytesIO(data))
+
+    resolved = resolve_source("https://example.test/release.tar.gz", cache_dir=tmp_path / "cache")
+
+    assert (resolved / "VERSION").exists()
+
+
+def test_resolve_git_source_with_ref(monkeypatch, tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], check: bool) -> None:
+        assert check is True
+        calls.append(cmd)
+
+    monkeypatch.setattr("atlas.scripts.subprocess.run", fake_run)
+
+    resolved = resolve_source(
+        "git+https://example.test/scripts.git#v1.0.0",
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert resolved == tmp_path / "cache" / "sources" / f"git.tmp.{os.getpid()}"
+    assert calls == [
+        [
+            "git",
+            "clone",
+            "--depth",
+            "1",
+            "--branch",
+            "v1.0.0",
+            "https://example.test/scripts.git",
+            str(resolved),
+        ]
+    ]
+
+
+def test_resolve_git_source_ref_falls_back_to_fetch(monkeypatch, tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], check: bool) -> None:
+        assert check is True
+        calls.append(cmd)
+        if len(calls) == 1:
+            raise subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr("atlas.scripts.subprocess.run", fake_run)
+
+    resolved = resolve_source(
+        "git+https://example.test/scripts.git#abc123",
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert calls == [
+        [
+            "git",
+            "clone",
+            "--depth",
+            "1",
+            "--branch",
+            "abc123",
+            "https://example.test/scripts.git",
+            str(resolved),
+        ],
+        ["git", "clone", "--depth", "1", "https://example.test/scripts.git", str(resolved)],
+        ["git", "-C", str(resolved), "fetch", "--depth", "1", "origin", "abc123"],
+        ["git", "-C", str(resolved), "checkout", "--detach", "FETCH_HEAD"],
+    ]
+
+
+def test_resolve_registry_alias(tmp_path: Path) -> None:
+    release = _release(tmp_path / "release")
+    config = AtlasConfig(
+        path=tmp_path / "config.yml",
+        runtime=RuntimeConfig(python_version="3.12"),
+        scripts=ScriptsConfig(
+            source="sample-registry",
+            registries={"sample-registry": RegistryEntry(source=str(release))},
+        ),
+    )
+
+    assert resolve_source("sample-registry", config=config, cache_dir=tmp_path / "cache") == release
+
+
+def test_resolve_undefined_registry_alias_fails(tmp_path: Path) -> None:
+    config = AtlasConfig(
+        path=tmp_path / "config.yml",
+        runtime=RuntimeConfig(python_version="3.12"),
+        scripts=ScriptsConfig(source="missing", registries={}),
+    )
+
+    with pytest.raises(ValueError, match="registry alias is undefined"):
+        resolve_source("missing", config=config, cache_dir=tmp_path / "cache")

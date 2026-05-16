@@ -5,6 +5,7 @@ import shutil
 import subprocess
 
 from atlas.cli import main
+from atlas.launchers import regenerate_shims
 
 
 def test_shims_symlink_to_script_runner(monkeypatch, tmp_path: Path) -> None:
@@ -33,6 +34,27 @@ def test_shims_symlink_to_script_runner(monkeypatch, tmp_path: Path) -> None:
 
     content = runner.read_text(encoding="utf-8")
     assert f'exec "{home / "bin/atlas"}" run' in content
+
+
+def test_regenerate_shims_removes_stale_files_and_preserves_directories(tmp_path: Path) -> None:
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    (commands / "sample.py").write_text("print('sample')\n", encoding="utf-8")
+    shims = tmp_path / "shims"
+    shims.mkdir()
+    stale = shims / "old-command"
+    stale.write_text("stale", encoding="utf-8")
+    preserved = shims / "manual-dir"
+    preserved.mkdir()
+    runner = tmp_path / "script-runner"
+    runner.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+
+    names = regenerate_shims(commands, shims, runner)
+
+    assert names == ["sample"]
+    assert not stale.exists()
+    assert preserved.is_dir()
+    assert (shims / "sample").resolve() == runner
 
 
 def test_shim_executes_command(monkeypatch, tmp_path: Path) -> None:

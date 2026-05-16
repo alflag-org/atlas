@@ -153,13 +153,13 @@ def test_runtime_status_includes_pyenv_provider(monkeypatch, tmp_path: Path) -> 
 
     status = runtime_status(tmp_path / "runtime", "3.12.3")
 
-    assert status["configured_version"] == "3.12.3"
-    assert status["provider"] == "pyenv"
-    assert status["provider_available"] == "true"
-    assert status["pyenv_python"] == str(tmp_path / "pyenv/versions/3.12.3/bin/python")
-    assert status["scripts_venv"] == str(tmp_path / "runtime/python/envs/scripts")
-    assert status["scripts_python"] == str(scripts_python)
-    assert status["scripts_python_exists"] == "true"
+    assert status.configured_version == "3.12.3"
+    assert status.provider == "pyenv"
+    assert status.provider_available is True
+    assert status.pyenv_python == tmp_path / "pyenv/versions/3.12.3/bin/python"
+    assert status.scripts_venv == tmp_path / "runtime/python/envs/scripts"
+    assert status.scripts_python == scripts_python
+    assert status.scripts_python_exists is True
 
 
 def test_runtime_status_does_not_fail_without_pyenv(monkeypatch, tmp_path: Path) -> None:
@@ -167,7 +167,24 @@ def test_runtime_status_does_not_fail_without_pyenv(monkeypatch, tmp_path: Path)
 
     status = runtime_status(tmp_path / "runtime", "3.12.3")
 
-    assert status["configured_version"] == "3.12.3"
-    assert status["provider"] == "pyenv"
-    assert status["provider_available"] == "false"
-    assert "pyenv_python" not in status
+    assert status.configured_version == "3.12.3"
+    assert status.provider == "pyenv"
+    assert status.provider_available is False
+    assert status.pyenv_python is None
+
+
+def test_runtime_status_does_not_fail_when_configured_pyenv_python_is_missing(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("atlas.runtime.shutil.which", lambda _: "/usr/bin/pyenv")
+
+    def fake_run_stdout(cmd: list[str]) -> str:
+        raise ValueError(f"{cmd[0]} command failed: {' '.join(cmd)}")
+
+    monkeypatch.setattr("atlas.runtime._run_stdout", fake_run_stdout)
+
+    status = runtime_status(tmp_path / "runtime", "3.12.3")
+
+    assert status.provider_available is True
+    assert status.pyenv_python is None
+    assert status.pyenv_python_error == "pyenv command failed: pyenv prefix 3.12.3"

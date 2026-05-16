@@ -19,7 +19,6 @@ jobs:
           set -euxo pipefail
           python -m pip install --upgrade pip
           pip install -e '.[dev]'
-          pip install build
       - run: pytest -q
       - run: ruff check src tests
       - run: python -m build
@@ -52,6 +51,9 @@ jobs:
             auto_update: false
           C
           atlas scripts install examples/scripts-release
+          python -m venv "$ATLAS_RUNTIME_DIR/python/envs/scripts"
+          "$ATLAS_RUNTIME_DIR/python/envs/scripts/bin/python" -m pip install --upgrade pip
+          "$ATLAS_RUNTIME_DIR/python/envs/scripts/bin/python" -m pip install fire PyYAML
           atlas scripts list
           atlas which sample
           atlas which group-nested-sample

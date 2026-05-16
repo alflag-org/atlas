@@ -9,8 +9,10 @@ import zipfile
 
 import pytest
 
+from atlas.commands import discover_commands
 from atlas.config import AtlasConfig, RegistryEntry, RuntimeConfig, ScriptsConfig
-from atlas.scripts import discover_commands, install_release, resolve_source
+from atlas.releases import install_release
+from atlas.sources import resolve_source
 
 
 def _touch(path: Path) -> None:
@@ -92,6 +94,18 @@ def test_install_overwrites_same_version_atomically(tmp_path: Path) -> None:
     assert (target / "commands/sample.py").read_text(encoding="utf-8") == "print('v2')\n"
 
 
+def test_install_cleans_staging_and_backup_paths(tmp_path: Path) -> None:
+    source = _release(tmp_path / "source")
+    releases = tmp_path / "releases"
+    current = tmp_path / "current"
+
+    install_release(source, releases, current)
+    install_release(source, releases, current)
+
+    assert list(releases.glob("*.tmp.*")) == []
+    assert list(releases.glob("*.bak.*")) == []
+
+
 def _release(path: Path) -> Path:
     commands = path / "commands"
     modules = path / "modules"
@@ -112,6 +126,20 @@ def test_resolve_local_tar_archive(tmp_path: Path) -> None:
 
     assert (resolved / "VERSION").read_text(encoding="utf-8").strip() == "2026.05.10-001"
     assert [entry.name for entry in discover_commands(resolved / "commands")] == ["sample"]
+
+
+def test_resolve_archive_replaces_stale_cache_tmp(tmp_path: Path) -> None:
+    source = _release(tmp_path / "release")
+    archive = tmp_path / "release.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        tf.add(source, arcname="release")
+    stale_tmp = tmp_path / "cache" / "sources" / f"archive.tmp.{os.getpid()}"
+    stale_tmp.mkdir(parents=True)
+    (stale_tmp / "stale.txt").write_text("stale", encoding="utf-8")
+
+    resolve_source(str(archive), cache_dir=tmp_path / "cache")
+
+    assert not (stale_tmp / "stale.txt").exists()
 
 
 def test_resolve_local_zip_archive(tmp_path: Path) -> None:
@@ -158,7 +186,11 @@ def test_resolve_http_archive(monkeypatch, tmp_path: Path) -> None:
         tf.add(source, arcname="release")
     data = archive.read_bytes()
 
-    monkeypatch.setattr("atlas.scripts.urlopen", lambda _: io.BytesIO(data))
+    def fake_urlopen(_source: str, timeout: int):
+        assert timeout == 30
+        return io.BytesIO(data)
+
+    monkeypatch.setattr("atlas.sources.urlopen", fake_urlopen)
 
     resolved = resolve_source("https://example.test/release.tar.gz", cache_dir=tmp_path / "cache")
 
@@ -172,7 +204,7 @@ def test_resolve_git_source_with_ref(monkeypatch, tmp_path: Path) -> None:
         assert check is True
         calls.append(cmd)
 
-    monkeypatch.setattr("atlas.scripts.subprocess.run", fake_run)
+    monkeypatch.setattr("atlas.sources.subprocess.run", fake_run)
 
     resolved = resolve_source(
         "git+https://example.test/scripts.git#v1.0.0",
@@ -203,7 +235,7 @@ def test_resolve_git_source_ref_falls_back_to_fetch(monkeypatch, tmp_path: Path)
         if len(calls) == 1:
             raise subprocess.CalledProcessError(1, cmd)
 
-    monkeypatch.setattr("atlas.scripts.subprocess.run", fake_run)
+    monkeypatch.setattr("atlas.sources.subprocess.run", fake_run)
 
     resolved = resolve_source(
         "git+https://example.test/scripts.git#abc123",

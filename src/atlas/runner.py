@@ -8,7 +8,8 @@ import time
 from datetime import datetime, timezone
 
 from .paths import AtlasPaths
-from .scripts import discover_commands, read_version
+from .commands import discover_commands
+from .releases import read_version
 
 
 def _pythonpath(paths: AtlasPaths) -> str:

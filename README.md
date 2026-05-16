@@ -1,8 +1,8 @@
 # atlas
 
-Atlas is a lightweight scripts runtime manager focused on Python runtime and Python Fire scripts.
-It provides runtime installation, scripts release installation, command discovery, host context,
-shim generation, and JSONL execution logging without adding domain-specific orchestration.
+Atlas is a lightweight runtime manager for Python-based script releases, especially Python Fire commands.
+It installs the runtime, installs script releases, discovers commands, loads host context,
+generates shims, and records execution logs in JSONL without adding extra orchestration.
 
 ## Development Environment (mise)
 
@@ -12,9 +12,9 @@ mise run setup
 mise run check
 ```
 
-Task overview:
+Available tasks:
 
-- `mise run setup`: install dev dependencies (`pip install -e '.[dev]'`) and build tool.
+- `mise run setup`: install development dependencies (`pip install -e '.[dev]'`) and build tooling.
 - `mise run lint`: run `ruff check src tests`.
 - `mise run test`: run `pytest -q`.
 - `mise run build`: run `python -m build`.
@@ -23,13 +23,14 @@ Task overview:
 ## Local Environment With Docker
 
 ```bash
-docker compose build atlas
+docker compose build atlas check
 docker compose run --rm atlas
 ```
 
-The Docker image provisions an Atlas environment with `/etc/atlas`, `/opt/atlas`, and `/var/lib/atlas`.
-During the image build it installs `pyenv`, installs the configured Python scripts runtime,
-and installs `examples/scripts-release` as the current scripts release.
+The Dockerfile defines separate targets for the two main jobs:
+
+- `runtime`: non-root Atlas runtime image with `/etc/atlas`, `/opt/atlas`, `/var/lib/atlas`, pyenv metadata, the scripts runtime, and `examples/scripts-release`.
+- `dev`: development image for checks and builds, with Ruff, pytest, and package build tooling.
 
 Useful commands:
 
@@ -41,8 +42,19 @@ docker compose run --rm atlas atlas run sample hello --name=docker
 docker compose run --rm check
 ```
 
-`docker compose run --rm check` validates the containerized Atlas environment and then runs the same checks as `mise run check`: Ruff, pytest, and package build.
+`docker compose run --rm check` validates the containerized Atlas environment, runs a sample script through the scripts runtime, and then runs the same checks as `mise run check`: Ruff, pytest, and package build.
 Use `docker compose run --build --rm atlas` or `docker compose run --build --rm check` after source changes.
+
+## Internal Shape
+
+Atlas keeps the command path small:
+
+- `atlas.commands` discovers release commands and validates their names.
+- `atlas.sources` resolves local, archive, HTTP(S), git, and registry sources.
+- `atlas.releases` validates and atomically installs scripts releases.
+- `atlas.runtime` handles pyenv-backed scripts runtime installation and status.
+- `atlas.runner` executes one command and appends one JSONL run record.
+- `atlas.launchers` manages generated launchers and shims.
 
 ## Main commands
 
@@ -58,11 +70,11 @@ Use `docker compose run --build --rm atlas` or `docker compose run --build --rm 
 
 ## Runtime Version Semantics
 
-`runtime.python.version` in `/etc/atlas/config.yml` is the Python version Atlas uses for the scripts runtime.
-By default, `atlas runtime install` uses `pyenv install -s <version>` to ensure the interpreter exists,
+`runtime.python.version` in `/etc/atlas/config.yml` sets the Python version used for the scripts runtime.
+By default, `atlas runtime install` runs `pyenv install -s <version>` to ensure the interpreter is available,
 then creates the scripts virtual environment under `/opt/atlas/runtime/python/envs/scripts`.
 
-Atlas does not install `pyenv` or OS build dependencies by itself. Install them before running `atlas runtime install`.
+Atlas does not install `pyenv` or OS build dependencies on its own. Install them before running `atlas runtime install`.
 This keeps Python version management (`pyenv`) separate from package isolation (`venv`).
 
 ```yaml
@@ -73,13 +85,13 @@ runtime:
 
 ## Production Operation
 
-Install Atlas under a dedicated operational prefix and keep these directories writable by the account that runs Atlas:
+Install Atlas under a dedicated prefix and keep these directories writable by the account that runs it:
 
 - `/etc/atlas` for `config.yml` and `host.yml`
 - `/opt/atlas` for runtime, shims, launchers, and installed scripts releases
 - `/var/lib/atlas` for logs, cache, and runtime state
 
-For a pyenv-based host, make `pyenv` available on `PATH` for the Atlas service or shell before running:
+On a pyenv-based host, make sure `pyenv` is on `PATH` for the Atlas service or shell before running:
 
 ```bash
 atlas runtime status
@@ -88,9 +100,9 @@ atlas scripts install <source>
 atlas scripts shims
 ```
 
-Add `/opt/atlas/shims` to `PATH` for users or services that should invoke release commands directly.
-Execution logs are appended to `/var/lib/atlas/logs/runs.jsonl`; rotate or collect that file with the host's normal log tooling.
-If `atlas runtime install` fails, check `atlas runtime status` first: it reports whether `pyenv` is visible to Atlas.
+Add `/opt/atlas/shims` to `PATH` for users or services that need to invoke release commands directly.
+Execution logs are appended to `/var/lib/atlas/logs/runs.jsonl`; rotate or collect that file with the host's usual log tooling.
+If `atlas runtime install` fails, check `atlas runtime status` first. It reports whether `pyenv` is visible to Atlas.
 
 ## Scripts Sources
 
@@ -102,7 +114,7 @@ If `atlas runtime install` fails, check `atlas runtime status` first: it reports
 - git repository source as `git+<repo-url>#<ref>`; `#<ref>` is optional
 - registry alias defined in `/etc/atlas/config.yml`
 
-Registry aliases are local configuration, not built-in Atlas domain logic:
+Registry aliases come from local configuration rather than built-in Atlas logic:
 
 ```yaml
 scripts:
@@ -112,12 +124,13 @@ scripts:
       source: "git+https://github.com/example/scripts-release.git#v1.0.0"
 ```
 
-`atlas scripts update` resolves `scripts.source` again and reinstalls it atomically, including when the release `VERSION` is unchanged.
+`atlas scripts update` resolves `scripts.source` again and reinstalls it atomically, even if the release `VERSION` has not changed.
 
 ## Example
 
 ```bash
 atlas scripts install examples/scripts-release
+atlas runtime install
 atlas scripts list
 atlas which sample
 atlas run sample hello --name=takuya
@@ -126,7 +139,7 @@ atlas run group-nested-sample show-context
 
 ## Host Profile
 
-`/etc/atlas/host.yml` is required for script execution.
+`/etc/atlas/host.yml` is required to run scripts.
 
 ```yaml
 name: kng01-mgmt-dns-01
@@ -150,6 +163,15 @@ export ATLAS_RUNTIME_DIR="$ATLAS_HOME/runtime"
 export ATLAS_SCRIPTS_DIR="$ATLAS_HOME/scripts/current"
 
 mkdir -p "$ATLAS_ETC_DIR"
+cat > "$ATLAS_ETC_DIR/config.yml" <<'YAML'
+runtime:
+  python:
+    version: "3.12.3"
+scripts:
+  source: "file://examples/scripts-release"
+  auto_update: false
+YAML
+
 cat > "$ATLAS_ETC_DIR/host.yml" <<'YAML'
 name: local-host
 site: dev
@@ -162,5 +184,10 @@ tags:
 YAML
 
 atlas scripts install examples/scripts-release
+python -m venv "$ATLAS_RUNTIME_DIR/python/envs/scripts"
+"$ATLAS_RUNTIME_DIR/python/envs/scripts/bin/python" -m pip install --upgrade pip
+"$ATLAS_RUNTIME_DIR/python/envs/scripts/bin/python" -m pip install fire PyYAML
 atlas run sample hello --name=test
 ```
+
+Use `atlas runtime install` instead of the manual `python -m venv` steps when pyenv is installed and should provide the configured Python version for scripts.

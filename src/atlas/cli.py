@@ -2,37 +2,21 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-import shutil
-import sys
 
 from atlas_core.host import get_host
 
+from .commands import discover_commands
 from .config import load_config
+from .launchers import ensure_atlas_launcher, ensure_script_runner, regenerate_shims, sync_atlas_core
 from .paths import ensure_dirs, get_paths
 from .runner import resolve_command_path, run_command
+from .releases import install_release, read_version
 from .runtime import install_runtime, runtime_status
-from .scripts import discover_commands, install_release, read_version, resolve_source
-from .shims import ensure_script_runner, regenerate_shims
+from .sources import resolve_source
 
 
-def _sync_atlas_core(home: Path) -> None:
-    src = Path(__file__).resolve().parents[1] / "atlas_core"
-    dst = home / "lib/python/atlas_core"
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.exists():
-        shutil.rmtree(dst)
-    shutil.copytree(src, dst)
-
-
-def _ensure_atlas_launcher(path: Path) -> None:
-    content = (
-        "#!/usr/bin/env bash\n"
-        "set -euo pipefail\n"
-        f"exec {sys.executable} -m atlas.cli \"$@\"\n"
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    path.chmod(0o755)
+def _bool_text(value: bool) -> str:
+    return str(value).lower()
 
 
 def cmd_status(_: argparse.Namespace) -> int:
@@ -71,15 +55,17 @@ def cmd_runtime_status(_: argparse.Namespace) -> int:
         configured = cfg.runtime.python_version
     st = runtime_status(p.runtime, configured)
     print("python:")
-    print(f"  provider: {st['provider']}")
-    if configured is not None:
-        print(f"  configured version: {st['configured_version']}")
-    print(f"  provider available: {st['provider_available']}")
-    if "pyenv_python" in st:
-        print(f"  pyenv python: {st['pyenv_python']}")
-    print(f"  scripts venv: {st['scripts_venv']}")
-    print(f"  scripts python: {st['scripts_python']}")
-    print(f"  scripts python exists: {st['scripts_python_exists']}")
+    print(f"  provider: {st.provider}")
+    if st.configured_version is not None:
+        print(f"  configured version: {st.configured_version}")
+    print(f"  provider available: {_bool_text(st.provider_available)}")
+    if st.pyenv_python is not None:
+        print(f"  pyenv python: {st.pyenv_python}")
+    elif st.pyenv_python_error is not None:
+        print(f"  pyenv python error: {st.pyenv_python_error}")
+    print(f"  scripts venv: {st.scripts_venv}")
+    print(f"  scripts python: {st.scripts_python}")
+    print(f"  scripts python exists: {_bool_text(st.scripts_python_exists)}")
     return 0
 
 
@@ -115,8 +101,8 @@ def cmd_scripts_install(args: argparse.Namespace) -> int:
     config = load_config(config_path) if needs_registry_config else None
     source = resolve_source(args.source, config=config, cache_dir=p.cache)
     install_release(source, releases_root, current_link)
-    _sync_atlas_core(p.home)
-    _ensure_atlas_launcher(p.bin_dir / "atlas")
+    sync_atlas_core(p.home)
+    ensure_atlas_launcher(p.bin_dir / "atlas")
     ensure_script_runner(p.script_runner, p.bin_dir / "atlas")
     names = regenerate_shims(current_link / "commands", p.shims, p.script_runner)
     print(f"installed scripts: {current_link}")
@@ -129,8 +115,8 @@ def cmd_scripts_update(_: argparse.Namespace) -> int:
     cfg = load_config(p.etc / "config.yml")
     source = resolve_source(cfg.scripts.source, config=cfg, cache_dir=p.cache)
     install_release(source, releases_root, current_link)
-    _sync_atlas_core(p.home)
-    _ensure_atlas_launcher(p.bin_dir / "atlas")
+    sync_atlas_core(p.home)
+    ensure_atlas_launcher(p.bin_dir / "atlas")
     ensure_script_runner(p.script_runner, p.bin_dir / "atlas")
     regenerate_shims(current_link / "commands", p.shims, p.script_runner)
     return 0

@@ -1,10 +1,25 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 import shutil
 import subprocess
 
+from .files import remove_path
+
 RUNTIME_PROVIDER = "pyenv"
+
+
+@dataclass(frozen=True)
+class RuntimeStatus:
+    provider: str
+    provider_available: bool
+    scripts_venv: Path
+    scripts_python: Path
+    scripts_python_exists: bool
+    configured_version: str | None = None
+    pyenv_python: Path | None = None
+    pyenv_python_error: str | None = None
 
 
 def python_bin(venv_dir: Path) -> Path:
@@ -68,8 +83,7 @@ def install_runtime(runtime_root: Path, python_version: str, scripts_root: Path 
     scripts = runtime_root / "python" / "envs" / "scripts"
     scripts.parent.mkdir(parents=True, exist_ok=True)
     python = _ensure_pyenv_runtime(python_version)
-    if scripts.exists():
-        shutil.rmtree(scripts)
+    remove_path(scripts)
     _run_checked([str(python), "-m", "venv", str(scripts)])
 
     scripts_py = python_bin(scripts)
@@ -78,19 +92,24 @@ def install_runtime(runtime_root: Path, python_version: str, scripts_root: Path 
     return scripts_py
 
 
-def runtime_status(runtime_root: Path, python_version: str | None = None) -> dict[str, str]:
+def runtime_status(runtime_root: Path, python_version: str | None = None) -> RuntimeStatus:
     scripts_venv = runtime_root / "python" / "envs" / "scripts"
     scripts = python_bin(scripts_venv)
-    status = {
-        "provider": RUNTIME_PROVIDER,
-        "provider_available": str(pyenv_available()).lower(),
-        "scripts_venv": str(scripts_venv),
-        "scripts_python": str(scripts),
-        "scripts_python_exists": str(scripts.exists()).lower(),
-    }
-    if python_version:
-        status["configured_version"] = python_version
-        if pyenv_available():
+    provider_available = pyenv_available()
+    pyenv_python = None
+    pyenv_python_error = None
+    if python_version and provider_available:
+        try:
             pyenv_python = python_bin(Path(_run_stdout([RUNTIME_PROVIDER, "prefix", python_version])))
-            status["pyenv_python"] = str(pyenv_python)
-    return status
+        except ValueError as exc:
+            pyenv_python_error = str(exc)
+    return RuntimeStatus(
+        provider=RUNTIME_PROVIDER,
+        provider_available=provider_available,
+        scripts_venv=scripts_venv,
+        scripts_python=scripts,
+        scripts_python_exists=scripts.exists(),
+        configured_version=python_version,
+        pyenv_python=pyenv_python,
+        pyenv_python_error=pyenv_python_error,
+    )

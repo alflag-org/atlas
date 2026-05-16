@@ -4,8 +4,8 @@ from pathlib import Path
 import shutil
 import sys
 
-from .commands import discover_commands
 from .files import remove_path
+from .scriptsets import build_command_index
 
 
 def sync_atlas_core(home: Path) -> None:
@@ -39,8 +39,8 @@ def ensure_script_runner(path: Path, atlas_bin: Path) -> None:
     path.chmod(0o755)
 
 
-def regenerate_shims(commands_dir: Path, shims_dir: Path, script_runner: Path) -> list[str]:
-    names = [entry.name for entry in discover_commands(commands_dir)]
+def regenerate_shims(current_root: Path, shims_dir: Path, script_runner: Path) -> list[str]:
+    names = list(build_command_index(current_root))
     shims_dir.mkdir(parents=True, exist_ok=True)
     for item in shims_dir.iterdir():
         if item.is_dir() and not item.is_symlink():

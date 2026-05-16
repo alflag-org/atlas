@@ -5,13 +5,13 @@ from pathlib import Path
 
 from atlas_core.host import get_host
 
-from .commands import discover_commands
 from .config import load_config
 from .launchers import ensure_atlas_launcher, ensure_script_runner, regenerate_shims, sync_atlas_core
 from .paths import ensure_dirs, get_paths
 from .runner import resolve_command_path, run_command
-from .releases import install_release, read_version
+from .releases import install_named_release
 from .runtime import install_runtime, runtime_status
+from .scriptsets import active_releases, build_command_index, discover_release_commands, validate_release_name
 from .sources import resolve_source
 
 
@@ -24,11 +24,8 @@ def cmd_status(_: argparse.Namespace) -> int:
     ensure_dirs(p)
     config_path = p.etc / "config.yml"
     host_path = p.etc / "host.yml"
-    version = ""
-    count = 0
-    if p.scripts.exists():
-        version = read_version(p.scripts)
-        count = len(discover_commands(p.scripts / "commands"))
+    releases = active_releases(p.scripts_current_root)
+    count = len(build_command_index(p.scripts_current_root)) if releases else 0
     host_name = "unknown"
     if host_path.exists():
         try:
@@ -38,8 +35,10 @@ def cmd_status(_: argparse.Namespace) -> int:
     print(f"config file path: {config_path}")
     print(f"host file path: {host_path}")
     print(f"host name: {host_name}")
-    print(f"scripts current path: {p.scripts}")
-    print(f"scripts version: {version}")
+    print(f"scripts current root: {p.scripts_current_root}")
+    print(f"active releases count: {len(releases)}")
+    for release in releases:
+        print(f"release: {release.name} {release.version} {release.root}")
     print(f"commands count: {count}")
     print(f"python scripts path: {p.scripts_python}")
     print(f"shims path: {p.shims}")
@@ -74,21 +73,15 @@ def cmd_runtime_install(_: argparse.Namespace) -> int:
     ensure_dirs(p)
     cfg = load_config(p.etc / "config.yml")
     configured = cfg.runtime.python_version
-    scripts = install_runtime(p.runtime, configured, p.scripts if p.scripts.exists() else None)
+    scripts_roots = [release.root for release in active_releases(p.scripts_current_root)]
+    scripts = install_runtime(p.runtime, configured, scripts_roots or None)
     print(f"installed scripts python: {scripts}")
     print(f"configured python version: {configured}")
     return 0
 
 
-def _scripts_paths():
-    p = get_paths()
-    releases_root = p.home / "scripts" / "releases"
-    current_link = p.home / "scripts" / "current"
-    return p, releases_root, current_link
-
-
 def cmd_scripts_install(args: argparse.Namespace) -> int:
-    p, releases_root, current_link = _scripts_paths()
+    p = get_paths()
     ensure_dirs(p)
     config_path = p.etc / "config.yml"
     source_arg = args.source.strip()
@@ -100,39 +93,51 @@ def cmd_scripts_install(args: argparse.Namespace) -> int:
     )
     config = load_config(config_path) if needs_registry_config else None
     source = resolve_source(args.source, config=config, cache_dir=p.cache)
-    install_release(source, releases_root, current_link)
+    install_named_release(source, p.scripts_releases_root, p.scripts_current_root, validate_release_name(args.name))
     sync_atlas_core(p.home)
     ensure_atlas_launcher(p.bin_dir / "atlas")
     ensure_script_runner(p.script_runner, p.bin_dir / "atlas")
-    names = regenerate_shims(current_link / "commands", p.shims, p.script_runner)
-    print(f"installed scripts: {current_link}")
+    names = regenerate_shims(p.scripts_current_root, p.shims, p.script_runner)
+    print(f"installed scripts: {p.scripts_current_root / args.name}")
     print(f"commands: {len(names)}")
     return 0
 
 
-def cmd_scripts_update(_: argparse.Namespace) -> int:
-    p, releases_root, current_link = _scripts_paths()
+def cmd_scripts_update(args: argparse.Namespace) -> int:
+    p = get_paths()
+    ensure_dirs(p)
     cfg = load_config(p.etc / "config.yml")
-    source = resolve_source(cfg.scripts.source, config=cfg, cache_dir=p.cache)
-    install_release(source, releases_root, current_link)
+    configured_releases = cfg.scripts.releases
+    release_names = [args.release_name] if args.release_name else [name for name, release in configured_releases.items() if release.enabled]
+    for release_name in release_names:
+        if release_name not in configured_releases:
+            raise ValueError(f"scripts release is not configured: {release_name}")
+        release = configured_releases[release_name]
+        source = resolve_source(release.source, config=cfg, cache_dir=p.cache)
+        install_named_release(source, p.scripts_releases_root, p.scripts_current_root, release_name)
     sync_atlas_core(p.home)
     ensure_atlas_launcher(p.bin_dir / "atlas")
     ensure_script_runner(p.script_runner, p.bin_dir / "atlas")
-    regenerate_shims(current_link / "commands", p.shims, p.script_runner)
+    regenerate_shims(p.scripts_current_root, p.shims, p.script_runner)
     return 0
 
 
-def cmd_scripts_list(_: argparse.Namespace) -> int:
+def cmd_scripts_list(args: argparse.Namespace) -> int:
     p = get_paths()
-    for entry in discover_commands(p.scripts / "commands"):
-        print(entry.name)
+    if args.verbose:
+        build_command_index(p.scripts_current_root)
+        for entry in discover_release_commands(p.scripts_current_root):
+            print(f"{entry.name}\t{entry.release_name}\t{entry.release_version}\t{entry.script_path}")
+        return 0
+    for name in build_command_index(p.scripts_current_root):
+        print(name)
     return 0
 
 
 def cmd_scripts_shims(_: argparse.Namespace) -> int:
     p = get_paths()
     ensure_script_runner(p.script_runner, p.bin_dir / "atlas")
-    names = regenerate_shims(p.scripts / "commands", p.shims, p.script_runner)
+    names = regenerate_shims(p.scripts_current_root, p.shims, p.script_runner)
     print(f"generated shims: {len(names)}")
     return 0
 
@@ -145,7 +150,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 def cmd_which(args: argparse.Namespace) -> int:
     p = get_paths()
-    print(resolve_command_path(p.scripts, args.command_name))
+    print(resolve_command_path(p.scripts_current_root, args.command_name))
     return 0
 
 
@@ -167,10 +172,13 @@ def build_parser() -> argparse.ArgumentParser:
     scripts_sub = p_scripts.add_subparsers(dest="scripts_cmd", required=True)
     p_scripts_install = scripts_sub.add_parser("install")
     p_scripts_install.add_argument("source")
+    p_scripts_install.add_argument("--name", default="default")
     p_scripts_install.set_defaults(func=cmd_scripts_install)
     p_scripts_update = scripts_sub.add_parser("update")
+    p_scripts_update.add_argument("release_name", nargs="?")
     p_scripts_update.set_defaults(func=cmd_scripts_update)
     p_scripts_list = scripts_sub.add_parser("list")
+    p_scripts_list.add_argument("--verbose", action="store_true")
     p_scripts_list.set_defaults(func=cmd_scripts_list)
     p_scripts_shims = scripts_sub.add_parser("shims")
     p_scripts_shims.set_defaults(func=cmd_scripts_shims)

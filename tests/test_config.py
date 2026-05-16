@@ -33,9 +33,41 @@ scripts:
     assert config.path == path
     assert config.runtime.python_version == "3.12.3"
     assert config.scripts.source == "sample-release"
+    assert list(config.scripts.releases) == ["default"]
+    assert config.scripts.releases["default"].source == "sample-release"
     assert config.scripts.auto_update is True
     assert config.scripts.registries["sample-release"].source == "git+https://example.test/scripts.git#v1.0.0"
     assert config.scripts.registries["local-release"].source == "/opt/releases/local"
+
+
+def test_load_config_reads_multiple_releases(tmp_path: Path) -> None:
+    path = _write_config(
+        tmp_path / "config.yml",
+        """runtime:
+  python:
+    version: "3.12.3"
+scripts:
+  releases:
+    common: common
+    kitsunebi:
+      source: kitsunebi
+      enabled: false
+  registries:
+    common:
+      source: "git+https://example.test/common.git#v0.1.0"
+    kitsunebi:
+      source: "git+https://example.test/kitsunebi.git#v0.1.0"
+""",
+    )
+
+    config = load_config(path)
+
+    assert config.scripts.source is None
+    assert list(config.scripts.releases) == ["common", "kitsunebi"]
+    assert config.scripts.releases["common"].source == "common"
+    assert config.scripts.releases["common"].enabled is True
+    assert config.scripts.releases["kitsunebi"].source == "kitsunebi"
+    assert config.scripts.releases["kitsunebi"].enabled is False
 
 
 def test_load_config_treats_null_registries_as_empty(tmp_path: Path) -> None:
@@ -96,6 +128,47 @@ scripts:
   source: ""
 """,
             "scripts.source is required",
+        ),
+        (
+            """runtime:
+  python:
+    version: "3.12"
+scripts:
+  source: "/opt/releases/current"
+  releases: []
+""",
+            "scripts.releases must be a mapping",
+        ),
+        (
+            """runtime:
+  python:
+    version: "3.12"
+scripts:
+  releases:
+    current: sample
+""",
+            "invalid release name: current",
+        ),
+        (
+            """runtime:
+  python:
+    version: "3.12"
+scripts:
+  releases:
+    common: []
+""",
+            "scripts.releases.common must be a mapping or string",
+        ),
+        (
+            """runtime:
+  python:
+    version: "3.12"
+scripts:
+  releases:
+    common:
+      source: ""
+""",
+            "scripts.releases.common.source is required",
         ),
         (
             """runtime:

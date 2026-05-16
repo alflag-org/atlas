@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Iterable
 from pathlib import Path
 import shutil
 import subprocess
@@ -56,14 +57,26 @@ def _requirements_candidates(scripts_root: Path) -> list[Path]:
     ]
 
 
-def _runtime_requirements(scripts_root: Path | None) -> list[str]:
+def _normalize_scripts_roots(scripts_roots: Iterable[Path] | Path | None) -> list[Path] | None:
+    if scripts_roots is None:
+        return None
+    if isinstance(scripts_roots, Path):
+        return [scripts_roots]
+    return list(scripts_roots)
+
+
+def _runtime_requirements(scripts_roots: Iterable[Path] | None) -> list[str]:
     base = ["fire", "PyYAML"]
-    if scripts_root is None:
+    normalized = _normalize_scripts_roots(scripts_roots)
+    if normalized is None:
         return base
-    for candidate in _requirements_candidates(scripts_root):
-        if candidate.exists():
-            return [*base, "-r", str(candidate)]
-    return base
+    requirements = [*base]
+    for scripts_root in normalized:
+        for candidate in _requirements_candidates(scripts_root):
+            if candidate.exists():
+                requirements.extend(["-r", str(candidate)])
+                break
+    return requirements
 
 
 def _ensure_pyenv_runtime(version: str) -> Path:
@@ -79,7 +92,11 @@ def _ensure_pyenv_runtime(version: str) -> Path:
     return python
 
 
-def install_runtime(runtime_root: Path, python_version: str, scripts_root: Path | None = None) -> Path:
+def install_runtime(
+    runtime_root: Path,
+    python_version: str,
+    scripts_roots: Iterable[Path] | Path | None = None,
+) -> Path:
     scripts = runtime_root / "python" / "envs" / "scripts"
     scripts.parent.mkdir(parents=True, exist_ok=True)
     python = _ensure_pyenv_runtime(python_version)
@@ -88,7 +105,7 @@ def install_runtime(runtime_root: Path, python_version: str, scripts_root: Path 
 
     scripts_py = python_bin(scripts)
     _run_checked([str(scripts_py), "-m", "pip", "install", "--upgrade", "pip"])
-    _run_checked([str(scripts_py), "-m", "pip", "install", *_runtime_requirements(scripts_root)])
+    _run_checked([str(scripts_py), "-m", "pip", "install", *_runtime_requirements(scripts_roots)])
     return scripts_py
 
 

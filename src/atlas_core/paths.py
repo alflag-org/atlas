@@ -11,6 +11,8 @@ class AtlasPaths:
     etc: Path
     var: Path
     runtime: Path
+    scripts_root: Path
+    scripts_current_root: Path
     scripts: Path
     logs: Path
     cache: Path
@@ -21,12 +23,21 @@ def get_paths() -> AtlasPaths:
     etc = Path(os.environ.get("ATLAS_ETC_DIR", "/etc/atlas"))
     var = Path(os.environ.get("ATLAS_VAR_DIR", "/var/lib/atlas"))
     runtime = Path(os.environ.get("ATLAS_RUNTIME_DIR", str(home / "runtime")))
-    scripts = Path(os.environ.get("ATLAS_SCRIPTS_DIR", str(home / "scripts/current")))
+    scripts_root = home / "scripts"
+    scripts_current_root = Path(
+        os.environ.get(
+            "ATLAS_SCRIPTS_CURRENT_DIR",
+            os.environ.get("ATLAS_SCRIPTS_DIR", str(scripts_root / "current")),
+        )
+    )
+    scripts = Path(os.environ.get("ATLAS_SCRIPTS_DIR", str(scripts_current_root)))
     return AtlasPaths(
         home=home,
         etc=etc,
         var=var,
         runtime=runtime,
+        scripts_root=scripts_root,
+        scripts_current_root=scripts_current_root,
         scripts=scripts,
         logs=var / "logs",
         cache=var / "cache",

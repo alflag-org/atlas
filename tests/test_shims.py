@@ -4,8 +4,19 @@ from pathlib import Path
 import shutil
 import subprocess
 
+import pytest
+
 from atlas.cli import main
 from atlas.launchers import regenerate_shims
+
+
+def _set_env(monkeypatch, home: Path, etc: Path, var: Path) -> None:
+    monkeypatch.setenv("ATLAS_HOME", str(home))
+    monkeypatch.setenv("ATLAS_ETC_DIR", str(etc))
+    monkeypatch.setenv("ATLAS_VAR_DIR", str(var))
+    monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
+    monkeypatch.setenv("ATLAS_SCRIPTS_CURRENT_DIR", str(home / "scripts/current"))
+    monkeypatch.setenv("ATLAS_SCRIPTS_DIR", str(home / "scripts/current"))
 
 
 def test_shims_symlink_to_script_runner(monkeypatch, tmp_path: Path) -> None:
@@ -15,11 +26,7 @@ def test_shims_symlink_to_script_runner(monkeypatch, tmp_path: Path) -> None:
     etc.mkdir(parents=True, exist_ok=True)
     (etc / "host.yml").write_text("name: t1\n", encoding="utf-8")
 
-    monkeypatch.setenv("ATLAS_HOME", str(home))
-    monkeypatch.setenv("ATLAS_ETC_DIR", str(etc))
-    monkeypatch.setenv("ATLAS_VAR_DIR", str(var))
-    monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
-    monkeypatch.setenv("ATLAS_SCRIPTS_DIR", str(home / "scripts/current"))
+    _set_env(monkeypatch, home, etc, var)
 
     release_src = Path("examples/scripts-release").resolve()
     assert main(["scripts", "install", str(release_src)]) == 0
@@ -37,9 +44,13 @@ def test_shims_symlink_to_script_runner(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_regenerate_shims_removes_stale_files_and_preserves_directories(tmp_path: Path) -> None:
-    commands = tmp_path / "commands"
-    commands.mkdir()
-    (commands / "sample.py").write_text("print('sample')\n", encoding="utf-8")
+    current = tmp_path / "scripts/current"
+    release = tmp_path / "scripts/releases/sample/0.1.0"
+    (release / "commands").mkdir(parents=True)
+    (release / "VERSION").write_text("0.1.0\n", encoding="utf-8")
+    (release / "commands/sample.py").write_text("print('sample')\n", encoding="utf-8")
+    current.mkdir(parents=True)
+    (current / "sample").symlink_to(release, target_is_directory=True)
     shims = tmp_path / "shims"
     shims.mkdir()
     stale = shims / "old-command"
@@ -49,7 +60,7 @@ def test_regenerate_shims_removes_stale_files_and_preserves_directories(tmp_path
     runner = tmp_path / "script-runner"
     runner.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
 
-    names = regenerate_shims(commands, shims, runner)
+    names = regenerate_shims(current, shims, runner)
 
     assert names == ["sample"]
     assert not stale.exists()
@@ -64,11 +75,7 @@ def test_shim_executes_command(monkeypatch, tmp_path: Path) -> None:
     etc.mkdir(parents=True, exist_ok=True)
     (etc / "host.yml").write_text("name: t1\nsite: kng01\n", encoding="utf-8")
 
-    monkeypatch.setenv("ATLAS_HOME", str(home))
-    monkeypatch.setenv("ATLAS_ETC_DIR", str(etc))
-    monkeypatch.setenv("ATLAS_VAR_DIR", str(var))
-    monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
-    monkeypatch.setenv("ATLAS_SCRIPTS_DIR", str(home / "scripts/current"))
+    _set_env(monkeypatch, home, etc, var)
     scripts_python = home / "runtime/python/envs/scripts/bin/python"
     scripts_python.parent.mkdir(parents=True, exist_ok=True)
     python3 = shutil.which("python3")
@@ -90,3 +97,23 @@ def test_shim_executes_command(monkeypatch, tmp_path: Path) -> None:
     )
     assert proc.returncode == 0
     assert "[sample] hello test" in proc.stdout
+
+
+def test_scripts_shims_fails_on_collision(monkeypatch, tmp_path: Path) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    etc.mkdir(parents=True, exist_ok=True)
+    (etc / "host.yml").write_text("name: t1\n", encoding="utf-8")
+    _set_env(monkeypatch, home, etc, var)
+
+    for name in ["one", "two"]:
+        release = tmp_path / name
+        (release / "commands").mkdir(parents=True)
+        (release / "VERSION").write_text("0.1.0\n", encoding="utf-8")
+        (release / "commands/dup.py").write_text("print('dup')\n", encoding="utf-8")
+        if name == "one":
+            assert main(["scripts", "install", str(release), "--name", name]) == 0
+            continue
+        with pytest.raises(ValueError, match="command name collision: dup found in releases: one, two"):
+            main(["scripts", "install", str(release), "--name", name])

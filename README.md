@@ -61,9 +61,9 @@ Atlas keeps the command path small:
 - `atlas status`
 - `atlas runtime status`
 - `atlas runtime install`
-- `atlas scripts install <source>`
-- `atlas scripts update`
-- `atlas scripts list`
+- `atlas scripts install <source> [--name <release-name>]`
+- `atlas scripts update [release-name]`
+- `atlas scripts list [--verbose]`
 - `atlas scripts shims`
 - `atlas run <command-name> [args...]`
 - `atlas which <command-name>`
@@ -96,13 +96,16 @@ On a pyenv-based host, make sure `pyenv` is on `PATH` for the Atlas service or s
 ```bash
 atlas runtime status
 atlas runtime install
-atlas scripts install <source>
+atlas scripts install <source> --name default
 atlas scripts shims
 ```
 
 Add `/opt/atlas/shims` to `PATH` for users or services that need to invoke release commands directly.
 Execution logs are appended to `/var/lib/atlas/logs/runs.jsonl`; rotate or collect that file with the host's usual log tooling.
 If `atlas runtime install` fails, check `atlas runtime status` first. It reports whether `pyenv` is visible to Atlas.
+Scripts releases are installed under `/opt/atlas/scripts/releases/<release-name>/<version>` and activated through
+`/opt/atlas/scripts/current/<release-name>` symlinks. Atlas does not add an implicit namespace or precedence across releases:
+command collisions fail closed in `scripts list`, `scripts shims`, `run`, and `which`.
 
 ## Scripts Sources
 
@@ -124,17 +127,53 @@ scripts:
       source: "git+https://github.com/example/scripts-release.git#v1.0.0"
 ```
 
-`atlas scripts update` resolves `scripts.source` again and reinstalls it atomically, even if the release `VERSION` has not changed.
+Legacy single-release configuration stays supported:
+
+```yaml
+scripts:
+  source: sample-release
+  auto_update: false
+  registries:
+    sample-release:
+      source: "git+https://github.com/example/scripts-release.git#v1.0.0"
+```
+
+Internally, Atlas treats that as `scripts.releases.default`.
+
+The regular multi-release form is:
+
+```yaml
+runtime:
+  python:
+    version: "3.12.3"
+
+scripts:
+  releases:
+    common:
+      source: common
+    kitsunebi:
+      source: kitsunebi
+
+  registries:
+    common:
+      source: "git+https://github.com/example/common-scripts.git#v0.1.0"
+    kitsunebi:
+      source: "git+https://github.com/example/kitsunebi-scripts.git#v0.1.0"
+```
+
+`atlas scripts update` resolves each enabled configured release again and reinstalls it atomically, even if the release `VERSION`
+has not changed. `atlas scripts update <release-name>` updates only that configured release.
 
 ## Example
 
 ```bash
-atlas scripts install examples/scripts-release
+atlas scripts install examples/scripts-release --name sample
+atlas scripts install examples/scripts-release-2 --name sample2
 atlas runtime install
-atlas scripts list
+atlas scripts list --verbose
 atlas which sample
 atlas run sample hello --name=takuya
-atlas run group-nested-sample show-context
+atlas run sample2 show-release
 ```
 
 ## Host Profile
@@ -161,6 +200,7 @@ export ATLAS_ETC_DIR="$PWD/.tmp/etc/atlas"
 export ATLAS_VAR_DIR="$PWD/.tmp/var/lib/atlas"
 export ATLAS_RUNTIME_DIR="$ATLAS_HOME/runtime"
 export ATLAS_SCRIPTS_DIR="$ATLAS_HOME/scripts/current"
+export ATLAS_SCRIPTS_CURRENT_DIR="$ATLAS_HOME/scripts/current"
 
 mkdir -p "$ATLAS_ETC_DIR"
 cat > "$ATLAS_ETC_DIR/config.yml" <<'YAML'
@@ -168,8 +208,16 @@ runtime:
   python:
     version: "3.12.3"
 scripts:
-  source: "file://examples/scripts-release"
-  auto_update: false
+  releases:
+    sample:
+      source: sample
+    sample2:
+      source: sample2
+  registries:
+    sample:
+      source: "file://examples/scripts-release"
+    sample2:
+      source: "file://examples/scripts-release-2"
 YAML
 
 cat > "$ATLAS_ETC_DIR/host.yml" <<'YAML'
@@ -184,10 +232,13 @@ tags:
 YAML
 
 atlas scripts install examples/scripts-release
+atlas scripts update
+atlas scripts list --verbose
 python -m venv "$ATLAS_RUNTIME_DIR/python/envs/scripts"
 "$ATLAS_RUNTIME_DIR/python/envs/scripts/bin/python" -m pip install --upgrade pip
 "$ATLAS_RUNTIME_DIR/python/envs/scripts/bin/python" -m pip install fire PyYAML
 atlas run sample hello --name=test
+atlas run sample2 show-release
 ```
 
 Use `atlas runtime install` instead of the manual `python -m venv` steps when pyenv is installed and should provide the configured Python version for scripts.

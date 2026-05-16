@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .scriptsets import validate_release_name
 from .yamlutil import load_yaml_file
 
 
@@ -17,10 +18,17 @@ class RegistryEntry:
 
 
 @dataclass(frozen=True)
-class ScriptsConfig:
+class ScriptReleaseConfig:
     source: str
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
+class ScriptsConfig:
+    source: str | None = None
     auto_update: bool = False
     registries: dict[str, RegistryEntry] = field(default_factory=dict)
+    releases: dict[str, ScriptReleaseConfig] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -46,9 +54,8 @@ def load_config(path: Path) -> AtlasConfig:
     scripts_raw = raw.get("scripts")
     if not isinstance(scripts_raw, dict):
         raise ValueError("scripts section is required")
-    source = str(scripts_raw.get("source", "")).strip()
-    if not source:
-        raise ValueError("scripts.source is required")
+    source_raw = scripts_raw.get("source")
+    source = None if source_raw is None else str(source_raw).strip() or None
     auto_update = bool(scripts_raw.get("auto_update", False))
     registries_raw = scripts_raw.get("registries", {})
     if registries_raw is None:
@@ -70,8 +77,31 @@ def load_config(path: Path) -> AtlasConfig:
             raise ValueError(f"scripts.registries.{alias_name}.source is required")
         registries[alias_name] = RegistryEntry(source=entry_source)
 
+    releases_raw = scripts_raw.get("releases")
+    releases: dict[str, ScriptReleaseConfig] = {}
+    if releases_raw is not None:
+        if not isinstance(releases_raw, dict):
+            raise ValueError("scripts.releases must be a mapping")
+        for release_name, release_raw in releases_raw.items():
+            name = validate_release_name(str(release_name).strip())
+            if isinstance(release_raw, str):
+                release_source = release_raw.strip()
+                enabled = True
+            elif isinstance(release_raw, dict):
+                release_source = str(release_raw.get("source", "")).strip()
+                enabled = bool(release_raw.get("enabled", True))
+            else:
+                raise ValueError(f"scripts.releases.{name} must be a mapping or string")
+            if not release_source:
+                raise ValueError(f"scripts.releases.{name}.source is required")
+            releases[name] = ScriptReleaseConfig(source=release_source, enabled=enabled)
+    else:
+        if not source:
+            raise ValueError("scripts.source is required")
+        releases["default"] = ScriptReleaseConfig(source=source)
+
     return AtlasConfig(
         path=path,
         runtime=RuntimeConfig(python_version=py_ver),
-        scripts=ScriptsConfig(source=source, auto_update=auto_update, registries=registries),
+        scripts=ScriptsConfig(source=source, auto_update=auto_update, registries=registries, releases=releases),
     )

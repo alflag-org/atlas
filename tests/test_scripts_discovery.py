@@ -11,7 +11,8 @@ import pytest
 
 from atlas.commands import discover_commands
 from atlas.config import AtlasConfig, RegistryEntry, RuntimeConfig, ScriptsConfig
-from atlas.releases import install_release
+from atlas.releases import install_named_release, install_release
+from atlas.scriptsets import active_releases, build_command_index
 from atlas.sources import resolve_source
 
 
@@ -106,14 +107,49 @@ def test_install_cleans_staging_and_backup_paths(tmp_path: Path) -> None:
     assert list(releases.glob("*.bak.*")) == []
 
 
-def _release(path: Path) -> Path:
+def _release(path: Path, *, command_name: str = "sample", version: str = "2026.05.10-001") -> Path:
     commands = path / "commands"
     modules = path / "modules"
     commands.mkdir(parents=True)
     modules.mkdir(parents=True)
-    (path / "VERSION").write_text("2026.05.10-001\n", encoding="utf-8")
-    _touch(commands / "sample.py")
+    (path / "VERSION").write_text(f"{version}\n", encoding="utf-8")
+    _touch(commands / f"{command_name}.py")
     return path
+
+
+def test_install_named_release_supports_multiple_active_releases(tmp_path: Path) -> None:
+    common = _release(tmp_path / "common", command_name="common-command", version="0.1.0")
+    kitsunebi = _release(tmp_path / "kitsunebi", command_name="kitsunebi-command", version="0.2.0")
+    releases = tmp_path / "scripts/releases"
+    current = tmp_path / "scripts/current"
+
+    common_target = install_named_release(common, releases, current, "common")
+    kitsunebi_target = install_named_release(kitsunebi, releases, current, "kitsunebi")
+
+    assert common_target == releases / "common/0.1.0"
+    assert kitsunebi_target == releases / "kitsunebi/0.2.0"
+    assert (current / "common").resolve() == common_target
+    assert (current / "kitsunebi").resolve() == kitsunebi_target
+    assert [release.name for release in active_releases(current)] == ["common", "kitsunebi"]
+    assert sorted(build_command_index(current)) == ["common-command", "kitsunebi-command"]
+
+
+def test_install_named_release_backups_legacy_current_symlink(tmp_path: Path) -> None:
+    source = _release(tmp_path / "source")
+    releases = tmp_path / "scripts/releases"
+    current = tmp_path / "scripts/current"
+    legacy_target = tmp_path / "legacy-target"
+    legacy_target.mkdir(parents=True)
+    current.parent.mkdir(parents=True)
+    current.symlink_to(legacy_target, target_is_directory=True)
+
+    install_named_release(source, releases, current, "default")
+
+    assert current.is_dir()
+    assert (current / "default").is_symlink()
+    backups = list(current.parent.glob("current.legacy.*"))
+    assert len(backups) == 1
+    assert backups[0].is_symlink()
 
 
 def test_resolve_local_tar_archive(tmp_path: Path) -> None:

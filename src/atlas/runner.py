@@ -8,22 +8,29 @@ import time
 from datetime import datetime, timezone
 
 from .paths import AtlasPaths
-from .commands import discover_commands
-from .releases import read_version
+from .scriptsets import ReleaseCommand, active_releases, build_command_index
 
 
-def _pythonpath(paths: AtlasPaths) -> str:
+def _pythonpath(paths: AtlasPaths, command: ReleaseCommand) -> str:
     base = [str(paths.home / "lib/python")]
-    modules = paths.scripts / "modules"
-    if modules.exists():
-        base.insert(0, str(modules))
+    module_paths: list[str] = []
+    command_modules = command.release_root / "modules"
+    if command_modules.exists():
+        module_paths.append(str(command_modules))
+    for release in active_releases(paths.scripts_current_root):
+        if release.name == command.release_name:
+            continue
+        modules = release.root / "modules"
+        if modules.exists():
+            module_paths.append(str(modules))
+    base = [*module_paths, *base]
     existing = os.environ.get("PYTHONPATH")
     if existing:
         base.append(existing)
     return ":".join(base)
 
 
-def _env(paths: AtlasPaths, command_name: str, version: str) -> dict[str, str]:
+def _env(paths: AtlasPaths, command: ReleaseCommand) -> dict[str, str]:
     env = os.environ.copy()
     env.update(
         {
@@ -31,23 +38,32 @@ def _env(paths: AtlasPaths, command_name: str, version: str) -> dict[str, str]:
             "ATLAS_ETC_DIR": str(paths.etc),
             "ATLAS_VAR_DIR": str(paths.var),
             "ATLAS_RUNTIME_DIR": str(paths.runtime),
-            "ATLAS_SCRIPTS_DIR": str(paths.scripts),
+            "ATLAS_SCRIPTS_DIR": str(command.release_root),
+            "ATLAS_SCRIPTS_CURRENT_DIR": str(paths.scripts_current_root),
             "ATLAS_HOST_FILE": str(paths.etc / "host.yml"),
-            "ATLAS_SCRIPT_NAME": command_name,
-            "ATLAS_SCRIPT_VERSION": version,
-            "PYTHONPATH": _pythonpath(paths),
+            "ATLAS_SCRIPT_NAME": command.name,
+            "ATLAS_SCRIPT_VERSION": command.release_version,
+            "ATLAS_SCRIPT_RELEASE_NAME": command.release_name,
+            "PYTHONPATH": _pythonpath(paths, command),
         }
     )
     return env
 
 
-def _append_run_log(paths: AtlasPaths, name: str, args: list[str], version: str, exit_code: int, duration_ms: int) -> None:
+def _append_run_log(
+    paths: AtlasPaths,
+    command: ReleaseCommand,
+    args: list[str],
+    exit_code: int,
+    duration_ms: int,
+) -> None:
     paths.logs.mkdir(parents=True, exist_ok=True)
     record = {
         "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-        "script": name,
+        "release": command.release_name,
+        "script": command.name,
         "args": args,
-        "version": version,
+        "version": command.release_version,
         "exit_code": exit_code,
         "duration_ms": duration_ms,
     }
@@ -55,27 +71,29 @@ def _append_run_log(paths: AtlasPaths, name: str, args: list[str], version: str,
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def resolve_command_path(scripts_root: Path, command_name: str) -> Path:
-    commands = discover_commands(scripts_root / "commands")
-    by_name = {entry.name: entry.script_path for entry in commands}
-    if command_name not in by_name:
+def resolve_command(current_root: Path, command_name: str) -> ReleaseCommand:
+    index = build_command_index(current_root)
+    if command_name not in index:
         raise ValueError(f"unknown command: {command_name}")
-    return by_name[command_name]
+    return index[command_name]
+
+
+def resolve_command_path(current_root: Path, command_name: str) -> Path:
+    return resolve_command(current_root, command_name).script_path
 
 
 def run_command(paths: AtlasPaths, command_name: str, args: list[str]) -> int:
-    version = read_version(paths.scripts)
-    command_path = resolve_command_path(paths.scripts, command_name)
-    env = _env(paths, command_name, version)
+    command = resolve_command(paths.scripts_current_root, command_name)
+    env = _env(paths, command)
     started = time.perf_counter()
     python_exe = paths.scripts_python
     if not python_exe.exists():
         raise ValueError(f"scripts python executable not found: {python_exe}")
     proc = subprocess.run(
-        [str(python_exe), str(command_path), *args],
+        [str(python_exe), str(command.script_path), *args],
         env=env,
         text=True,
     )
     duration_ms = int((time.perf_counter() - started) * 1000)
-    _append_run_log(paths, command_name, args, version, proc.returncode, duration_ms)
+    _append_run_log(paths, command, args, proc.returncode, duration_ms)
     return proc.returncode

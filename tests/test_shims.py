@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 import subprocess
 
 from atlas.cli import main
@@ -46,6 +47,11 @@ def test_shim_executes_command(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("ATLAS_VAR_DIR", str(var))
     monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
     monkeypatch.setenv("ATLAS_SCRIPTS_DIR", str(home / "scripts/current"))
+    scripts_python = home / "runtime/python/envs/scripts/bin/python"
+    scripts_python.parent.mkdir(parents=True, exist_ok=True)
+    python3 = shutil.which("python3")
+    assert python3 is not None
+    scripts_python.symlink_to(Path(python3))
 
     release_src = Path("examples/scripts-release").resolve()
     assert main(["scripts", "install", str(release_src)]) == 0

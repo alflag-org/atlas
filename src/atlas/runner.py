@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import subprocess
 import time
-import sys
+from datetime import datetime, timezone
 
 from .paths import AtlasPaths
 from .scripts import discover_commands, read_version
@@ -68,7 +67,9 @@ def run_command(paths: AtlasPaths, command_name: str, args: list[str]) -> int:
     command_path = resolve_command_path(paths.scripts, command_name)
     env = _env(paths, command_name, version)
     started = time.perf_counter()
-    python_exe = paths.scripts_python if paths.scripts_python.exists() else Path(sys.executable)
+    python_exe = paths.scripts_python
+    if not python_exe.exists():
+        raise ValueError(f"scripts python executable not found: {python_exe}")
     proc = subprocess.run(
         [str(python_exe), str(command_path), *args],
         env=env,

@@ -60,3 +60,43 @@ scripts:
     assert main(["scripts", "list"]) == 0
     out = capsys.readouterr().out
     assert "sample" in out
+
+
+def test_runtime_status_prints_expanded_fields(monkeypatch, tmp_path: Path, capsys) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    etc.mkdir(parents=True, exist_ok=True)
+    var.mkdir(parents=True, exist_ok=True)
+    (etc / "config.yml").write_text(
+        "runtime:\n  python:\n    version: '3.12.8'\nscripts:\n  source: 'dummy'\n", encoding="utf-8"
+    )
+
+    monkeypatch.setenv("ATLAS_HOME", str(home))
+    monkeypatch.setenv("ATLAS_ETC_DIR", str(etc))
+    monkeypatch.setenv("ATLAS_VAR_DIR", str(var))
+    monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
+    monkeypatch.setenv("ATLAS_SCRIPTS_DIR", str(home / "scripts/current"))
+
+    monkeypatch.setattr(
+        "atlas.cli.runtime_status",
+        lambda runtime_root, python_version: {
+            "provider": "pyenv",
+            "configured_version": python_version or "",
+            "provider_available": "true",
+            "pyenv_python": "/opt/pyenv/versions/3.12.8/bin/python",
+            "scripts_venv": "/opt/atlas/runtime/python/envs/scripts",
+            "scripts_python": "/opt/atlas/runtime/python/envs/scripts/bin/python",
+            "scripts_python_exists": "true",
+        },
+    )
+
+    assert main(["runtime", "status"]) == 0
+    out = capsys.readouterr().out
+    assert "provider: pyenv" in out
+    assert "configured version: 3.12.8" in out
+    assert "provider available: true" in out
+    assert "pyenv python: /opt/pyenv/versions/3.12.8/bin/python" in out
+    assert "scripts venv: /opt/atlas/runtime/python/envs/scripts" in out
+    assert "scripts python: /opt/atlas/runtime/python/envs/scripts/bin/python" in out
+    assert "scripts python exists: true" in out

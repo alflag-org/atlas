@@ -71,12 +71,15 @@ def cmd_runtime_status(_: argparse.Namespace) -> int:
         configured = cfg.runtime.python_version
     st = runtime_status(p.runtime, configured)
     print("python:")
+    print(f"  provider: {st['provider']}")
     if configured is not None:
         print(f"  configured version: {st['configured_version']}")
-        print(f"  provider: {st['provider']}")
-        print(f"  provider available: {st['provider_available']}")
-        print(f"  installed: {st['python']}")
-    print(f"  scripts: {st['scripts']}")
+    print(f"  provider available: {st['provider_available']}")
+    if "pyenv_python" in st:
+        print(f"  pyenv python: {st['pyenv_python']}")
+    print(f"  scripts venv: {st['scripts_venv']}")
+    print(f"  scripts python: {st['scripts_python']}")
+    print(f"  scripts python exists: {st['scripts_python_exists']}")
     return 0
 
 
@@ -85,7 +88,7 @@ def cmd_runtime_install(_: argparse.Namespace) -> int:
     ensure_dirs(p)
     cfg = load_config(p.etc / "config.yml")
     configured = cfg.runtime.python_version
-    scripts = install_runtime(p.runtime, configured)
+    scripts = install_runtime(p.runtime, configured, p.scripts if p.scripts.exists() else None)
     print(f"installed scripts python: {scripts}")
     print(f"configured python version: {configured}")
     return 0

@@ -76,7 +76,7 @@ def test_run_and_logs(monkeypatch, tmp_path: Path) -> None:
     assert python3 is not None
     scripts_python.symlink_to(Path(python3))
 
-    release_src = Path("examples/scripts-release").resolve()
+    release_src = Path("examples/basic-scripts-release").resolve()
     assert main(["scripts", "install", str(release_src)]) == 0
 
     rc1 = main(["run", "sample", "hello", "--name=test"])
@@ -145,6 +145,9 @@ def test_run_fails_on_command_collision(monkeypatch, tmp_path: Path) -> None:
     assert main(["scripts", "install", str(release_one), "--name", "one"]) == 0
     with pytest.raises(ValueError, match="command name collision: collision found in releases: one, two"):
         main(["scripts", "install", str(release_two), "--name", "two"])
+    assert (home / "scripts/current/one").is_symlink()
+    assert not (home / "scripts/current/two").exists()
+    assert main(["scripts", "list"]) == 0
 
 
 def test_run_fails_when_scripts_python_is_missing(monkeypatch, tmp_path: Path) -> None:
@@ -161,7 +164,7 @@ def test_run_fails_when_scripts_python_is_missing(monkeypatch, tmp_path: Path) -
 
     _set_env(monkeypatch, home, etc, var)
 
-    release_src = Path("examples/scripts-release").resolve()
+    release_src = Path("examples/basic-scripts-release").resolve()
     assert main(["scripts", "install", str(release_src)]) == 0
 
     with pytest.raises(ValueError, match="scripts python executable not found"):

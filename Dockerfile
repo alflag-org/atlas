@@ -49,7 +49,7 @@ COPY . .
 RUN mkdir -p "$ATLAS_ETC_DIR" "$ATLAS_VAR_DIR" \
     && cp docker/atlas/config.yml "$ATLAS_ETC_DIR/config.yml" \
     && cp docker/atlas/host.yml "$ATLAS_ETC_DIR/host.yml" \
-    && atlas scripts install /workspace/examples/scripts-release \
+    && atlas scripts install /workspace/examples/basic-scripts-release \
     && atlas runtime install
 
 CMD ["sh", "-c", "ruff check src tests && pytest -q && python -m build"]

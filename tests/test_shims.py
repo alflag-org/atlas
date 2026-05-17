@@ -28,7 +28,7 @@ def test_shims_symlink_to_script_runner(monkeypatch, tmp_path: Path) -> None:
 
     _set_env(monkeypatch, home, etc, var)
 
-    release_src = Path("examples/scripts-release").resolve()
+    release_src = Path("examples/basic-scripts-release").resolve()
     assert main(["scripts", "install", str(release_src)]) == 0
 
     sample = home / "shims/sample"
@@ -82,7 +82,7 @@ def test_shim_executes_command(monkeypatch, tmp_path: Path) -> None:
     assert python3 is not None
     scripts_python.symlink_to(Path(python3))
 
-    release_src = Path("examples/scripts-release").resolve()
+    release_src = Path("examples/basic-scripts-release").resolve()
     assert main(["scripts", "install", str(release_src)]) == 0
 
     import os

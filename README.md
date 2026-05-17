@@ -29,7 +29,7 @@ docker compose run --rm atlas
 
 The Dockerfile defines separate targets for the two main jobs:
 
-- `runtime`: non-root Atlas runtime image with `/etc/atlas`, `/opt/atlas`, `/var/lib/atlas`, pyenv metadata, the scripts runtime, and `examples/scripts-release`.
+- `runtime`: non-root Atlas runtime image with `/etc/atlas`, `/opt/atlas`, `/var/lib/atlas`, pyenv metadata, the scripts runtime, and `examples/basic-scripts-release`.
 - `dev`: development image for checks and builds, with Ruff, pytest, and package build tooling.
 
 Useful commands:
@@ -96,7 +96,7 @@ On a pyenv-based host, make sure `pyenv` is on `PATH` for the Atlas service or s
 ```bash
 atlas runtime status
 atlas runtime install
-atlas scripts install <source> --name default
+atlas scripts update common
 atlas scripts shims
 ```
 
@@ -121,13 +121,32 @@ Registry aliases come from local configuration rather than built-in Atlas logic:
 
 ```yaml
 scripts:
-  source: sample-release
+  releases:
+    common:
+      source: common
   registries:
-    sample-release:
-      source: "git+https://github.com/example/scripts-release.git#v1.0.0"
+    common:
+      source: "git+https://github.com/example/basic-scripts-release.git#v1.0.0"
 ```
 
-Legacy single-release configuration stays supported:
+Regular multi-release configuration:
+
+```yaml
+scripts:
+  releases:
+    common:
+      source: common
+    kitsunebi:
+      source: kitsunebi
+
+  registries:
+    common:
+      source: "git+https://github.com/example/common-scripts.git#v0.1.0"
+    kitsunebi:
+      source: "git+https://github.com/example/kitsunebi-scripts.git#v0.1.0"
+```
+
+Legacy single-release configuration is still supported for compatibility:
 
 ```yaml
 scripts:
@@ -135,12 +154,12 @@ scripts:
   auto_update: false
   registries:
     sample-release:
-      source: "git+https://github.com/example/scripts-release.git#v1.0.0"
+      source: "git+https://github.com/example/basic-scripts-release.git#v1.0.0"
 ```
 
-Internally, Atlas treats that as `scripts.releases.default`.
+Internally, Atlas treats legacy `scripts.source` as `scripts.releases.default`.
 
-The regular multi-release form is:
+Full config with runtime + multi-release:
 
 ```yaml
 runtime:
@@ -161,14 +180,20 @@ scripts:
       source: "git+https://github.com/example/kitsunebi-scripts.git#v0.1.0"
 ```
 
-`atlas scripts update` resolves each enabled configured release again and reinstalls it atomically, even if the release `VERSION`
-has not changed. `atlas scripts update <release-name>` updates only that configured release.
+`atlas scripts update` resolves each enabled configured release and reinstalls it atomically per update operation.
+`atlas scripts update <release-name>` updates only that configured release.
+If command names collide across active releases, Atlas fails closed in `scripts list`, `scripts shims`, `run`, and `which`.
 
 ## Example
 
+The repository includes two local example releases:
+
+- `examples/basic-scripts-release`: a standalone release with a top-level command, a nested command, and a release-local module. Use it for single-release smoke tests and command-discovery examples.
+- `examples/companion-scripts-release`: a second independent release with a small command surface. Use it alongside `basic-scripts-release` when checking multi-release configuration, updates, status output, and command routing.
+
 ```bash
-atlas scripts install examples/scripts-release --name sample
-atlas scripts install examples/scripts-release-2 --name sample2
+atlas scripts install examples/basic-scripts-release --name sample
+atlas scripts install examples/companion-scripts-release --name sample2
 atlas runtime install
 atlas scripts list --verbose
 atlas which sample
@@ -215,9 +240,9 @@ scripts:
       source: sample2
   registries:
     sample:
-      source: "file://examples/scripts-release"
+      source: "file://examples/basic-scripts-release"
     sample2:
-      source: "file://examples/scripts-release-2"
+      source: "file://examples/companion-scripts-release"
 YAML
 
 cat > "$ATLAS_ETC_DIR/host.yml" <<'YAML'
@@ -231,7 +256,8 @@ tags:
   - local
 YAML
 
-atlas scripts install examples/scripts-release
+atlas scripts install examples/basic-scripts-release --name sample
+atlas scripts install examples/companion-scripts-release --name sample2
 atlas scripts update
 atlas scripts list --verbose
 python -m venv "$ATLAS_RUNTIME_DIR/python/envs/scripts"

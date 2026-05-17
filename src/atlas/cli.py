@@ -6,6 +6,7 @@ from pathlib import Path
 from atlas_core.host import get_host
 
 from .config import load_config
+from .files import remove_path
 from .launchers import ensure_atlas_launcher, ensure_script_runner, regenerate_shims, sync_atlas_core
 from .paths import ensure_dirs, get_paths
 from .runner import resolve_command_path, run_command
@@ -17,6 +18,31 @@ from .sources import resolve_source
 
 def _bool_text(value: bool) -> str:
     return str(value).lower()
+
+
+def _capture_current_targets(current_root: Path, release_names: list[str]) -> dict[str, Path | None]:
+    snapshots: dict[str, Path | None] = {}
+    for release_name in release_names:
+        current_link = current_root / release_name
+        if not current_link.exists() and not current_link.is_symlink():
+            snapshots[release_name] = None
+            continue
+        if not current_link.is_symlink():
+            raise ValueError(f"scripts current entry must be a symlink: {current_link}")
+        target = current_link.resolve()
+        if not target.exists() or not target.is_dir():
+            raise ValueError(f"active release target not found: {current_link}")
+        snapshots[release_name] = target
+    return snapshots
+
+
+def _restore_current_targets(current_root: Path, snapshots: dict[str, Path | None]) -> None:
+    for release_name, target in snapshots.items():
+        current_link = current_root / release_name
+        if current_link.exists() or current_link.is_symlink():
+            remove_path(current_link)
+        if target is not None:
+            current_link.symlink_to(target, target_is_directory=True)
 
 
 def cmd_status(_: argparse.Namespace) -> int:
@@ -93,12 +119,18 @@ def cmd_scripts_install(args: argparse.Namespace) -> int:
     )
     config = load_config(config_path) if needs_registry_config else None
     source = resolve_source(args.source, config=config, cache_dir=p.cache)
-    install_named_release(source, p.scripts_releases_root, p.scripts_current_root, validate_release_name(args.name))
-    sync_atlas_core(p.home)
-    ensure_atlas_launcher(p.bin_dir / "atlas")
-    ensure_script_runner(p.script_runner, p.bin_dir / "atlas")
-    names = regenerate_shims(p.scripts_current_root, p.shims, p.script_runner)
-    print(f"installed scripts: {p.scripts_current_root / args.name}")
+    release_name = validate_release_name(args.name)
+    snapshots = _capture_current_targets(p.scripts_current_root, [release_name])
+    try:
+        install_named_release(source, p.scripts_releases_root, p.scripts_current_root, release_name)
+        sync_atlas_core(p.home)
+        ensure_atlas_launcher(p.bin_dir / "atlas")
+        ensure_script_runner(p.script_runner, p.bin_dir / "atlas")
+        names = regenerate_shims(p.scripts_current_root, p.shims, p.script_runner)
+    except Exception:
+        _restore_current_targets(p.scripts_current_root, snapshots)
+        raise
+    print(f"installed scripts: {p.scripts_current_root / release_name}")
     print(f"commands: {len(names)}")
     return 0
 
@@ -109,16 +141,21 @@ def cmd_scripts_update(args: argparse.Namespace) -> int:
     cfg = load_config(p.etc / "config.yml")
     configured_releases = cfg.scripts.releases
     release_names = [args.release_name] if args.release_name else [name for name, release in configured_releases.items() if release.enabled]
-    for release_name in release_names:
-        if release_name not in configured_releases:
-            raise ValueError(f"scripts release is not configured: {release_name}")
-        release = configured_releases[release_name]
-        source = resolve_source(release.source, config=cfg, cache_dir=p.cache)
-        install_named_release(source, p.scripts_releases_root, p.scripts_current_root, release_name)
-    sync_atlas_core(p.home)
-    ensure_atlas_launcher(p.bin_dir / "atlas")
-    ensure_script_runner(p.script_runner, p.bin_dir / "atlas")
-    regenerate_shims(p.scripts_current_root, p.shims, p.script_runner)
+    snapshots = _capture_current_targets(p.scripts_current_root, release_names)
+    try:
+        for release_name in release_names:
+            if release_name not in configured_releases:
+                raise ValueError(f"scripts release is not configured: {release_name}")
+            release = configured_releases[release_name]
+            source = resolve_source(release.source, config=cfg, cache_dir=p.cache)
+            install_named_release(source, p.scripts_releases_root, p.scripts_current_root, release_name)
+        sync_atlas_core(p.home)
+        ensure_atlas_launcher(p.bin_dir / "atlas")
+        ensure_script_runner(p.script_runner, p.bin_dir / "atlas")
+        regenerate_shims(p.scripts_current_root, p.shims, p.script_runner)
+    except Exception:
+        _restore_current_targets(p.scripts_current_root, snapshots)
+        raise
     return 0
 
 

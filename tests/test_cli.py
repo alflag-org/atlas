@@ -24,7 +24,7 @@ def test_install_list_which(monkeypatch, tmp_path: Path, capsys) -> None:
 
     _set_env(monkeypatch, home, etc, var)
 
-    release_src = Path("examples/scripts-release").resolve()
+    release_src = Path("examples/basic-scripts-release").resolve()
     assert main(["scripts", "install", str(release_src)]) == 0
     assert main(["scripts", "list"]) == 0
     out = capsys.readouterr().out
@@ -42,8 +42,8 @@ def test_update_list_verbose_and_status_with_multiple_releases(monkeypatch, tmp_
     var = tmp_path / "var/lib/atlas"
     etc.mkdir(parents=True, exist_ok=True)
     (etc / "host.yml").write_text("name: n1\n", encoding="utf-8")
-    release_src = Path("examples/scripts-release").resolve()
-    release_src2 = Path("examples/scripts-release-2").resolve()
+    release_src = Path("examples/basic-scripts-release").resolve()
+    release_src2 = Path("examples/companion-scripts-release").resolve()
     (etc / "config.yml").write_text(
         f"""runtime:
   python:
@@ -85,7 +85,7 @@ def test_install_from_registry_alias(monkeypatch, tmp_path: Path, capsys) -> Non
     var = tmp_path / "var/lib/atlas"
     etc.mkdir(parents=True, exist_ok=True)
     (etc / "host.yml").write_text("name: n1\n", encoding="utf-8")
-    release_src = Path("examples/scripts-release").resolve()
+    release_src = Path("examples/basic-scripts-release").resolve()
     (etc / "config.yml").write_text(
         f"""runtime:
   python:

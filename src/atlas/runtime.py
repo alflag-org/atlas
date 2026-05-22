@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from collections.abc import Iterable
 from pathlib import Path
+import os
 import shutil
 import subprocess
 
@@ -100,13 +101,28 @@ def install_runtime(
     scripts = runtime_root / "python" / "envs" / "scripts"
     scripts.parent.mkdir(parents=True, exist_ok=True)
     python = _ensure_pyenv_runtime(python_version)
-    remove_path(scripts)
-    _run_checked([str(python), "-m", "venv", str(scripts)])
 
-    scripts_py = python_bin(scripts)
+    tmp_scripts = scripts.parent / f"scripts.tmp.{os.getpid()}"
+    remove_path(tmp_scripts)
+    _run_checked([str(python), "-m", "venv", str(tmp_scripts)])
+
+    scripts_py = python_bin(tmp_scripts)
     _run_checked([str(scripts_py), "-m", "pip", "install", "--upgrade", "pip"])
     _run_checked([str(scripts_py), "-m", "pip", "install", *_runtime_requirements(scripts_roots)])
-    return scripts_py
+    _run_checked([str(scripts_py), "-m", "pip", "check"])
+
+    backup_scripts = scripts.parent / f"scripts.bak.{os.getpid()}"
+    remove_path(backup_scripts)
+    if scripts.exists() or scripts.is_symlink():
+        scripts.rename(backup_scripts)
+    try:
+        tmp_scripts.rename(scripts)
+    except Exception:
+        if backup_scripts.exists() or backup_scripts.is_symlink():
+            backup_scripts.rename(scripts)
+        raise
+    remove_path(backup_scripts)
+    return python_bin(scripts)
 
 
 def runtime_status(runtime_root: Path, python_version: str | None = None) -> RuntimeStatus:

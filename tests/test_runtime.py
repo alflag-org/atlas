@@ -36,10 +36,11 @@ def test_runtime_install_recreates_venv_and_installs_base_packages(monkeypatch, 
                 stdout = f"{pyenv_root}\n"
 
             return Proc()
-        if cmd == [str(pyenv_python), "-m", "venv", str(scripts_venv)]:
-            scripts_venv.mkdir(parents=True, exist_ok=True)
-            (scripts_venv / "bin").mkdir(parents=True, exist_ok=True)
-            (scripts_venv / "bin/python").write_text("", encoding="utf-8")
+        if cmd[:3] == [str(pyenv_python), "-m", "venv"]:
+            target = Path(cmd[3])
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "bin").mkdir(parents=True, exist_ok=True)
+            (target / "bin/python").write_text("", encoding="utf-8")
         return None
 
     monkeypatch.setattr("atlas.runtime.subprocess.run", fake_run)
@@ -48,13 +49,17 @@ def test_runtime_install_recreates_venv_and_installs_base_packages(monkeypatch, 
 
     assert scripts_python == scripts_venv / "bin/python"
     assert not marker.exists()
-    assert calls == [
+    assert calls[0:2] == [
         ["pyenv", "install", "-s", "3.12.3"],
         ["pyenv", "prefix", "3.12.3"],
-        [str(pyenv_python), "-m", "venv", str(scripts_venv)],
-        [str(scripts_python), "-m", "pip", "install", "--upgrade", "pip"],
-        [str(scripts_python), "-m", "pip", "install", "fire", "PyYAML"],
     ]
+    assert calls[2][:3] == [str(pyenv_python), "-m", "venv"]
+    assert calls[3][0].endswith("/bin/python")
+    assert calls[3][1:] == ["-m", "pip", "install", "--upgrade", "pip"]
+    assert calls[4][0].endswith("/bin/python")
+    assert calls[4][1:] == ["-m", "pip", "install", "fire", "PyYAML"]
+    assert calls[5][0].endswith("/bin/python")
+    assert calls[5][1:] == ["-m", "pip", "check"]
 
 
 def test_runtime_install_prefers_requirements_lock(monkeypatch, tmp_path: Path) -> None:
@@ -79,8 +84,8 @@ def test_runtime_install_prefers_requirements_lock(monkeypatch, tmp_path: Path) 
                 stdout = f"{pyenv_root}\n"
 
             return Proc()
-        if cmd == [str(pyenv_python), "-m", "venv", str(runtime / "python/envs/scripts")]:
-            scripts_python = runtime / "python/envs/scripts/bin/python"
+        if cmd[:3] == [str(pyenv_python), "-m", "venv"]:
+            scripts_python = Path(cmd[3]) / "bin/python"
             scripts_python.parent.mkdir(parents=True, exist_ok=True)
             scripts_python.write_text("", encoding="utf-8")
         return None
@@ -89,8 +94,8 @@ def test_runtime_install_prefers_requirements_lock(monkeypatch, tmp_path: Path) 
 
     install_runtime(runtime, "3.12.3", scripts_root)
 
-    assert calls[-1] == [
-        str(runtime / "python/envs/scripts/bin/python"),
+    assert calls[-2][0].endswith("/bin/python")
+    assert calls[-2][1:] == [
         "-m",
         "pip",
         "install",
@@ -122,8 +127,8 @@ def test_runtime_install_falls_back_to_requirements_txt(monkeypatch, tmp_path: P
                 stdout = f"{pyenv_root}\n"
 
             return Proc()
-        if cmd == [str(pyenv_python), "-m", "venv", str(runtime / "python/envs/scripts")]:
-            scripts_python = runtime / "python/envs/scripts/bin/python"
+        if cmd[:3] == [str(pyenv_python), "-m", "venv"]:
+            scripts_python = Path(cmd[3]) / "bin/python"
             scripts_python.parent.mkdir(parents=True, exist_ok=True)
             scripts_python.write_text("", encoding="utf-8")
         return None
@@ -132,8 +137,8 @@ def test_runtime_install_falls_back_to_requirements_txt(monkeypatch, tmp_path: P
 
     install_runtime(runtime, "3.12.3", scripts_root)
 
-    assert calls[-1] == [
-        str(runtime / "python/envs/scripts/bin/python"),
+    assert calls[-2][0].endswith("/bin/python")
+    assert calls[-2][1:] == [
         "-m",
         "pip",
         "install",
@@ -168,8 +173,8 @@ def test_runtime_install_includes_requirements_from_all_active_releases(monkeypa
                 stdout = f"{pyenv_root}\n"
 
             return Proc()
-        if cmd == [str(pyenv_python), "-m", "venv", str(runtime / "python/envs/scripts")]:
-            scripts_python = runtime / "python/envs/scripts/bin/python"
+        if cmd[:3] == [str(pyenv_python), "-m", "venv"]:
+            scripts_python = Path(cmd[3]) / "bin/python"
             scripts_python.parent.mkdir(parents=True, exist_ok=True)
             scripts_python.write_text("", encoding="utf-8")
         return None
@@ -178,8 +183,8 @@ def test_runtime_install_includes_requirements_from_all_active_releases(monkeypa
 
     install_runtime(runtime, "3.12.3", [common, kitsunebi])
 
-    assert calls[-1] == [
-        str(runtime / "python/envs/scripts/bin/python"),
+    assert calls[-2][0].endswith("/bin/python")
+    assert calls[-2][1:] == [
         "-m",
         "pip",
         "install",

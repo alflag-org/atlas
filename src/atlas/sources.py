@@ -77,7 +77,10 @@ def extract_archive(archive_path: Path, cache_dir: Path) -> Path:
         with tarfile.open(archive_path) as tf:
             for member in tf.getmembers():
                 _validate_tar_member(tmp, member)
-            tf.extractall(tmp, filter="data")
+            if hasattr(tarfile, "data_filter"):
+                tf.extractall(tmp, filter="data")
+            else:
+                tf.extractall(tmp)
     else:
         raise ValueError(f"unsupported archive source: {archive_path}")
     return _find_release_root(tmp)

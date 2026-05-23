@@ -24,7 +24,8 @@ tags:
     host = get_host(str(p))
     assert host.name == "n1"
     assert host.site == "tokyo"
-    assert host.tags == ["sample"]
+    assert host.tags == ("sample",)
+    assert host.has_tag("sample")
 
 
 def test_get_host_applies_defaults(tmp_path: Path) -> None:
@@ -32,9 +33,28 @@ def test_get_host_applies_defaults(tmp_path: Path) -> None:
     p.write_text("name: n1\n", encoding="utf-8")
     host = get_host(str(p))
     assert host.zone == ""
-    assert host.tags == []
+    assert host.tags == ()
 
 
 def test_get_host_missing_file_fails(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         get_host(str(tmp_path / "missing.yml"))
+
+
+def test_get_host_validates_strictly(tmp_path: Path) -> None:
+    p = tmp_path / "host.yml"
+    p.write_text("[]\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="mapping"):
+        get_host(str(p))
+
+    p.write_text("name: ''\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="name is required"):
+        get_host(str(p))
+
+    p.write_text("name: n1\ntags: [1]\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"list\[str\]"):
+        get_host(str(p))
+
+    p.write_text("name: n1\nsite: 4\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="site"):
+        get_host(str(p))

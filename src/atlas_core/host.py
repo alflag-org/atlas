@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import os
 from pathlib import Path
 
@@ -9,13 +9,36 @@ import yaml
 
 @dataclass(frozen=True)
 class HostProfile:
-    name: str = "unknown"
+    name: str
     site: str = ""
     zone: str = ""
     role: str = ""
     environment: str = ""
     runtime_kind: str = ""
-    tags: list[str] = field(default_factory=list)
+    tags: tuple[str, ...] = ()
+
+    def has_tag(self, tag: str) -> bool:
+        return tag in self.tags
+
+    def to_dict(self) -> dict[str, str | list[str]]:
+        return {
+            "name": self.name,
+            "site": self.site,
+            "zone": self.zone,
+            "role": self.role,
+            "environment": self.environment,
+            "runtime_kind": self.runtime_kind,
+            "tags": list(self.tags),
+        }
+
+
+def _require_optional_string(raw: dict[str, object], key: str) -> str:
+    value = raw.get(key, "")
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"host.yml {key} must be a string")
+    return value
 
 
 def get_host(path: str | None = None) -> HostProfile:
@@ -26,17 +49,23 @@ def get_host(path: str | None = None) -> HostProfile:
         raw = yaml.safe_load(fh)
     if not isinstance(raw, dict):
         raise ValueError("host.yml must be a mapping")
+
+    name = raw.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("host.yml name is required and must be a non-empty string")
+
     tags = raw.get("tags", [])
     if tags is None:
         tags = []
-    if not isinstance(tags, list):
-        raise ValueError("host.yml tags must be a list")
+    if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
+        raise ValueError("host.yml tags must be a list[str]")
+
     return HostProfile(
-        name=str(raw.get("name", "unknown")),
-        site=str(raw.get("site", "")),
-        zone=str(raw.get("zone", "")),
-        role=str(raw.get("role", "")),
-        environment=str(raw.get("environment", "")),
-        runtime_kind=str(raw.get("runtime_kind", "")),
-        tags=[str(x) for x in tags],
+        name=name,
+        site=_require_optional_string(raw, "site"),
+        zone=_require_optional_string(raw, "zone"),
+        role=_require_optional_string(raw, "role"),
+        environment=_require_optional_string(raw, "environment"),
+        runtime_kind=_require_optional_string(raw, "runtime_kind"),
+        tags=tuple(tags),
     )

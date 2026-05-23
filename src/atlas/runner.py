@@ -11,6 +11,37 @@ from .paths import AtlasPaths
 from .scriptsets import ReleaseCommand, active_releases, build_command_index
 
 
+_REDACT_FLAG_TOKENS = ("password", "token", "secret", "key")
+
+
+def _redact_args(args: list[str]) -> list[str]:
+    redacted: list[str] = []
+    mask_next = False
+    for arg in args:
+        if mask_next:
+            redacted.append("***")
+            mask_next = False
+            continue
+        if arg.startswith("--"):
+            key, sep, value = arg.partition("=")
+            normalized = key[2:].replace("-", "_").lower()
+            sensitive = normalized.endswith("_token") or any(token in normalized for token in _REDACT_FLAG_TOKENS)
+            if sensitive and sep:
+                redacted.append(f"{key}=***")
+                continue
+            if sensitive:
+                redacted.append(key)
+                mask_next = True
+                continue
+        upper = arg.upper()
+        if "=" in arg and any(tok in upper for tok in ("_TOKEN", "_PASSWORD", "_SECRET", "_KEY")):
+            k, _, _ = arg.partition("=")
+            redacted.append(f"{k}=***")
+            continue
+        redacted.append(arg)
+    return redacted
+
+
 def _pythonpath(paths: AtlasPaths, command: ReleaseCommand) -> str:
     base = [str(paths.home / "lib/python")]
     module_paths: list[str] = []
@@ -62,7 +93,7 @@ def _append_run_log(
         "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "release": command.release_name,
         "script": command.name,
-        "args": args,
+        "args": _redact_args(args),
         "version": command.release_version,
         "exit_code": exit_code,
         "duration_ms": duration_ms,

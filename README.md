@@ -201,6 +201,47 @@ atlas run sample hello --name=takuya
 atlas run sample2 show-release
 ```
 
+## atlas_core Public API
+
+`atlas_core` is the stable runtime library for installed scripts. Scripts should import from `atlas_core`, not from Atlas internals under `atlas`.
+
+```python
+from atlas_core import get_context
+
+ctx = get_context()
+```
+
+`get_context()` is the preferred entry point. It returns host metadata, Atlas paths, and the currently running script release:
+
+- `ctx.host`: `HostProfile` loaded from `host.yml`
+- `ctx.paths`: `AtlasPaths` derived from Atlas environment variables
+- `ctx.script`: `ScriptInfo` for the active script command and release
+
+`host.yml` must be a YAML mapping with a non-empty string `name`. Optional `site`, `zone`, `role`, `environment`, and `runtime_kind` values must be strings when present. `tags` may be absent or null, or a list of strings.
+
+```yaml
+name: kng01-mgmt-dns-01
+site: kng01
+zone: mgmt
+role: dns
+environment: home
+runtime_kind: lxc
+tags:
+  - sample
+  - local
+```
+
+`get_context()` consumes these environment variables during script execution:
+
+- `ATLAS_SCRIPT_NAME` is required.
+- `ATLAS_SCRIPT_RELEASE_NAME` is required.
+- `ATLAS_SCRIPTS_DIR` is required and identifies the active script release root.
+- `ATLAS_SCRIPT_VERSION` is optional and defaults to an empty string.
+- `ATLAS_HOST_FILE` selects `host.yml` and defaults to `/etc/atlas/host.yml`.
+- `ATLAS_HOME`, `ATLAS_ETC_DIR`, `ATLAS_VAR_DIR`, `ATLAS_RUNTIME_DIR`, and `ATLAS_SCRIPTS_CURRENT_DIR` define public runtime paths.
+
+`atlas_core` intentionally does not expose install, update, source resolution, command discovery, runtime management, subprocess, Ansible, inventory, IPAM, network, or logging framework APIs.
+
 ## Host Profile
 
 `/etc/atlas/host.yml` is required to run scripts.

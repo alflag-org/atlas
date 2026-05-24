@@ -4,9 +4,9 @@ from .paths import AtlasPaths, get_paths
 
 __all__ = [
     "AtlasContext",
-    "ScriptInfo",
-    "HostProfile",
     "AtlasPaths",
+    "HostProfile",
+    "ScriptInfo",
     "get_context",
     "get_host",
     "get_paths",

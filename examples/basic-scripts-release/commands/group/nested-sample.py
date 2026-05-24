@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import fire
 
-from atlas_core.context import get_context
+from atlas_core import get_context
 
 
 class NestedSample:
@@ -14,7 +14,9 @@ class NestedSample:
             "host": ctx.host.name,
             "site": ctx.host.site,
             "script": ctx.script.name,
+            "release": ctx.script.release_name,
             "version": ctx.script.version,
+            "release_root": str(ctx.script.release_root),
         }
 
 

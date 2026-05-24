@@ -31,7 +31,7 @@ class AtlasContext:
     paths: AtlasPaths
     script: ScriptInfo
 
-    def to_dict(self) -> dict[str, dict[str, object]]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "host": self.host.to_dict(),
             "paths": self.paths.to_dict(),
@@ -39,17 +39,23 @@ class AtlasContext:
         }
 
 
+def _require_env(read_env: Mapping[str, str], key: str) -> str:
+    value = read_env.get(key)
+    if not value:
+        raise RuntimeError(f"{key} is required")
+    return value
+
+
 def get_context(env: Mapping[str, str] | None = None) -> AtlasContext:
     read_env = os.environ if env is None else env
-    script_name = read_env.get("ATLAS_SCRIPT_NAME")
-    if not script_name:
-        raise RuntimeError("ATLAS_SCRIPT_NAME is required")
-    script_release_name = read_env.get("ATLAS_SCRIPT_RELEASE_NAME", "")
+    script_name = _require_env(read_env, "ATLAS_SCRIPT_NAME")
+    script_release_name = _require_env(read_env, "ATLAS_SCRIPT_RELEASE_NAME")
+    script_release_root = Path(_require_env(read_env, "ATLAS_SCRIPTS_DIR"))
     script_version = read_env.get("ATLAS_SCRIPT_VERSION", "")
-    script_release_root = Path(read_env.get("ATLAS_SCRIPTS_DIR", ""))
+    paths = get_paths(env=read_env)
     return AtlasContext(
-        host=get_host(),
-        paths=get_paths(),
+        host=get_host(paths.host_file),
+        paths=paths,
         script=ScriptInfo(
             name=script_name,
             release_name=script_release_name,

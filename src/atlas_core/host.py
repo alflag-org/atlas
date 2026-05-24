@@ -20,7 +20,7 @@ class HostProfile:
     def has_tag(self, tag: str) -> bool:
         return tag in self.tags
 
-    def to_dict(self) -> dict[str, str | list[str]]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "name": self.name,
             "site": self.site,
@@ -33,16 +33,16 @@ class HostProfile:
 
 
 def _require_optional_string(raw: dict[str, object], key: str) -> str:
-    value = raw.get(key, "")
-    if value is None:
+    if key not in raw:
         return ""
+    value = raw[key]
     if not isinstance(value, str):
         raise ValueError(f"host.yml {key} must be a string")
     return value
 
 
-def get_host(path: str | None = None) -> HostProfile:
-    resolved = Path(path or os.environ.get("ATLAS_HOST_FILE", "/etc/atlas/host.yml"))
+def get_host(path: str | Path | None = None) -> HostProfile:
+    resolved = Path(path) if path is not None else Path(os.environ.get("ATLAS_HOST_FILE", "/etc/atlas/host.yml"))
     if not resolved.exists():
         raise FileNotFoundError(f"host profile not found: {resolved}")
     with resolved.open("r", encoding="utf-8") as fh:

@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "atlas-docs",
-  "pages_build_output_dir": "docs/_build/html",
+  "pages_build_output_dir": "./build/html",
   "compatibility_date": "2026-05-24"
 }

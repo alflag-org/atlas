@@ -11,12 +11,12 @@ Use these settings when creating or updating the Cloudflare Pages project:
 
 * Project name: ``atlas-docs``
 * Production branch: ``master``
-* Build command: ``python -m pip install -e '.[dev]' && python -m sphinx -b html docs docs/_build/html``
-* Build output directory: ``docs/_build/html``
+* Build command: ``make html``
+* Build output directory: ``build/html``
 * Environment variable: ``PYTHON_VERSION=3.12``
 
-The build command installs Atlas with development dependencies, then builds the Sphinx HTML output.
-Cloudflare Pages publishes the generated files from ``docs/_build/html``.
+The Makefile installs Atlas with development dependencies, then builds the Sphinx HTML output.
+Cloudflare Pages publishes the generated files from ``build/html``.
 
 Local deployment check
 ----------------------
@@ -31,7 +31,7 @@ If Wrangler is installed and authenticated, the generated site can be deployed d
 
 .. code-block:: bash
 
-   npx wrangler pages deploy docs/_build/html --project-name atlas-docs
+   npx wrangler pages deploy build/html --project-name atlas-docs
 
 Git integration is preferred for normal operation because it gives production deployments from
 ``master`` and preview deployments for pull requests.

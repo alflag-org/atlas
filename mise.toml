@@ -22,7 +22,7 @@ run = "python -m build"
 
 [tasks.docs]
 description = "Build Sphinx documentation"
-run = "python -m sphinx -b html docs docs/_build/html"
+run = "make html"
 
 [tasks.check]
 description = "Run lint, tests, and build"

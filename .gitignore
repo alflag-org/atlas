@@ -6,3 +6,5 @@ dist/
 build/
 *.egg-info/
 .codex
+docs/_build/
+docs/generated/

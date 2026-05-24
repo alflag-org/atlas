@@ -18,7 +18,12 @@ Available tasks:
 - `mise run lint`: run `ruff check src tests`.
 - `mise run test`: run `pytest -q`.
 - `mise run build`: run `python -m build`.
+- `mise run docs`: build Sphinx HTML documentation under `docs/_build/html`.
 - `mise run check`: run lint + test + build.
+
+## Documentation Hosting
+
+Sphinx documentation can be hosted on Cloudflare Pages with build command `python -m pip install -e '[dev]' && python -m sphinx -b html docs docs/_build/html` and output directory `docs/_build/html`. The Pages project configuration is tracked in `wrangler.jsonc`.
 
 ## Local Environment With Docker
 

@@ -17,6 +17,7 @@ Use these settings when creating or updating the Cloudflare Pages project:
 
 The Makefile installs Atlas with development dependencies, then builds the Sphinx HTML output.
 Cloudflare Pages publishes the generated files from ``build/html``.
+Do not put ``build/html`` in the build command field; that value belongs only in the build output directory field.
 
 Local deployment check
 ----------------------

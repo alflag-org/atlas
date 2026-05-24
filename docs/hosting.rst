@@ -19,6 +19,10 @@ The Makefile installs Atlas with development dependencies, then builds the Sphin
 Cloudflare Pages publishes the generated files from ``build/html``.
 Do not put ``build/html`` in the build command field; that value belongs only in the build output directory field.
 
+If the project is configured with a deploy command such as ``npx wrangler versions upload``, Wrangler reads
+``assets.directory`` from ``wrangler.jsonc`` and uploads ``build/html`` as static assets. For normal Pages Git
+integration, leave the deploy command empty and let Pages publish the build output directory.
+
 Local deployment check
 ----------------------
 

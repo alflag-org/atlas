@@ -16,7 +16,7 @@ Atlas の CLI は ``atlas`` コマンドから操作します。
    atlas scripts list --verbose
    atlas scripts shims
    atlas which sample
-   atlas run sample hello --name=takuya
+   atlas run sample hello --name=hoge
 
 状態確認
 --------
@@ -111,7 +111,7 @@ pyenv 本体と Python build に必要な OS 依存は、事前にホストへ�
 
 .. code-block:: bash
 
-   atlas run sample hello --name=takuya
+   atlas run sample hello --name=hoge
 
 実行時には ``ATLAS_SCRIPT_NAME``、``ATLAS_SCRIPT_RELEASE_NAME``、``ATLAS_SCRIPT_VERSION``、``ATLAS_SCRIPTS_DIR`` などの環境変数が設定されます。
 スクリプト側では直接環境変数を読むより、安定 API である ``atlas_core.get_context()`` を使うことを推奨します。
@@ -124,7 +124,7 @@ shim 経由の実行
 .. code-block:: bash
 
    export PATH="/opt/atlas/shims:$PATH"
-   sample --name=takuya
+   sample --name=hoge
 
 shim は内部で ``atlas run <command-name>`` を呼び出します。
 shim を再生成する場合は次を実行します。

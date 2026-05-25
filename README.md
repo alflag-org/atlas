@@ -202,7 +202,7 @@ atlas scripts install examples/companion-scripts-release --name sample2
 atlas runtime install
 atlas scripts list --verbose
 atlas which sample
-atlas run sample hello --name=takuya
+atlas run sample hello --name=hoge
 atlas run sample2 show-release
 ```
 

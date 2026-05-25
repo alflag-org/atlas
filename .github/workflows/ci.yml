@@ -60,5 +60,5 @@ jobs:
           atlas scripts list
           atlas which sample
           atlas which group-nested-sample
-          atlas run sample hello --name=takuya
+          atlas run sample hello --name=hoge
           atlas run group-nested-sample show-context

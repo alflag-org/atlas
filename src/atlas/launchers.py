@@ -1,3 +1,5 @@
+"""Launcher, script runner, and shim generation."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,6 +11,7 @@ from .scriptsets import build_command_index
 
 
 def sync_atlas_core(home: Path) -> None:
+    """Copy the stable ``atlas_core`` package into the Atlas home."""
     src = Path(__file__).resolve().parents[1] / "atlas_core"
     dst = home / "lib/python/atlas_core"
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -17,6 +20,7 @@ def sync_atlas_core(home: Path) -> None:
 
 
 def ensure_atlas_launcher(path: Path) -> None:
+    """Create the host-side ``atlas`` launcher script."""
     content = (
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
@@ -28,6 +32,7 @@ def ensure_atlas_launcher(path: Path) -> None:
 
 
 def ensure_script_runner(path: Path, atlas_bin: Path) -> None:
+    """Create the common script runner used by generated shims."""
     content = (
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n\n"
@@ -40,6 +45,7 @@ def ensure_script_runner(path: Path, atlas_bin: Path) -> None:
 
 
 def regenerate_shims(current_root: Path, shims_dir: Path, script_runner: Path) -> list[str]:
+    """Regenerate command shims for all active release commands."""
     names = list(build_command_index(current_root))
     shims_dir.mkdir(parents=True, exist_ok=True)
     for item in shims_dir.iterdir():

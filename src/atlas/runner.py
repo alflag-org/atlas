@@ -1,3 +1,5 @@
+"""Command execution and run logging."""
+
 from __future__ import annotations
 
 import json
@@ -103,6 +105,7 @@ def _append_run_log(
 
 
 def resolve_command(current_root: Path, command_name: str) -> ReleaseCommand:
+    """Resolve a command name from active releases."""
     index = build_command_index(current_root)
     if command_name not in index:
         raise ValueError(f"unknown command: {command_name}")
@@ -110,10 +113,12 @@ def resolve_command(current_root: Path, command_name: str) -> ReleaseCommand:
 
 
 def resolve_command_path(current_root: Path, command_name: str) -> Path:
+    """Return the script path for a command name."""
     return resolve_command(current_root, command_name).script_path
 
 
 def run_command(paths: AtlasPaths, command_name: str, args: list[str]) -> int:
+    """Run one Atlas command and append one JSONL run record."""
     command = resolve_command(paths.scripts_current_root, command_name)
     env = _env(paths, command)
     started = time.perf_counter()

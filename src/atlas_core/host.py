@@ -1,3 +1,5 @@
+"""Host profile loading for scripts executed by Atlas."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -9,6 +11,8 @@ import yaml
 
 @dataclass(frozen=True)
 class HostProfile:
+    """Host metadata exposed to Atlas scripts."""
+
     name: str
     site: str = ""
     zone: str = ""
@@ -18,9 +22,11 @@ class HostProfile:
     tags: tuple[str, ...] = ()
 
     def has_tag(self, tag: str) -> bool:
+        """Return whether the host profile contains ``tag``."""
         return tag in self.tags
 
     def to_dict(self) -> dict[str, object]:
+        """Return a JSON-serializable representation of the host profile."""
         return {
             "name": self.name,
             "site": self.site,
@@ -42,6 +48,16 @@ def _require_optional_string(raw: dict[str, object], key: str) -> str:
 
 
 def get_host(path: str | Path | None = None) -> HostProfile:
+    """Load and validate a host profile.
+
+    Args:
+        path: Optional path to ``host.yml``. When omitted, ``ATLAS_HOST_FILE``
+            is used, falling back to ``/etc/atlas/host.yml``.
+
+    Raises:
+        FileNotFoundError: If the host profile file is missing.
+        ValueError: If the YAML structure or field types are invalid.
+    """
     resolved = Path(path) if path is not None else Path(os.environ.get("ATLAS_HOST_FILE", "/etc/atlas/host.yml"))
     if not resolved.exists():
         raise FileNotFoundError(f"host profile not found: {resolved}")

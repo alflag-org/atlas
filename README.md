@@ -18,12 +18,12 @@ Available tasks:
 - `mise run lint`: run `ruff check src tests`.
 - `mise run test`: run `pytest -q`.
 - `mise run build`: run `python -m build`.
-- `mise run docs`: build Sphinx HTML documentation under `docs/_build/html`.
+- `mise run docs`: build Sphinx HTML documentation under `build/html`.
 - `mise run check`: run lint + test + build.
 
 ## Documentation Hosting
 
-Sphinx documentation can be hosted on Cloudflare Pages with build command `python -m pip install -e '[dev]' && python -m sphinx -b html docs docs/_build/html` and output directory `docs/_build/html`. The Pages project configuration is tracked in `wrangler.jsonc`.
+Sphinx documentation can be hosted on Cloudflare Pages with build command `make html` and output directory `build/html`. The Pages project configuration is tracked in `wrangler.jsonc`. Do not use `build/html` as the build command; it is the output directory. If a custom deploy command uses `npx wrangler versions upload`, Wrangler uploads the same directory from `assets.directory`.
 
 ## Local Environment With Docker
 
@@ -202,7 +202,7 @@ atlas scripts install examples/companion-scripts-release --name sample2
 atlas runtime install
 atlas scripts list --verbose
 atlas which sample
-atlas run sample hello --name=takuya
+atlas run sample hello --name=hoge
 atlas run sample2 show-release
 ```
 

@@ -1,3 +1,5 @@
+"""Configuration model and loader for ``config.yml``."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -9,22 +11,30 @@ from .yamlutil import load_yaml_file
 
 @dataclass(frozen=True)
 class RuntimeConfig:
+    """Runtime configuration for the scripts Python environment."""
+
     python_version: str
 
 
 @dataclass(frozen=True)
 class RegistryEntry:
+    """A named source alias used by scripts release configuration."""
+
     source: str
 
 
 @dataclass(frozen=True)
 class ScriptReleaseConfig:
+    """Configuration for one named scripts release."""
+
     source: str
     enabled: bool = True
 
 
 @dataclass(frozen=True)
 class ScriptsConfig:
+    """Top-level scripts configuration, including legacy and multi-release forms."""
+
     source: str | None = None
     auto_update: bool = False
     registries: dict[str, RegistryEntry] = field(default_factory=dict)
@@ -33,12 +43,15 @@ class ScriptsConfig:
 
 @dataclass(frozen=True)
 class AtlasConfig:
+    """Validated Atlas host configuration."""
+
     path: Path
     runtime: RuntimeConfig
     scripts: ScriptsConfig
 
 
 def load_config(path: Path) -> AtlasConfig:
+    """Load and validate an Atlas ``config.yml`` file."""
     raw = load_yaml_file(path)
     if not isinstance(raw, dict):
         raise ValueError("config.yml must be a mapping")

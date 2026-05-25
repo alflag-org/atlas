@@ -1,3 +1,5 @@
+"""pyenv-backed scripts runtime installation and status checks."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,6 +16,8 @@ RUNTIME_PROVIDER = "pyenv"
 
 @dataclass(frozen=True)
 class RuntimeStatus:
+    """Status information for the scripts Python runtime."""
+
     provider: str
     provider_available: bool
     scripts_venv: Path
@@ -25,10 +29,12 @@ class RuntimeStatus:
 
 
 def python_bin(venv_dir: Path) -> Path:
+    """Return the Python executable path for a venv directory."""
     return venv_dir / "bin" / "python"
 
 
 def pyenv_available() -> bool:
+    """Return whether the pyenv command is available on PATH."""
     return shutil.which(RUNTIME_PROVIDER) is not None
 
 
@@ -98,6 +104,11 @@ def install_runtime(
     python_version: str,
     scripts_roots: Iterable[Path] | Path | None = None,
 ) -> Path:
+    """Install or replace the scripts runtime venv.
+
+    The venv is built in a temporary directory and renamed into place after
+    dependencies pass ``pip check``.
+    """
     scripts = runtime_root / "python" / "envs" / "scripts"
     scripts.parent.mkdir(parents=True, exist_ok=True)
     python = _ensure_pyenv_runtime(python_version)
@@ -126,6 +137,7 @@ def install_runtime(
 
 
 def runtime_status(runtime_root: Path, python_version: str | None = None) -> RuntimeStatus:
+    """Return status information for the configured scripts runtime."""
     scripts_venv = runtime_root / "python" / "envs" / "scripts"
     scripts = python_bin(scripts_venv)
     provider_available = pyenv_available()

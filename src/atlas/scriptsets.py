@@ -1,3 +1,5 @@
+"""Active release and command index helpers."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,6 +16,8 @@ RESERVED_RELEASE_NAMES = {"", ".", "..", "current", "releases", "tmp"}
 
 @dataclass(frozen=True)
 class ActiveRelease:
+    """A release currently activated through the current symlink tree."""
+
     name: str
     root: Path
     version: str
@@ -21,6 +25,8 @@ class ActiveRelease:
 
 @dataclass(frozen=True)
 class ReleaseCommand:
+    """A command with release metadata attached."""
+
     name: str
     release_name: str
     release_version: str
@@ -29,6 +35,7 @@ class ReleaseCommand:
 
 
 def validate_release_name(name: str) -> str:
+    """Validate and return a release name."""
     if name in RESERVED_RELEASE_NAMES:
         raise ValueError(f"invalid release name: {name}")
     if not RELEASE_NAME_RE.fullmatch(name):
@@ -37,6 +44,7 @@ def validate_release_name(name: str) -> str:
 
 
 def active_releases(current_root: Path) -> list[ActiveRelease]:
+    """Return releases activated under ``current_root``."""
     if not current_root.exists():
         return []
     if not current_root.is_dir():
@@ -54,6 +62,7 @@ def active_releases(current_root: Path) -> list[ActiveRelease]:
 
 
 def discover_release_commands(current_root: Path) -> list[ReleaseCommand]:
+    """Discover commands across all active releases."""
     commands: list[ReleaseCommand] = []
     for release in active_releases(current_root):
         for entry in discover_commands(release.root / "commands"):
@@ -70,6 +79,7 @@ def discover_release_commands(current_root: Path) -> list[ReleaseCommand]:
 
 
 def build_command_index(current_root: Path) -> dict[str, ReleaseCommand]:
+    """Build a collision-checked command index for active releases."""
     index: dict[str, ReleaseCommand] = {}
     for command in discover_release_commands(current_root):
         existing = index.get(command.name)

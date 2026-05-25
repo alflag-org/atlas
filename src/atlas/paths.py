@@ -1,3 +1,5 @@
+"""Host-side Atlas path resolution and directory creation."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,6 +9,8 @@ import os
 
 @dataclass(frozen=True)
 class AtlasPaths:
+    """Host-side filesystem locations used by the Atlas CLI."""
+
     home: Path
     etc: Path
     var: Path
@@ -24,6 +28,7 @@ class AtlasPaths:
 
 
 def get_paths() -> AtlasPaths:
+    """Resolve host-side Atlas paths from process environment variables."""
     home = Path(os.environ.get("ATLAS_HOME", "/opt/atlas"))
     etc = Path(os.environ.get("ATLAS_ETC_DIR", "/etc/atlas"))
     var = Path(os.environ.get("ATLAS_VAR_DIR", "/var/lib/atlas"))
@@ -62,6 +67,7 @@ def get_paths() -> AtlasPaths:
 
 
 def ensure_dirs(paths: AtlasPaths) -> None:
+    """Create writable Atlas state directories if they are missing."""
     paths.var.mkdir(parents=True, exist_ok=True)
     paths.logs.mkdir(parents=True, exist_ok=True)
     paths.cache.mkdir(parents=True, exist_ok=True)

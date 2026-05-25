@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 project = "atlas"
 author = "atlas contributors"
+language = "ja"
 with (ROOT / "pyproject.toml").open("rb") as fh:
     release = tomllib.load(fh)["project"]["version"]
 
@@ -25,4 +26,9 @@ autodoc_member_order = "bysource"
 
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
-html_theme = "alabaster"
+html_theme = "shibuya"
+html_title = "Atlas ドキュメント"
+html_theme_options = {
+    "accent_color": "blue",
+    "github_url": "https://github.com/viasnake/atlas",
+}

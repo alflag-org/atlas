@@ -1,3 +1,5 @@
+"""Source resolution for local, archive, HTTP, git, and registry releases."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -19,6 +21,7 @@ HTTP_TIMEOUT_SECONDS = 30
 
 
 def is_archive_name(name: str) -> bool:
+    """Return whether ``name`` has an archive suffix supported by Atlas."""
     return name.lower().endswith(ARCHIVE_SUFFIXES)
 
 
@@ -65,6 +68,7 @@ def _find_release_root(extracted_root: Path) -> Path:
 
 
 def extract_archive(archive_path: Path, cache_dir: Path) -> Path:
+    """Extract an archive into cache and return the detected release root."""
     tmp = _cache_tmp(cache_dir, "archive")
     tmp.mkdir(parents=True, exist_ok=True)
     name = archive_path.name.lower()
@@ -87,6 +91,7 @@ def extract_archive(archive_path: Path, cache_dir: Path) -> Path:
 
 
 def download_archive(source: str, cache_dir: Path) -> Path:
+    """Download an HTTP(S) archive and return the extracted release root."""
     tmp = _cache_tmp(cache_dir, "download")
     tmp.mkdir(parents=True, exist_ok=True)
     parsed = urlparse(source)
@@ -101,6 +106,7 @@ def download_archive(source: str, cache_dir: Path) -> Path:
 
 
 def clone_git_source(source: str, cache_dir: Path) -> Path:
+    """Clone a ``git+`` source and return the cloned release root."""
     repo_url, ref = urldefrag(source.removeprefix("git+"))
     if not repo_url:
         raise ValueError("git source repository URL is required")
@@ -133,6 +139,7 @@ def _resolve_registry(source: str, config: AtlasConfig | None, cache_dir: Path) 
 
 
 def resolve_source(source: str, *, config: AtlasConfig | None = None, cache_dir: Path | None = None) -> Path:
+    """Resolve a scripts source into a local release directory path."""
     source = source.strip()
     if not source:
         raise ValueError("scripts source is required")

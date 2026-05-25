@@ -1,3 +1,5 @@
+"""Command-line interface for host-side Atlas operations."""
+
 from __future__ import annotations
 
 import argparse
@@ -46,6 +48,7 @@ def _restore_current_targets(current_root: Path, snapshots: dict[str, Path | Non
 
 
 def cmd_status(_: argparse.Namespace) -> int:
+    """Print host, release, command, and path status."""
     p = get_paths()
     ensure_dirs(p)
     config_path = p.etc / "config.yml"
@@ -72,6 +75,7 @@ def cmd_status(_: argparse.Namespace) -> int:
 
 
 def cmd_runtime_status(_: argparse.Namespace) -> int:
+    """Print scripts runtime status."""
     p = get_paths()
     config_path = p.etc / "config.yml"
     configured = None
@@ -95,6 +99,7 @@ def cmd_runtime_status(_: argparse.Namespace) -> int:
 
 
 def cmd_runtime_install(_: argparse.Namespace) -> int:
+    """Install or replace the scripts runtime."""
     p = get_paths()
     ensure_dirs(p)
     cfg = load_config(p.etc / "config.yml")
@@ -107,6 +112,7 @@ def cmd_runtime_install(_: argparse.Namespace) -> int:
 
 
 def cmd_scripts_install(args: argparse.Namespace) -> int:
+    """Install one scripts release from a source argument."""
     p = get_paths()
     ensure_dirs(p)
     config_path = p.etc / "config.yml"
@@ -136,6 +142,7 @@ def cmd_scripts_install(args: argparse.Namespace) -> int:
 
 
 def cmd_scripts_update(args: argparse.Namespace) -> int:
+    """Update configured scripts releases."""
     p = get_paths()
     ensure_dirs(p)
     cfg = load_config(p.etc / "config.yml")
@@ -160,6 +167,7 @@ def cmd_scripts_update(args: argparse.Namespace) -> int:
 
 
 def cmd_scripts_list(args: argparse.Namespace) -> int:
+    """List discovered commands across active releases."""
     p = get_paths()
     if args.verbose:
         build_command_index(p.scripts_current_root)
@@ -172,6 +180,7 @@ def cmd_scripts_list(args: argparse.Namespace) -> int:
 
 
 def cmd_scripts_shims(_: argparse.Namespace) -> int:
+    """Regenerate shims for active release commands."""
     p = get_paths()
     ensure_script_runner(p.script_runner, p.bin_dir / "atlas")
     names = regenerate_shims(p.scripts_current_root, p.shims, p.script_runner)
@@ -180,18 +189,21 @@ def cmd_scripts_shims(_: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    """Run one discovered command."""
     p = get_paths()
     ensure_dirs(p)
     return run_command(p, args.command_name, args.args)
 
 
 def cmd_which(args: argparse.Namespace) -> int:
+    """Print the script path for one command."""
     p = get_paths()
     print(resolve_command_path(p.scripts_current_root, args.command_name))
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the Atlas argument parser."""
     parser = argparse.ArgumentParser(prog="atlas")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -233,6 +245,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the Atlas CLI."""
     parser = build_parser()
     args = parser.parse_args(argv)
     return int(args.func(args))

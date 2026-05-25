@@ -1,3 +1,5 @@
+"""Path discovery for scripts executed by Atlas."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,6 +10,8 @@ from typing import Mapping
 
 @dataclass(frozen=True)
 class AtlasPaths:
+    """Resolved Atlas filesystem locations visible to a script."""
+
     home: Path
     etc: Path
     var: Path
@@ -22,9 +26,11 @@ class AtlasPaths:
 
     @property
     def scripts(self) -> Path:
+        """Backward-compatible alias for ``script_release_root``."""
         return self.script_release_root
 
     def to_dict(self) -> dict[str, str]:
+        """Return a JSON-serializable representation of the paths."""
         return {
             "home": str(self.home),
             "etc": str(self.etc),
@@ -42,6 +48,12 @@ class AtlasPaths:
 
 
 def get_paths(env: Mapping[str, str] | None = None) -> AtlasPaths:
+    """Resolve Atlas paths from an environment mapping.
+
+    Args:
+        env: Optional environment mapping. When omitted, ``os.environ`` is
+            used.
+    """
     read_env = os.environ if env is None else env
     home = Path(read_env.get("ATLAS_HOME", "/opt/atlas"))
     etc = Path(read_env.get("ATLAS_ETC_DIR", "/etc/atlas"))

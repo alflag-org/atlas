@@ -1,3 +1,5 @@
+"""Command discovery and naming rules for scripts releases."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,6 +13,8 @@ RESERVED = {"atlas", "script-runner"}
 
 @dataclass(frozen=True)
 class CommandEntry:
+    """A command discovered from a Python file in a release."""
+
     name: str
     script_path: Path
 
@@ -21,6 +25,7 @@ def _validate_segment(segment: str) -> None:
 
 
 def command_name_from_relative_path(relative_python_file: Path) -> str:
+    """Convert a command file path under ``commands/`` into a CLI name."""
     parts = list(relative_python_file.parts)
     stem = Path(parts[-1]).stem
     segments = [*parts[:-1], stem]
@@ -37,6 +42,7 @@ def command_name_from_relative_path(relative_python_file: Path) -> str:
 
 
 def discover_commands(commands_dir: Path) -> list[CommandEntry]:
+    """Discover and validate Python command files in ``commands_dir``."""
     if not commands_dir.exists() or not commands_dir.is_dir():
         raise ValueError(f"commands directory not found: {commands_dir}")
 

@@ -1,3 +1,5 @@
+"""Validation and installation of scripts releases."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,6 +17,7 @@ RESERVED_RELEASE_NAMES = {"", ".", "..", "current", "releases", "tmp"}
 
 
 def read_version(release_root: Path) -> str:
+    """Read the non-empty ``VERSION`` value from a release root."""
     version_file = release_root / "VERSION"
     if not version_file.exists():
         raise ValueError(f"missing VERSION file: {version_file}")
@@ -25,6 +28,7 @@ def read_version(release_root: Path) -> str:
 
 
 def validate_release(source: Path) -> str:
+    """Validate a release directory and return its version."""
     if not source.exists() or not source.is_dir():
         raise ValueError(f"source directory not found: {source}")
     version = read_version(source)
@@ -75,6 +79,7 @@ def _replace_current_link(current_link: Path, target: Path) -> None:
 
 
 def ensure_current_root(current_root: Path) -> None:
+    """Ensure the active release root is a directory."""
     if current_root.is_symlink():
         backup = current_root.parent / f"{current_root.name}.legacy.{int(time.time())}.{os.getpid()}"
         current_root.rename(backup)
@@ -85,6 +90,7 @@ def ensure_current_root(current_root: Path) -> None:
 
 
 def install_release(source: Path, releases_root: Path, current_link: Path) -> Path:
+    """Install a legacy single release and update its current symlink."""
     version = validate_release(source)
     target = releases_root / version
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -95,6 +101,7 @@ def install_release(source: Path, releases_root: Path, current_link: Path) -> Pa
 
 
 def install_named_release(source: Path, releases_root: Path, current_root: Path, release_name: str) -> Path:
+    """Install a named release and update its current symlink."""
     version = validate_release(source)
     name = _validate_release_name(release_name)
     target = releases_root / name / version

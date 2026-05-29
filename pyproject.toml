@@ -20,8 +20,8 @@ dev = [
   "pytest>=8",
   "ruff>=0.6",
   "fire>=0.7",
+  "shibuya>=2026.5.19",
   "sphinx>=8.1",
-  "shibuya>=2025.5.30",
 ]
 
 [project.scripts]

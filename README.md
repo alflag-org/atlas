@@ -16,7 +16,7 @@ Available tasks:
 
 - `mise run setup`: install development dependencies (`pip install -e '.[dev]'`) and build tooling.
 - `mise run lint`: run `ruff check src tests`.
-- `mise run test`: run `pytest -q`.
+- `mise run test`: run `python -m coverage run -m pytest -q` and enforce 100% line and branch coverage with `python -m coverage report`.
 - `mise run build`: run `python -m build`.
 - `mise run docs`: build Sphinx HTML documentation under `build/html`.
 - `mise run check`: run lint + test + build.

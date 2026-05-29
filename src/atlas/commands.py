@@ -36,8 +36,6 @@ def command_name_from_relative_path(relative_python_file: Path) -> str:
         raise ValueError(f"invalid command name: {name}")
     if name in RESERVED:
         raise ValueError(f"reserved command name: {name}")
-    if not NAME_RE.fullmatch(name):
-        raise ValueError(f"invalid command name: {name}")
     return name
 
 

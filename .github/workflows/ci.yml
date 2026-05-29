@@ -22,7 +22,9 @@ jobs:
           set -euxo pipefail
           python -m pip install --upgrade pip
           pip install -e '.[dev]'
-      - run: pytest -q
+      - run: |
+          python -m coverage run -m pytest -q
+          python -m coverage report
       - run: ruff check src tests
       - run: python -m build
       - name: Smoke test vNext commands

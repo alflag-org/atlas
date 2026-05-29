@@ -9,8 +9,11 @@ python -m pip install -e '.[dev]'
 """
 
 [tasks.test]
-description = "Run unit tests"
-run = "pytest -q"
+description = "Run unit tests with 100% coverage enforcement"
+run = """
+python -m coverage run -m pytest -q
+python -m coverage report
+"""
 
 [tasks.lint]
 description = "Run Ruff checks"

@@ -24,13 +24,16 @@
    * - ``mise run lint``
      - ``ruff check src tests``
    * - ``mise run test``
-     - ``pytest -q``
+     - ``python -m coverage run -m pytest -q`` と ``python -m coverage report``
    * - ``mise run build``
      - ``python -m build``
    * - ``mise run docs``
      - ``make html`` で Sphinx HTML を ``build/html`` に生成
    * - ``mise run check``
      - lint、test、build
+
+``mise run test`` は line coverage と branch coverage の両方で 100% を要求します。
+新しい分岐や失敗経路を追加した場合は、production で必要な挙動としてテストも追加してください。
 
 ドキュメント
 ------------
@@ -49,6 +52,7 @@
 
 公開サイトの本文は日本語で書きます。
 コード、コメント、docstring、commit message は英語で書きます。
+文体とページ構成の詳しい基準は :doc:`writing-guide` にまとめています。
 
 Docker
 ------

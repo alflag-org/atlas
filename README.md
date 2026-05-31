@@ -23,7 +23,7 @@ Available tasks:
 
 ## Documentation Hosting
 
-Sphinx documentation can be hosted on Cloudflare Pages with build command `make html` and output directory `build/html`. The Pages project configuration is tracked in `wrangler.jsonc`. Do not use `build/html` as the build command; it is the output directory. If a custom deploy command uses `npx wrangler versions upload`, Wrangler uploads the same directory from `assets.directory`.
+Sphinx documentation is hosted on Cloudflare Workers static assets, not Cloudflare Pages. Build the site with `make html`, which writes HTML to `build/html`, and deploy it with `npx wrangler deploy`. The Worker configuration is tracked in `wrangler.jsonc`, and `assets.directory` is the source of truth for the deployed output directory.
 
 ## Local Environment With Docker
 

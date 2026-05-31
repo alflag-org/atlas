@@ -71,6 +71,7 @@ def _env(paths: AtlasPaths, command: ReleaseCommand) -> dict[str, str]:
             "ATLAS_ETC_DIR": str(paths.etc),
             "ATLAS_VAR_DIR": str(paths.var),
             "ATLAS_RUNTIME_DIR": str(paths.runtime),
+            "ATLAS_TMP_DIR": str(paths.tmp),
             "ATLAS_SCRIPTS_DIR": str(command.release_root),
             "ATLAS_SCRIPTS_CURRENT_DIR": str(paths.scripts_current_root),
             "ATLAS_HOST_FILE": str(paths.etc / "host.yml"),

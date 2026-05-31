@@ -105,7 +105,13 @@ def cmd_runtime_install(_: argparse.Namespace) -> int:
     cfg = load_config(p.etc / "config.yml")
     configured = cfg.runtime.python_version
     scripts_roots = [release.root for release in active_releases(p.scripts_current_root)]
-    scripts = install_runtime(p.runtime, configured, scripts_roots or None)
+    scripts = install_runtime(
+        p.runtime,
+        configured,
+        scripts_roots or None,
+        tmp_dir=p.tmp,
+        python_build_cache_path=p.cache / "python-build",
+    )
     print(f"installed scripts python: {scripts}")
     print(f"configured python version: {configured}")
     return 0

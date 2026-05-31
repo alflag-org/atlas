@@ -47,7 +47,13 @@ def _fake_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[list[
     pyenv_python.write_text("", encoding="utf-8")
     monkeypatch.setattr("atlas.runtime.shutil.which", lambda _: "/usr/bin/pyenv")
 
-    def fake_run(cmd: list[str], check: bool, capture_output: bool = False, text: bool = False):
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        capture_output: bool = False,
+        text: bool = False,
+        env: dict[str, str] | None = None,
+    ):
         assert check is True
         calls.append(cmd)
         if capture_output:
@@ -156,7 +162,11 @@ def test_cli_runtime_install_prints_result(monkeypatch: pytest.MonkeyPatch, tmp_
         "runtime:\n  python:\n    version: '3.12.3'\nscripts:\n  source: sample\n", encoding="utf-8"
     )
     _set_env(monkeypatch, home, etc, var)
-    monkeypatch.setattr(cli, "install_runtime", lambda runtime, version, roots: home / "runtime/bin/python")
+    monkeypatch.setattr(
+        cli,
+        "install_runtime",
+        lambda runtime, version, roots, tmp_dir=None, python_build_cache_path=None: home / "runtime/bin/python",
+    )
 
     assert cli.main(["runtime", "install"]) == 0
 
@@ -383,7 +393,7 @@ def test_runtime_helpers_report_subprocess_failures(monkeypatch: pytest.MonkeyPa
     with pytest.raises(ValueError, match="pyenv command is required"):
         install_runtime(tmp_path / "runtime", "3.12.3")
 
-    def failing_run(cmd, check, capture_output=False, text=False):
+    def failing_run(cmd, check, capture_output=False, text=False, env=None):
         raise subprocess.CalledProcessError(1, cmd)
 
     monkeypatch.setattr("atlas.runtime.subprocess.run", failing_run)
@@ -394,14 +404,14 @@ def test_runtime_helpers_report_subprocess_failures(monkeypatch: pytest.MonkeyPa
 def test_runtime_status_reports_pyenv_prefix_failures(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr("atlas.runtime.shutil.which", lambda _: "/usr/bin/pyenv")
 
-    def missing_pyenv(cmd, check, capture_output=False, text=False):
+    def missing_pyenv(cmd, check, capture_output=False, text=False, env=None):
         raise FileNotFoundError("pyenv")
 
     monkeypatch.setattr("atlas.runtime.subprocess.run", missing_pyenv)
     status = __import__("atlas.runtime").runtime.runtime_status(tmp_path / "runtime", "3.12.3")
     assert status.pyenv_python_error == "pyenv command is required for atlas runtime install"
 
-    def failed_pyenv(cmd, check, capture_output=False, text=False):
+    def failed_pyenv(cmd, check, capture_output=False, text=False, env=None):
         raise subprocess.CalledProcessError(1, cmd)
 
     monkeypatch.setattr("atlas.runtime.subprocess.run", failed_pyenv)
@@ -414,7 +424,7 @@ def test_runtime_install_rejects_empty_pyenv_prefix_and_missing_python(
 ) -> None:
     monkeypatch.setattr("atlas.runtime.shutil.which", lambda _: "/usr/bin/pyenv")
 
-    def empty_prefix(cmd, check, capture_output=False, text=False):
+    def empty_prefix(cmd, check, capture_output=False, text=False, env=None):
         class Proc:
             stdout = "\n"
 
@@ -424,7 +434,7 @@ def test_runtime_install_rejects_empty_pyenv_prefix_and_missing_python(
     with pytest.raises(ValueError, match="did not return an install prefix"):
         install_runtime(tmp_path / "runtime", "3.12.3")
 
-    def missing_python(cmd, check, capture_output=False, text=False):
+    def missing_python(cmd, check, capture_output=False, text=False, env=None):
         class Proc:
             stdout = f"{tmp_path / 'pyenv/versions/3.12.3'}\n"
 

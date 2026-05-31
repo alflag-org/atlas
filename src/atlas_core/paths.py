@@ -16,6 +16,7 @@ class AtlasPaths:
     etc: Path
     var: Path
     runtime: Path
+    tmp: Path
     scripts_root: Path
     scripts_current_root: Path
     script_release_root: Path
@@ -36,6 +37,7 @@ class AtlasPaths:
             "etc": str(self.etc),
             "var": str(self.var),
             "runtime": str(self.runtime),
+            "tmp": str(self.tmp),
             "scripts_root": str(self.scripts_root),
             "scripts_current_root": str(self.scripts_current_root),
             "script_release_root": str(self.script_release_root),
@@ -59,6 +61,7 @@ def get_paths(env: Mapping[str, str] | None = None) -> AtlasPaths:
     etc = Path(read_env.get("ATLAS_ETC_DIR", "/etc/atlas"))
     var = Path(read_env.get("ATLAS_VAR_DIR", "/var/lib/atlas"))
     runtime = Path(read_env.get("ATLAS_RUNTIME_DIR", str(home / "runtime")))
+    tmp = Path(read_env.get("ATLAS_TMP_DIR", str(home / "tmp")))
     scripts_root = home / "scripts"
     scripts_current_root = Path(read_env.get("ATLAS_SCRIPTS_CURRENT_DIR", str(scripts_root / "current")))
     script_release_root = Path(read_env.get("ATLAS_SCRIPTS_DIR", str(scripts_current_root)))
@@ -67,6 +70,7 @@ def get_paths(env: Mapping[str, str] | None = None) -> AtlasPaths:
         etc=etc,
         var=var,
         runtime=runtime,
+        tmp=tmp,
         scripts_root=scripts_root,
         scripts_current_root=scripts_current_root,
         script_release_root=script_release_root,

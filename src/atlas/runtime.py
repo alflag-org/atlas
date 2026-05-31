@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from pathlib import Path
 import os
 import shutil
+import stat
 import subprocess
 
 from .files import remove_path
@@ -38,9 +39,9 @@ def pyenv_available() -> bool:
     return shutil.which(RUNTIME_PROVIDER) is not None
 
 
-def _run_stdout(cmd: list[str]) -> str:
+def _run_stdout(cmd: list[str], env: dict[str, str] | None = None) -> str:
     try:
-        proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        proc = subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
     except FileNotFoundError as exc:
         raise ValueError(f"{cmd[0]} command is required for atlas runtime install") from exc
     except subprocess.CalledProcessError as exc:
@@ -48,9 +49,9 @@ def _run_stdout(cmd: list[str]) -> str:
     return proc.stdout.strip()
 
 
-def _run_checked(cmd: list[str]) -> None:
+def _run_checked(cmd: list[str], env: dict[str, str] | None = None) -> None:
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, env=env)
     except FileNotFoundError as exc:
         raise ValueError(f"{cmd[0]} command is required for atlas runtime install") from exc
     except subprocess.CalledProcessError as exc:
@@ -86,11 +87,28 @@ def _runtime_requirements(scripts_roots: Iterable[Path] | None) -> list[str]:
     return requirements
 
 
-def _ensure_pyenv_runtime(version: str) -> Path:
+def _runtime_install_env(
+    runtime_root: Path,
+    tmp_dir: Path | None,
+    python_build_cache_path: Path | None,
+) -> dict[str, str]:
+    default_tmp_dir = runtime_root.parent / "tmp"
+    default_build_cache = (
+        Path(os.environ.get("ATLAS_VAR_DIR", str(runtime_root.parent / "var"))) / "cache" / "python-build"
+    )
+    env = os.environ.copy()
+    env.setdefault("TMPDIR", str(tmp_dir or default_tmp_dir))
+    env.setdefault("PYTHON_BUILD_CACHE_PATH", str(python_build_cache_path or default_build_cache))
+    Path(env["TMPDIR"]).mkdir(parents=True, exist_ok=True)
+    Path(env["PYTHON_BUILD_CACHE_PATH"]).mkdir(parents=True, exist_ok=True)
+    return env
+
+
+def _ensure_pyenv_runtime(version: str, env: dict[str, str] | None = None) -> Path:
     if not pyenv_available():
         raise ValueError("pyenv command is required for atlas runtime install")
-    _run_checked([RUNTIME_PROVIDER, "install", "-s", version])
-    prefix = _run_stdout([RUNTIME_PROVIDER, "prefix", version])
+    _run_checked([RUNTIME_PROVIDER, "install", "-s", version], env=env)
+    prefix = _run_stdout([RUNTIME_PROVIDER, "prefix", version], env=env)
     if not prefix:
         raise ValueError(f"pyenv did not return an install prefix for Python {version}")
     python = python_bin(Path(prefix))
@@ -99,36 +117,69 @@ def _ensure_pyenv_runtime(version: str) -> Path:
     return python
 
 
+def _executable_shebang(path: Path) -> str | None:
+    if not path.is_file() or not path.stat().st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+        return None
+    with path.open("rb") as fh:
+        first_line = fh.readline(2048)
+    if not first_line.startswith(b"#!"):
+        return None
+    return first_line.decode("utf-8").rstrip("\r\n")
+
+
+def _validate_console_script_shebangs(scripts_venv: Path, tmp_scripts: Path) -> None:
+    bin_dir = scripts_venv / "bin"
+    expected_python = python_bin(scripts_venv)
+    envs_root = scripts_venv.parent
+    for executable in sorted(bin_dir.iterdir()):
+        first_line = _executable_shebang(executable)
+        if first_line is None:
+            continue
+        has_tmp_path = "scripts.tmp." in first_line or str(tmp_scripts) in first_line
+        has_non_final_runtime_path = str(envs_root) in first_line and str(expected_python) not in first_line
+        if has_tmp_path or has_non_final_runtime_path:
+            raise ValueError(
+                "console script shebang must point to "
+                f"{expected_python}: {executable} has {first_line}"
+            )
+
+
 def install_runtime(
     runtime_root: Path,
     python_version: str,
     scripts_roots: Iterable[Path] | Path | None = None,
+    *,
+    tmp_dir: Path | None = None,
+    python_build_cache_path: Path | None = None,
 ) -> Path:
     """Install or replace the scripts runtime venv.
 
-    The venv is built in a temporary directory and renamed into place after
-    dependencies pass ``pip check``.
+    The venv is created in a temporary directory, moved into its final path,
+    and populated through the final-path interpreter so generated console
+    scripts keep stable shebangs.
     """
     scripts = runtime_root / "python" / "envs" / "scripts"
     scripts.parent.mkdir(parents=True, exist_ok=True)
-    python = _ensure_pyenv_runtime(python_version)
+    env = _runtime_install_env(runtime_root, tmp_dir, python_build_cache_path)
+    python = _ensure_pyenv_runtime(python_version, env=env)
 
     tmp_scripts = scripts.parent / f"scripts.tmp.{os.getpid()}"
-    remove_path(tmp_scripts)
-    _run_checked([str(python), "-m", "venv", str(tmp_scripts)])
-
-    scripts_py = python_bin(tmp_scripts)
-    _run_checked([str(scripts_py), "-m", "pip", "install", "--upgrade", "pip"])
-    _run_checked([str(scripts_py), "-m", "pip", "install", *_runtime_requirements(scripts_roots)])
-    _run_checked([str(scripts_py), "-m", "pip", "check"])
-
     backup_scripts = scripts.parent / f"scripts.bak.{os.getpid()}"
+    remove_path(tmp_scripts)
     remove_path(backup_scripts)
+    _run_checked([str(python), "-m", "venv", str(tmp_scripts)], env=env)
+
     if scripts.exists() or scripts.is_symlink():
         scripts.rename(backup_scripts)
     try:
         tmp_scripts.rename(scripts)
+        scripts_py = python_bin(scripts)
+        _run_checked([str(scripts_py), "-m", "pip", "install", "--upgrade", "pip"], env=env)
+        _run_checked([str(scripts_py), "-m", "pip", "install", *_runtime_requirements(scripts_roots)], env=env)
+        _validate_console_script_shebangs(scripts, tmp_scripts)
+        _run_checked([str(scripts_py), "-m", "pip", "check"], env=env)
     except Exception:
+        remove_path(scripts)
         if backup_scripts.exists() or backup_scripts.is_symlink():
             backup_scripts.rename(scripts)
         raise

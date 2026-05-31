@@ -15,6 +15,7 @@ class AtlasPaths:
     etc: Path
     var: Path
     runtime: Path
+    tmp: Path
     scripts_root: Path
     scripts_releases_root: Path
     scripts_current_root: Path
@@ -33,6 +34,7 @@ def get_paths() -> AtlasPaths:
     etc = Path(os.environ.get("ATLAS_ETC_DIR", "/etc/atlas"))
     var = Path(os.environ.get("ATLAS_VAR_DIR", "/var/lib/atlas"))
     runtime = Path(os.environ.get("ATLAS_RUNTIME_DIR", str(home / "runtime")))
+    tmp = Path(os.environ.get("ATLAS_TMP_DIR", str(home / "tmp")))
     scripts_root = home / "scripts"
     scripts_current_root = Path(
         os.environ.get(
@@ -53,6 +55,7 @@ def get_paths() -> AtlasPaths:
         etc=etc,
         var=var,
         runtime=runtime,
+        tmp=tmp,
         scripts_root=scripts_root,
         scripts_releases_root=scripts_releases_root,
         scripts_current_root=scripts_current_root,
@@ -72,6 +75,7 @@ def ensure_dirs(paths: AtlasPaths) -> None:
     paths.logs.mkdir(parents=True, exist_ok=True)
     paths.cache.mkdir(parents=True, exist_ok=True)
     paths.home.mkdir(parents=True, exist_ok=True)
+    paths.tmp.mkdir(parents=True, exist_ok=True)
     paths.bin_dir.mkdir(parents=True, exist_ok=True)
     paths.shims.mkdir(parents=True, exist_ok=True)
     paths.scripts_releases_root.mkdir(parents=True, exist_ok=True)

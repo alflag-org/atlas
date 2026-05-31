@@ -11,6 +11,7 @@ def test_get_paths_from_env_returns_expected_paths(tmp_path: Path) -> None:
         "ATLAS_ETC_DIR": str(tmp_path / "etc/atlas"),
         "ATLAS_VAR_DIR": str(tmp_path / "var/lib/atlas"),
         "ATLAS_RUNTIME_DIR": str(tmp_path / "runtime"),
+        "ATLAS_TMP_DIR": str(tmp_path / "atlas-tmp"),
         "ATLAS_SCRIPTS_CURRENT_DIR": str(tmp_path / "scripts/current"),
         "ATLAS_SCRIPTS_DIR": str(tmp_path / "scripts/releases/basic/1.0.0"),
     }
@@ -21,11 +22,18 @@ def test_get_paths_from_env_returns_expected_paths(tmp_path: Path) -> None:
     assert paths.etc == tmp_path / "etc/atlas"
     assert paths.var == tmp_path / "var/lib/atlas"
     assert paths.runtime == tmp_path / "runtime"
+    assert paths.tmp == tmp_path / "atlas-tmp"
     assert paths.scripts_root == tmp_path / "opt/atlas/scripts"
     assert paths.scripts_current_root == tmp_path / "scripts/current"
     assert paths.script_release_root == tmp_path / "scripts/releases/basic/1.0.0"
     assert paths.logs == tmp_path / "var/lib/atlas/logs"
     assert paths.cache == tmp_path / "var/lib/atlas/cache"
+
+
+def test_tmp_defaults_under_atlas_home(tmp_path: Path) -> None:
+    home = tmp_path / "opt/atlas"
+
+    assert get_paths(env={"ATLAS_HOME": str(home)}).tmp == home / "tmp"
 
 
 def test_config_and_host_files_default_under_etc(tmp_path: Path) -> None:
@@ -75,6 +83,7 @@ def test_to_dict_converts_path_values_to_strings(tmp_path: Path) -> None:
     data = paths.to_dict()
 
     assert data["home"] == str(tmp_path / "home")
+    assert data["tmp"] == str(tmp_path / "home/tmp")
     assert data["script_release_root"] == str(tmp_path / "release")
     assert data["scripts"] == str(tmp_path / "release")
     assert all(isinstance(value, str) for value in data.values())

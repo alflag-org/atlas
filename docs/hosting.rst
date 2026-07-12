@@ -49,7 +49,7 @@ Workers の ``wrangler deploy`` へ移行し、Pages の ``build output director
 
 .. code-block:: bash
 
-   mise run docs
+   make html
 
 Worker としての配信確認も必要なら、ローカルで次を実行します。
 

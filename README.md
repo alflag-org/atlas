@@ -6,20 +6,20 @@ generates shims, and records execution logs in JSONL without adding extra orches
 
 ## Development Environment (mise)
 
+mise manages the Python interpreter and external tools used for local development and CI.
+It does not manage Python package dependencies or replace Atlas's pyenv-backed production
+script runtime under `/opt/atlas/runtime`.
+
 ```bash
 mise install
-mise run setup
-mise run check
+python -m pip install -e '.[dev]'
+ruff check src tests
+python -m coverage run -m pytest -q
+python -m coverage report
+python -m build
 ```
 
-Available tasks:
-
-- `mise run setup`: install development dependencies (`pip install -e '.[dev]'`) and build tooling.
-- `mise run lint`: run `ruff check src tests`.
-- `mise run test`: run `python -m coverage run -m pytest -q` and enforce 100% line and branch coverage with `python -m coverage report`.
-- `mise run build`: run `python -m build`.
-- `mise run docs`: build Sphinx HTML documentation under `build/html`.
-- `mise run check`: run lint + test + build.
+Build the Sphinx documentation with `make html`.
 
 ## Documentation Hosting
 
@@ -47,7 +47,7 @@ docker compose run --rm atlas atlas run sample hello --name=docker
 docker compose run --rm check
 ```
 
-`docker compose run --rm check` validates the containerized Atlas environment, runs a sample script through the scripts runtime, and then runs the same checks as `mise run check`: Ruff, pytest, and package build.
+`docker compose run --rm check` validates the containerized Atlas environment, runs a sample script through the scripts runtime, and then runs Ruff, pytest, and the package build.
 Use `docker compose run --build --rm atlas` or `docker compose run --build --rm check` after source changes.
 
 ## Internal Shape

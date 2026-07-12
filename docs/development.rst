@@ -5,34 +5,20 @@
 ------------
 
 開発環境は mise を前提にしています。
+mise が管理するのは、ローカル開発と CI で使う Python interpreter と外部 CLI です。
+Python package dependency は ``pyproject.toml`` で管理します。
+Atlas 本番環境の script runtime は引き続き pyenv と ``/opt/atlas/runtime`` を使い、mise へ移行しません。
 
 .. code-block:: bash
 
    mise install
-   mise run setup
-   mise run check
+   python -m pip install -e '.[dev]'
+   ruff check src tests
+   python -m coverage run -m pytest -q
+   python -m coverage report
+   python -m build
 
-利用できる主な task は以下です。
-
-.. list-table::
-   :header-rows: 1
-
-   * - task
-     - 内容
-   * - ``mise run setup``
-     - ``pip install -e '.[dev]'`` で開発依存をインストール
-   * - ``mise run lint``
-     - ``ruff check src tests``
-   * - ``mise run test``
-     - ``python -m coverage run -m pytest -q`` と ``python -m coverage report``
-   * - ``mise run build``
-     - ``python -m build``
-   * - ``mise run docs``
-     - ``make html`` で Sphinx HTML を ``build/html`` に生成
-   * - ``mise run check``
-     - lint、test、build
-
-``mise run test`` は line coverage と branch coverage の両方で 100% を要求します。
+``python -m coverage report`` は line coverage と branch coverage の両方で 100% を要求します。
 新しい分岐や失敗経路を追加した場合は、production で必要な挙動としてテストも追加してください。
 
 ドキュメント
@@ -42,7 +28,7 @@
 
 .. code-block:: bash
 
-   mise run docs
+   make html
 
 警告をエラーとして扱う確認は次を使います。
 
@@ -72,9 +58,9 @@ Docker では runtime 用 image と check 用 image を分けています。
 
 変更の種類に応じて、狭い確認から広い確認へ進めます。
 
-* CLI や runtime の挙動変更: 関連する pytest を先に実行し、最後に ``mise run check``
+* CLI や runtime の挙動変更: 関連する pytest を先に実行し、最後に上記の Ruff、coverage、package build
 * docs 変更: ``make html SPHINXOPTS=-W``
-* packaging 変更: ``python -m build`` または ``mise run check``
+* packaging 変更: ``python -m build``
 * script release 形式の変更: ``examples/basic-scripts-release`` と ``examples/companion-scripts-release`` を使った smoke test
 
 公開 API の扱い

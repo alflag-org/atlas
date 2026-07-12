@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-import shutil
+import shlex
 import subprocess
+import sys
 
 import pytest
 
@@ -17,6 +18,12 @@ def _set_env(monkeypatch, home: Path, etc: Path, var: Path) -> None:
     monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
     monkeypatch.setenv("ATLAS_SCRIPTS_CURRENT_DIR", str(home / "scripts/current"))
     monkeypatch.setenv("ATLAS_SCRIPTS_DIR", str(home / "scripts/current"))
+
+
+def _write_python_wrapper(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n", encoding="utf-8")
+    path.chmod(0o755)
 
 
 def test_shims_symlink_to_script_runner(monkeypatch, tmp_path: Path) -> None:
@@ -77,10 +84,7 @@ def test_shim_executes_command(monkeypatch, tmp_path: Path) -> None:
 
     _set_env(monkeypatch, home, etc, var)
     scripts_python = home / "runtime/python/envs/scripts/bin/python"
-    scripts_python.parent.mkdir(parents=True, exist_ok=True)
-    python3 = shutil.which("python3")
-    assert python3 is not None
-    scripts_python.symlink_to(Path(python3))
+    _write_python_wrapper(scripts_python)
 
     release_src = Path("examples/basic-scripts-release").resolve()
     assert main(["scripts", "install", str(release_src)]) == 0

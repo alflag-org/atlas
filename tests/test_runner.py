@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import shutil
+import shlex
+import sys
 
 import pytest
 
@@ -16,6 +17,12 @@ def _set_env(monkeypatch, home: Path, etc: Path, var: Path) -> None:
     monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
     monkeypatch.setenv("ATLAS_SCRIPTS_CURRENT_DIR", str(home / "scripts/current"))
     monkeypatch.setenv("ATLAS_SCRIPTS_DIR", str(home / "scripts/current"))
+
+
+def _write_python_wrapper(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n", encoding="utf-8")
+    path.chmod(0o755)
 
 
 def _write_release(path: Path, release_version: str, command_name: str, marker: str) -> Path:
@@ -56,7 +63,6 @@ if __name__ == "__main__":
     return path
 
 
-@pytest.mark.skipif(shutil.which("python3") is None, reason="python3 is required")
 def test_run_and_logs(monkeypatch, tmp_path: Path) -> None:
     home = tmp_path / "opt/atlas"
     etc = tmp_path / "etc/atlas"
@@ -71,10 +77,7 @@ def test_run_and_logs(monkeypatch, tmp_path: Path) -> None:
 
     _set_env(monkeypatch, home, etc, var)
     scripts_python = home / "runtime/python/envs/scripts/bin/python"
-    scripts_python.parent.mkdir(parents=True, exist_ok=True)
-    python3 = shutil.which("python3")
-    assert python3 is not None
-    scripts_python.symlink_to(Path(python3))
+    _write_python_wrapper(scripts_python)
 
     release_src = Path("examples/basic-scripts-release").resolve()
     assert main(["scripts", "install", str(release_src)]) == 0
@@ -91,7 +94,6 @@ def test_run_and_logs(monkeypatch, tmp_path: Path) -> None:
     assert record["exit_code"] == 0
 
 
-@pytest.mark.skipif(shutil.which("python3") is None, reason="python3 is required")
 def test_run_sets_release_env_and_pythonpath_order(monkeypatch, tmp_path: Path, capsys) -> None:
     home = tmp_path / "opt/atlas"
     etc = tmp_path / "etc/atlas"
@@ -102,10 +104,7 @@ def test_run_sets_release_env_and_pythonpath_order(monkeypatch, tmp_path: Path, 
     _set_env(monkeypatch, home, etc, var)
     monkeypatch.setenv("PYTHONPATH", "/existing/pythonpath")
     scripts_python = home / "runtime/python/envs/scripts/bin/python"
-    scripts_python.parent.mkdir(parents=True, exist_ok=True)
-    python3 = shutil.which("python3")
-    assert python3 is not None
-    scripts_python.symlink_to(Path(python3))
+    _write_python_wrapper(scripts_python)
 
     alpha = _write_release(tmp_path / "alpha", "0.1.0", "alpha", "alpha")
     beta = _write_release(tmp_path / "beta", "0.2.0", "beta", "beta")

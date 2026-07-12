@@ -1,32 +1,10 @@
+[settings]
+lockfile = true
+
 [tools]
 python = "3.12"
+actionlint = "1.7.12"
+shellcheck = "0.11.0"
 
-[tasks.setup]
-description = "Install development dependencies for Atlas"
-run = """
-python -m pip install --upgrade pip
-python -m pip install -e '.[dev]'
-"""
-
-[tasks.test]
-description = "Run unit tests with 100% coverage enforcement"
-run = """
-python -m coverage run -m pytest -q
-python -m coverage report
-"""
-
-[tasks.lint]
-description = "Run Ruff checks"
-run = "ruff check src tests"
-
-[tasks.build]
-description = "Build package artifacts"
-run = "python -m build"
-
-[tasks.docs]
-description = "Build Sphinx documentation"
-run = "make html"
-
-[tasks.check]
-description = "Run lint, tests, and build"
-depends = ["lint", "test", "build"]
+[env]
+_.python.venv = { path = ".venv", create = true, uv_create_args = ["--seed"] }

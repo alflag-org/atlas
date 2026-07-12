@@ -6,27 +6,41 @@ on:
       - "**"
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test-and-validate:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
+    env:
+      MISE_PYTHON_VERSION: ${{ matrix.python-version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-      - run: |
+          persist-credentials: false
+      - name: Set up tools
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+        with:
+          install: true
+          cache: true
+      - name: Install development dependencies
+        run: |
           set -euxo pipefail
           python -m pip install --upgrade pip
-          pip install -e '.[dev]'
-      - run: |
+          python -m pip install -e '.[dev]'
+      - name: Run tests with coverage
+        run: |
           python -m coverage run -m pytest -q
           python -m coverage report
-      - run: ruff check src tests
-      - run: python -m build
+      - name: Run Ruff
+        run: ruff check src tests
+      - name: Build package
+        run: python -m build
       - name: Smoke test vNext commands
         env:
           ATLAS_HOME: ${{ github.workspace }}/.ci/opt/atlas
@@ -64,3 +78,7 @@ jobs:
           atlas which group-nested-sample
           atlas run sample hello --name=hoge
           atlas run group-nested-sample show-context
+      - name: Lint workflows
+        run: actionlint -shellcheck="$(command -v shellcheck)" .github/workflows/*.yml
+      - name: Verify mise configuration is unchanged
+        run: git diff --exit-code -- mise.toml mise.lock

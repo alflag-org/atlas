@@ -12,19 +12,28 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          python-version: "3.12"
-          cache: pip
-      - run: |
+          persist-credentials: false
+      - name: Set up tools
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+        with:
+          install: true
+          cache: true
+      - name: Install development dependencies
+        run: |
           set -euxo pipefail
           python -m pip install --upgrade pip
-          pip install -e '.[dev]'
-      - run: pytest -q
-      - run: python -m build
-      - run: sha256sum dist/* > release-checksums.txt
-      - uses: softprops/action-gh-release@v2
+          python -m pip install -e '.[dev]'
+      - name: Run tests
+        run: pytest -q
+      - name: Build package
+        run: python -m build
+      - name: Generate checksums
+        run: sha256sum dist/* > release-checksums.txt
+      - name: Publish release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           fail_on_unmatched_files: true
           files: |

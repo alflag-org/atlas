@@ -84,6 +84,18 @@ normal Python packages below ``modules/``.
    def main(name: str = "world") -> None:
        print(format_message(name))
 
+First-party operations release
+------------------------------
+
+``operations/`` follows the same manifest contract but remains a release artifact separate from
+the Atlas core wheel. Its ``VERSION`` and ``release.yml`` declare six public configuration
+commands. The release contains no environment inventory, playbooks, roles, or Git-management
+logic; callers supply an independent Ansible project as the working directory.
+
+The tag release workflow archives the contents of ``operations/`` as
+``atlas-operations-<version>.tar.gz``. Runtime dependencies come from
+``operations/requirements.txt`` and are installed only during the explicit runtime setup step.
+
 Dependencies
 ------------
 

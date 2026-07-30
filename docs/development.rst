@@ -22,7 +22,7 @@
    * - ``mise run setup``
      - ``pip install -e '.[dev]'`` で開発依存をインストール
    * - ``mise run lint``
-     - ``ruff check src tests``
+     - ``ruff check src operations tests``
    * - ``mise run test``
      - ``python -m coverage run -m pytest -q`` と ``python -m coverage report``
    * - ``mise run build``
@@ -76,6 +76,11 @@ Docker では runtime 用 image と check 用 image を分けています。
 * docs 変更: ``make html SPHINXOPTS=-W``
 * packaging 変更: ``python -m build`` または ``mise run check``
 * script release 形式の変更: ``examples/basic-scripts-release`` と ``examples/companion-scripts-release`` を使った smoke test
+* first-party operations 変更: fake Ansible tests に加え、``tests/fixtures/provisioning`` で実際の ``ansible-playbook --syntax-check`` を実行
+
+release tag の workflow は Atlas core の wheel と source archive に加え、
+``operations/VERSION`` を名前に使った ``atlas-operations-<version>.tar.gz`` を生成します。
+operations release は Atlas core package に含めず、独立した release artifact として確認してください。
 
 公開 API の扱い
 ---------------

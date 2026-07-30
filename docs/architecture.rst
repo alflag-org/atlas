@@ -6,8 +6,9 @@ Status and current behavior
 
 This page records the accepted Atlas 1.0 target. The current checkout implements strict
 ``release.yml`` parsing, command and job artifacts, job instances, advisory locks, timeout
-handling, and correlated execution while retaining the scripts CLI, configuration, environment,
-and filesystem names. Services, init artifacts, and the final terminology remain later stages.
+handling, correlated execution, and the separately versioned first-party ``operations`` release
+while retaining the scripts CLI, configuration, environment, and filesystem names. Services,
+init artifacts, and the final terminology remain later stages.
 
 Atlas responsibilities
 ----------------------
@@ -149,6 +150,11 @@ directory. It does not hard-code ``/home/ops/repos``, discover repositories, or 
 An Ansible repository therefore owns ``ansible.cfg``, inventories, variables, playbooks, roles,
 collections, tests, and its own setup tasks. Atlas may provide reusable commands such as
 ``config-check`` and ``config-diff`` but must not copy that desired state below ``/opt/atlas``.
+
+The source tree under ``operations/`` is an Atlas release rather than part of the Atlas core
+wheel. Its ``release.yml`` declares the public commands, its ``VERSION`` versions the release,
+and its ``requirements.txt`` declares ``ansible-core`` for the release runtime. The release
+workflow packages that directory as an independent archive.
 
 Release lookup through Global Registry requires a documented software-release contract. Atlas
 must not invent that contract or represent a host-local alias map as registry integration.

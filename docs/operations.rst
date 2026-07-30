@@ -18,6 +18,61 @@ pyenv と Python build に必要な OS パッケージは Atlas の外で準備�
    atlas runtime status
    atlas runtime install
 
+First-party operations release
+------------------------------
+
+repository の ``operations/`` は Atlas core wheel と別に version を持つ release artifact です。
+``release.yml`` は次の command だけを公開します。
+
+.. list-table::
+   :header-rows: 1
+
+   * - command
+     - child process
+   * - ``config-validate <playbook>``
+     - ``ansible-playbook playbooks/<playbook>.yml --syntax-check``
+   * - ``config-check <playbook> <target>``
+     - ``ansible-playbook playbooks/<playbook>.yml --limit <target> --check``
+   * - ``config-diff <playbook> <target>``
+     - ``ansible-playbook playbooks/<playbook>.yml --limit <target> --check --diff``
+   * - ``config-apply <playbook> <target>``
+     - ``ansible-playbook playbooks/<playbook>.yml --limit <target>``
+   * - ``inventory-show``
+     - ``ansible-inventory --graph``
+   * - ``config-diff-many <playbook> [target...]``
+     - target ごとに public ``config-diff`` executable を一回ずつ実行
+
+command は current working directory を Ansible project root として扱い、通常ファイルの
+``ansible.cfg`` と ``playbooks/<name>.yml`` を要求します。playbook 名は
+``[a-z][a-z0-9_-]*`` に限定し、absolute path、parent traversal、symlink を受け付けません。
+``config-apply`` は target を省略できず、暗黙の all-host apply、確認 prompt、``--yes`` を
+追加しません。stdout、stderr、exit code は Ansible child process からそのまま引き継ぎます。
+
+``config-diff-many`` は argv の target、次に stdin の target を読み、空行を無視して初出順に
+重複を除きます。一件が失敗しても残りを直列実行し、最初の non-zero exit code を返します。
+Ansible を直接起動せず ``config-diff`` shim を呼ぶため、各 child run は親と同じ
+``operation_id`` を記録します。
+
+この段階の CLI で source checkout を試す場合は、operations release をインストールしてから
+release dependency を runtime へ反映します。
+
+.. code-block:: bash
+
+   atlas scripts install ./operations
+   atlas runtime install
+   cd /path/to/provisioning
+   config-validate site
+   config-diff site web01
+
+``operations/requirements.txt`` は ``ansible-core`` を宣言します。command 実行中に
+``ansible-galaxy install``、collection update、``pip install``、repository の
+``clone`` / ``pull`` / ``checkout`` は行いません。
+
+release tag の workflow は ``atlas-operations-<version>.tar.gz`` を Atlas core package と
+別に生成します。Global Registry からの取得は、Global Registry が software-release API を
+公開するまで利用できません。Atlas 側で未定義の resource kind や host-local alias を
+registry integration として追加しません。
+
 リリース更新手順
 ----------------
 

@@ -6,10 +6,10 @@ generates shims, and records execution logs in JSONL without adding extra orches
 
 ## Atlas 1.0 design status
 
-The current checkout implements manifest-declared commands and jobs, job instances, and their
-shared correlated execution path while retaining the Atlas 0.3 scripts CLI and filesystem paths.
-Services, init artifacts, final filesystem terminology, and external desired-state migration
-remain later stages.
+The current checkout implements manifest-declared commands and jobs, job instances, their shared
+correlated execution path, and the first-party operations release while retaining the Atlas 0.3
+scripts CLI and filesystem paths. Services, init artifacts, final filesystem terminology, and
+external desired-state migration remain later stages.
 
 - [Target architecture](docs/architecture.rst)
 - [Architecture decision](docs/adr/0001-release-artifacts-and-repository-boundaries.rst)
@@ -26,7 +26,7 @@ mise run check
 Available tasks:
 
 - `mise run setup`: install development dependencies (`pip install -e '.[dev]'`) and build tooling.
-- `mise run lint`: run `ruff check src tests`.
+- `mise run lint`: run `ruff check src operations tests`.
 - `mise run test`: run `python -m coverage run -m pytest -q` and enforce 100% line and branch coverage with `python -m coverage report`.
 - `mise run build`: run `python -m build`.
 - `mise run docs`: build Sphinx HTML documentation under `build/html`.
@@ -70,6 +70,7 @@ Atlas keeps the command path small:
 - `atlas.execution` runs commands and jobs with correlation, Git context, timeout, redaction, and logs.
 - `atlas.job_instances` and `atlas.jobs` validate and run non-public jobs.
 - `atlas.locks` provides non-blocking advisory job locks.
+- `operations/` is a separately versioned first-party release containing reusable configuration commands.
 - `atlas.sources` resolves local, archive, HTTP(S), git, and registry sources.
 - `atlas.releases` validates and atomically installs scripts releases.
 - `atlas.runtime` handles pyenv-backed scripts runtime installation and status.
@@ -92,6 +93,28 @@ Atlas keeps the command path small:
 - `atlas job instance list`
 - `atlas job instance inspect <instance-name>`
 - `atlas job instance run <instance-name>`
+
+## First-party operations release
+
+`operations/` is released separately from the Atlas core wheel. Its manifest publishes six
+commands and no jobs:
+
+- `config-validate <playbook>`
+- `config-check <playbook> <target>`
+- `config-diff <playbook> <target>`
+- `config-apply <playbook> <target>`
+- `inventory-show`
+- `config-diff-many <playbook> [target...]`
+
+Run these commands from an independent Ansible project root containing `ansible.cfg` and
+`playbooks/<name>.yml`. Atlas does not install collections, change Git state, or supply inventory
+and playbooks. `config-apply` always requires an explicit target. `config-diff-many` invokes the
+public `config-diff` executable for each target so nested runs retain one operation ID.
+
+The release workflow publishes `atlas-operations-<version>.tar.gz` alongside the Atlas wheel and
+source archive. `operations/requirements.txt` declares its runtime dependency on `ansible-core`.
+Global Registry installation remains unavailable until that service exposes a documented
+software-release API.
 
 ## Runtime Version Semantics
 

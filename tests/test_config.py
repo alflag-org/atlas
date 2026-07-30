@@ -151,10 +151,10 @@ scripts:
     version: "3.12"
 scripts:
   releases:
-    current: sample
+    bad_name: sample
 """,
             ValueError,
-            "invalid release name: current",
+            "invalid release name: bad_name",
         ),
         (
             """runtime:

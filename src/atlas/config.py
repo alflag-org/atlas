@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .scriptsets import validate_release_name
+from .manifests import validate_name
 from .yamlutil import load_yaml_file
 
 
@@ -96,7 +96,7 @@ def load_config(path: Path) -> AtlasConfig:
         if not isinstance(releases_raw, dict):
             raise TypeError("scripts.releases must be a mapping")
         for release_name, release_raw in releases_raw.items():
-            name = validate_release_name(str(release_name).strip())
+            name = validate_name(str(release_name).strip(), kind="release")
             if isinstance(release_raw, str):
                 release_source = release_raw.strip()
                 enabled = True

@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from atlas.commands import discover_commands
 from atlas.config import AtlasConfig, RegistryEntry, RuntimeConfig, ScriptsConfig
-from atlas.releases import install_named_release, install_release
+from atlas.manifests import load_manifest
+from atlas.releases import install_release
 from atlas.scriptsets import active_releases, build_command_index
 from atlas.sources import resolve_source
 
@@ -19,43 +19,6 @@ from atlas.sources import resolve_source
 def _touch(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("print('x')\n", encoding="utf-8")
-
-
-def test_discovery_names(tmp_path: Path) -> None:
-    commands = tmp_path / "commands"
-    _touch(commands / "sample.py")
-    _touch(commands / "group" / "nested-sample.py")
-    found = discover_commands(commands)
-    assert [c.name for c in found] == ["group-nested-sample", "sample"]
-
-
-def test_discovery_conflict(tmp_path: Path) -> None:
-    commands = tmp_path / "commands"
-    _touch(commands / "foo" / "bar.py")
-    _touch(commands / "foo-bar.py")
-    with pytest.raises(ValueError, match="conflict"):
-        discover_commands(commands)
-
-
-def test_discovery_rejects_invalid_stem(tmp_path: Path) -> None:
-    commands = tmp_path / "commands"
-    _touch(commands / "foo_bar.py")
-    with pytest.raises(ValueError, match="invalid"):
-        discover_commands(commands)
-
-
-def test_discovery_rejects_invalid_segment(tmp_path: Path) -> None:
-    commands = tmp_path / "commands"
-    _touch(commands / "Foo" / "bar.py")
-    with pytest.raises(ValueError, match="invalid"):
-        discover_commands(commands)
-
-
-def test_discovery_rejects_reserved_name(tmp_path: Path) -> None:
-    commands = tmp_path / "commands"
-    _touch(commands / "atlas.py")
-    with pytest.raises(ValueError, match="reserved"):
-        discover_commands(commands)
 
 
 def test_install_rejects_release_symlink(tmp_path: Path) -> None:
@@ -66,6 +29,15 @@ def test_install_rejects_release_symlink(tmp_path: Path) -> None:
     modules.mkdir(parents=True)
     (source / "VERSION").write_text("2026.05.10-001\n", encoding="utf-8")
     _touch(commands / "sample.py")
+    (source / "release.yml").write_text(
+        "schema: atlas.release/v1\n"
+        "name: default\n"
+        "commands:\n"
+        "  sample:\n"
+        "    runtime: python\n"
+        "    entrypoint: commands/sample.py\n",
+        encoding="utf-8",
+    )
     target = source / "target.txt"
     target.write_text("x", encoding="utf-8")
     (modules / "bad-link.py").symlink_to(target)
@@ -80,18 +52,27 @@ def test_install_overwrites_same_version_atomically(tmp_path: Path) -> None:
     commands.mkdir(parents=True)
     (source / "VERSION").write_text("2026.05.10-001\n", encoding="utf-8")
     (commands / "sample.py").write_text("print('v1')\n", encoding="utf-8")
+    (source / "release.yml").write_text(
+        "schema: atlas.release/v1\n"
+        "name: default\n"
+        "commands:\n"
+        "  sample:\n"
+        "    runtime: python\n"
+        "    entrypoint: commands/sample.py\n",
+        encoding="utf-8",
+    )
 
     releases = tmp_path / "releases"
     current = tmp_path / "current"
     install_release(source, releases, current)
-    target = releases / "2026.05.10-001"
+    target = releases / "default/2026.05.10-001"
     assert target.exists()
-    assert current.resolve() == target
+    assert (current / "default").resolve() == target
     assert (target / "commands/sample.py").read_text(encoding="utf-8") == "print('v1')\n"
 
     (commands / "sample.py").write_text("print('v2')\n", encoding="utf-8")
     install_release(source, releases, current)
-    assert current.resolve() == target
+    assert (current / "default").resolve() == target
     assert (target / "commands/sample.py").read_text(encoding="utf-8") == "print('v2')\n"
 
 
@@ -103,28 +84,53 @@ def test_install_cleans_staging_and_backup_paths(tmp_path: Path) -> None:
     install_release(source, releases, current)
     install_release(source, releases, current)
 
-    assert list(releases.glob("*.tmp.*")) == []
-    assert list(releases.glob("*.bak.*")) == []
+    assert list((releases / "default").glob("*.tmp.*")) == []
+    assert list((releases / "default").glob("*.bak.*")) == []
 
 
-def _release(path: Path, *, command_name: str = "sample", version: str = "2026.05.10-001") -> Path:
+def _release(
+    path: Path,
+    *,
+    release_name: str = "default",
+    command_name: str = "sample",
+    version: str = "2026.05.10-001",
+) -> Path:
     commands = path / "commands"
     modules = path / "modules"
     commands.mkdir(parents=True)
     modules.mkdir(parents=True)
     (path / "VERSION").write_text(f"{version}\n", encoding="utf-8")
     _touch(commands / f"{command_name}.py")
+    (path / "release.yml").write_text(
+        "schema: atlas.release/v1\n"
+        f"name: {release_name}\n"
+        "commands:\n"
+        f"  {command_name}:\n"
+        "    runtime: python\n"
+        f"    entrypoint: commands/{command_name}.py\n",
+        encoding="utf-8",
+    )
     return path
 
 
-def test_install_named_release_supports_multiple_active_releases(tmp_path: Path) -> None:
-    common = _release(tmp_path / "common", command_name="common-command", version="0.1.0")
-    kitsunebi = _release(tmp_path / "kitsunebi", command_name="kitsunebi-command", version="0.2.0")
+def test_install_release_supports_multiple_active_releases(tmp_path: Path) -> None:
+    common = _release(
+        tmp_path / "common",
+        release_name="common",
+        command_name="common-command",
+        version="0.1.0",
+    )
+    kitsunebi = _release(
+        tmp_path / "kitsunebi",
+        release_name="kitsunebi",
+        command_name="kitsunebi-command",
+        version="0.2.0",
+    )
     releases = tmp_path / "scripts/releases"
     current = tmp_path / "scripts/current"
 
-    common_target = install_named_release(common, releases, current, "common")
-    kitsunebi_target = install_named_release(kitsunebi, releases, current, "kitsunebi")
+    common_target = install_release(common, releases, current)
+    kitsunebi_target = install_release(kitsunebi, releases, current)
 
     assert common_target == releases / "common/0.1.0"
     assert kitsunebi_target == releases / "kitsunebi/0.2.0"
@@ -134,7 +140,7 @@ def test_install_named_release_supports_multiple_active_releases(tmp_path: Path)
     assert sorted(build_command_index(current)) == ["common-command", "kitsunebi-command"]
 
 
-def test_install_named_release_backups_legacy_current_symlink(tmp_path: Path) -> None:
+def test_install_release_rejects_legacy_current_symlink(tmp_path: Path) -> None:
     source = _release(tmp_path / "source")
     releases = tmp_path / "scripts/releases"
     current = tmp_path / "scripts/current"
@@ -143,13 +149,11 @@ def test_install_named_release_backups_legacy_current_symlink(tmp_path: Path) ->
     current.parent.mkdir(parents=True)
     current.symlink_to(legacy_target, target_is_directory=True)
 
-    install_named_release(source, releases, current, "default")
+    with pytest.raises(ValueError, match="scripts current root must be a directory"):
+        install_release(source, releases, current)
 
-    assert current.is_dir()
-    assert (current / "default").is_symlink()
-    backups = list(current.parent.glob("current.legacy.*"))
-    assert len(backups) == 1
-    assert backups[0].is_symlink()
+    assert current.is_symlink()
+    assert current.resolve() == legacy_target
 
 
 def test_resolve_local_tar_archive(tmp_path: Path) -> None:
@@ -161,7 +165,7 @@ def test_resolve_local_tar_archive(tmp_path: Path) -> None:
     resolved = resolve_source(str(archive), cache_dir=tmp_path / "cache")
 
     assert (resolved / "VERSION").read_text(encoding="utf-8").strip() == "2026.05.10-001"
-    assert [entry.name for entry in discover_commands(resolved / "commands")] == ["sample"]
+    assert list(load_manifest(resolved).commands) == ["sample"]
 
 
 def test_resolve_archive_replaces_stale_cache_tmp(tmp_path: Path) -> None:

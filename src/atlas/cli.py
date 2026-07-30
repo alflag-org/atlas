@@ -15,16 +15,12 @@ from .launchers import (
     regenerate_shims,
     sync_atlas_core,
 )
+from .manifests import load_manifest, validate_name
 from .paths import ensure_dirs, get_paths
-from .releases import install_named_release
+from .releases import install_release
 from .runner import resolve_command_path, run_command
 from .runtime import install_runtime, runtime_status
-from .scriptsets import (
-    active_releases,
-    build_command_index,
-    discover_release_commands,
-    validate_release_name,
-)
+from .scriptsets import active_releases, build_command_index, discover_release_commands
 from .sources import resolve_source
 
 
@@ -141,10 +137,12 @@ def cmd_scripts_install(args: argparse.Namespace) -> int:
     )
     config = load_config(config_path) if needs_registry_config else None
     source = resolve_source(args.source, config=config, cache_dir=p.cache)
-    release_name = validate_release_name(args.name)
+    release_name = load_manifest(source).name
+    if args.name is not None and validate_name(args.name, kind="release") != release_name:
+        raise ValueError(f"release name mismatch: {args.name} != {release_name}")
     snapshots = _capture_current_targets(p.scripts_current_root, [release_name])
     try:
-        install_named_release(source, p.scripts_releases_root, p.scripts_current_root, release_name)
+        install_release(source, p.scripts_releases_root, p.scripts_current_root)
         sync_atlas_core(p.home)
         ensure_atlas_launcher(p.bin_dir / "atlas")
         ensure_script_runner(p.script_runner, p.bin_dir / "atlas")
@@ -171,7 +169,10 @@ def cmd_scripts_update(args: argparse.Namespace) -> int:
                 raise ValueError(f"scripts release is not configured: {release_name}")
             release = configured_releases[release_name]
             source = resolve_source(release.source, config=cfg, cache_dir=p.cache)
-            install_named_release(source, p.scripts_releases_root, p.scripts_current_root, release_name)
+            manifest_name = load_manifest(source).name
+            if manifest_name != release_name:
+                raise ValueError(f"release name mismatch: {release_name} != {manifest_name}")
+            install_release(source, p.scripts_releases_root, p.scripts_current_root)
         sync_atlas_core(p.home)
         ensure_atlas_launcher(p.bin_dir / "atlas")
         ensure_script_runner(p.script_runner, p.bin_dir / "atlas")
@@ -237,7 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
     scripts_sub = p_scripts.add_subparsers(dest="scripts_cmd", required=True)
     p_scripts_install = scripts_sub.add_parser("install")
     p_scripts_install.add_argument("source")
-    p_scripts_install.add_argument("--name", default="default")
+    p_scripts_install.add_argument("--name")
     p_scripts_install.set_defaults(func=cmd_scripts_install)
     p_scripts_update = scripts_sub.add_parser("update")
     p_scripts_update.add_argument("release_name", nargs="?")

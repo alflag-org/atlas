@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from atlas.cli import main
 from atlas.runtime import RuntimeStatus
 
@@ -105,6 +107,41 @@ scripts:
     assert main(["scripts", "list"]) == 0
     out = capsys.readouterr().out
     assert "sample" in out
+
+
+def test_install_name_is_only_an_explicit_manifest_assertion(monkeypatch, tmp_path: Path) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    etc.mkdir(parents=True, exist_ok=True)
+    _set_env(monkeypatch, home, etc, var)
+    release_src = Path("examples/basic-scripts-release").resolve()
+
+    assert main(["scripts", "install", str(release_src), "--name", "sample"]) == 0
+    with pytest.raises(ValueError, match="release name mismatch: other != sample"):
+        main(["scripts", "install", str(release_src), "--name", "other"])
+
+
+def test_update_requires_configured_name_to_match_manifest(monkeypatch, tmp_path: Path) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    etc.mkdir(parents=True, exist_ok=True)
+    release_src = Path("examples/basic-scripts-release").resolve()
+    (etc / "config.yml").write_text(
+        "runtime:\n"
+        "  python:\n"
+        '    version: "3.12"\n'
+        "scripts:\n"
+        "  releases:\n"
+        "    other:\n"
+        f'      source: "{release_src}"\n',
+        encoding="utf-8",
+    )
+    _set_env(monkeypatch, home, etc, var)
+
+    with pytest.raises(ValueError, match="release name mismatch: other != sample"):
+        main(["scripts", "update"])
 
 
 def test_runtime_status_prints_expanded_fields(monkeypatch, tmp_path: Path, capsys) -> None:

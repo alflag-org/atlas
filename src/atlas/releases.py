@@ -3,47 +3,48 @@
 from __future__ import annotations
 
 import os
-import re
 import shutil
-import time
+from dataclasses import dataclass
 from pathlib import Path
 
-from .commands import discover_commands
 from .files import remove_path
+from .manifests import ReleaseManifest, load_manifest, validate_name
 
-RELEASE_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
-RESERVED_RELEASE_NAMES = {"", ".", "..", "current", "releases", "tmp"}
+
+@dataclass(frozen=True)
+class ValidatedRelease:
+    """A release directory after complete manifest validation."""
+
+    root: Path
+    version: str
+    manifest: ReleaseManifest
 
 
 def read_version(release_root: Path) -> str:
     """Read the non-empty ``VERSION`` value from a release root."""
     version_file = release_root / "VERSION"
-    if not version_file.exists():
+    if not version_file.is_file() or version_file.is_symlink():
         raise ValueError(f"missing VERSION file: {version_file}")
     version = version_file.read_text(encoding="utf-8").strip()
     if not version:
         raise ValueError("VERSION is empty")
+    if "/" in version or "\\" in version or version in {".", ".."}:
+        raise ValueError(f"invalid release version: {version}")
     return version
 
 
-def validate_release(source: Path) -> str:
-    """Validate a release directory and return its version."""
-    if not source.exists() or not source.is_dir():
-        raise ValueError(f"source directory not found: {source}")
-    version = read_version(source)
-    discover_commands(source / "commands")
+def validate_release(source: Path) -> ValidatedRelease:
+    """Validate a release directory and its explicit command manifest."""
+    if not source.is_dir() or source.is_symlink():
+        raise ValueError(f"release directory not found: {source}")
     for item in source.rglob("*"):
         if item.is_symlink():
-            raise ValueError(f"symlink is not allowed in scripts release: {item}")
-    return version
-
-
-def _validate_release_name(name: str) -> str:
-    if name in RESERVED_RELEASE_NAMES:
-        raise ValueError(f"invalid release name: {name}")
-    if not RELEASE_NAME_RE.fullmatch(name):
-        raise ValueError(f"invalid release name: {name}")
-    return name
+            raise ValueError(f"symlink is not allowed in release: {item}")
+    return ValidatedRelease(
+        root=source.resolve(),
+        version=read_version(source),
+        manifest=load_manifest(source),
+    )
 
 
 def _replace_release(source: Path, target: Path) -> None:
@@ -79,33 +80,18 @@ def _replace_current_link(current_link: Path, target: Path) -> None:
 
 def ensure_current_root(current_root: Path) -> None:
     """Ensure the active release root is a directory."""
-    if current_root.is_symlink():
-        backup = current_root.parent / f"{current_root.name}.legacy.{int(time.time())}.{os.getpid()}"
-        current_root.rename(backup)
-    elif current_root.exists() and not current_root.is_dir():
-        backup = current_root.parent / f"{current_root.name}.legacy.{int(time.time())}.{os.getpid()}"
-        current_root.rename(backup)
+    if current_root.exists() and (not current_root.is_dir() or current_root.is_symlink()):
+        raise ValueError(f"scripts current root must be a directory: {current_root}")
     current_root.mkdir(parents=True, exist_ok=True)
 
 
-def install_release(source: Path, releases_root: Path, current_link: Path) -> Path:
-    """Install a legacy single release and update its current symlink."""
-    version = validate_release(source)
-    target = releases_root / version
-    target.parent.mkdir(parents=True, exist_ok=True)
-    _replace_release(source, target)
-    current_link.parent.mkdir(parents=True, exist_ok=True)
-    _replace_current_link(current_link, target)
-    return target
-
-
-def install_named_release(source: Path, releases_root: Path, current_root: Path, release_name: str) -> Path:
-    """Install a named release and update its current symlink."""
-    version = validate_release(source)
-    name = _validate_release_name(release_name)
-    target = releases_root / name / version
-    target.parent.mkdir(parents=True, exist_ok=True)
-    _replace_release(source, target)
+def install_release(source: Path, releases_root: Path, current_root: Path) -> Path:
+    """Install and activate one manifest-named release."""
+    release = validate_release(source)
+    name = validate_name(release.manifest.name, kind="release")
+    target = releases_root / name / release.version
     ensure_current_root(current_root)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _replace_release(release.root, target)
     _replace_current_link(current_root / name, target)
     return target

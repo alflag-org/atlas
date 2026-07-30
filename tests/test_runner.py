@@ -22,6 +22,15 @@ def _write_release(path: Path, release_version: str, command_name: str, marker: 
     (path / "commands").mkdir(parents=True)
     (path / "modules").mkdir(parents=True)
     (path / "VERSION").write_text(f"{release_version}\n", encoding="utf-8")
+    (path / "release.yml").write_text(
+        "schema: atlas.release/v1\n"
+        f"name: {path.name}\n"
+        "commands:\n"
+        f"  {command_name}:\n"
+        "    runtime: python\n"
+        f"    entrypoint: commands/{command_name}.py\n",
+        encoding="utf-8",
+    )
     (path / "modules/sharedmod.py").write_text(f"IDENT = {marker!r}\n", encoding="utf-8")
     (path / "commands" / f"{command_name}.py").write_text(
         """
@@ -86,7 +95,7 @@ def test_run_and_logs(monkeypatch, tmp_path: Path) -> None:
 
     line = (var / "logs/runs.jsonl").read_text(encoding="utf-8").strip().splitlines()[-1]
     record = json.loads(line)
-    assert record["release"] == "default"
+    assert record["release"] == "sample"
     assert record["script"] == "group-nested-sample"
     assert record["exit_code"] == 0
 
@@ -109,8 +118,8 @@ def test_run_sets_release_env_and_pythonpath_order(monkeypatch, tmp_path: Path, 
 
     alpha = _write_release(tmp_path / "alpha", "0.1.0", "alpha", "alpha")
     beta = _write_release(tmp_path / "beta", "0.2.0", "beta", "beta")
-    assert main(["scripts", "install", str(alpha), "--name", "alpha"]) == 0
-    assert main(["scripts", "install", str(beta), "--name", "beta"]) == 0
+    assert main(["scripts", "install", str(alpha)]) == 0
+    assert main(["scripts", "install", str(beta)]) == 0
 
     assert main(["run", "alpha"]) == 0
     payload = json.loads((var / "runner-env.json").read_text(encoding="utf-8"))
@@ -137,14 +146,23 @@ def test_run_fails_on_command_collision(monkeypatch, tmp_path: Path) -> None:
 
     release_one = tmp_path / "release-one"
     release_two = tmp_path / "release-two"
-    for root in [release_one, release_two]:
+    for root, release_name in [(release_one, "one"), (release_two, "two")]:
         (root / "commands").mkdir(parents=True)
         (root / "VERSION").write_text("0.1.0\n", encoding="utf-8")
         (root / "commands/collision.py").write_text("print('x')\n", encoding="utf-8")
+        (root / "release.yml").write_text(
+            "schema: atlas.release/v1\n"
+            f"name: {release_name}\n"
+            "commands:\n"
+            "  collision:\n"
+            "    runtime: python\n"
+            "    entrypoint: commands/collision.py\n",
+            encoding="utf-8",
+        )
 
-    assert main(["scripts", "install", str(release_one), "--name", "one"]) == 0
+    assert main(["scripts", "install", str(release_one)]) == 0
     with pytest.raises(ValueError, match="command name collision: collision found in releases: one, two"):
-        main(["scripts", "install", str(release_two), "--name", "two"])
+        main(["scripts", "install", str(release_two)])
     assert (home / "scripts/current/one").is_symlink()
     assert not (home / "scripts/current/two").exists()
     assert main(["scripts", "list"]) == 0

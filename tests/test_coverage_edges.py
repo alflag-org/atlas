@@ -12,18 +12,17 @@ from pathlib import Path
 import pytest
 
 from atlas import cli
-from atlas.commands import command_name_from_relative_path, discover_commands
 from atlas.config import AtlasConfig, RuntimeConfig, ScriptsConfig
 from atlas.launchers import regenerate_shims
+from atlas.manifests import validate_name
 from atlas.releases import (
-    install_named_release,
     install_release,
     read_version,
     validate_release,
 )
 from atlas.runner import resolve_command_path
 from atlas.runtime import RuntimeStatus, install_runtime
-from atlas.scriptsets import active_releases, validate_release_name
+from atlas.scriptsets import active_releases
 from atlas.sources import (
     clone_git_source,
     download_archive,
@@ -42,10 +41,25 @@ def _set_env(monkeypatch: pytest.MonkeyPatch, home: Path, etc: Path, var: Path) 
     monkeypatch.setenv("ATLAS_SCRIPTS_DIR", str(home / "scripts/current"))
 
 
-def _release(path: Path, *, command_name: str = "sample", version: str = "0.1.0") -> Path:
+def _release(
+    path: Path,
+    *,
+    release_name: str = "default",
+    command_name: str = "sample",
+    version: str = "0.1.0",
+) -> Path:
     (path / "commands").mkdir(parents=True, exist_ok=True)
     (path / "VERSION").write_text(f"{version}\n", encoding="utf-8")
     (path / "commands" / f"{command_name}.py").write_text("print('ok')\n", encoding="utf-8")
+    (path / "release.yml").write_text(
+        "schema: atlas.release/v1\n"
+        f"name: {release_name}\n"
+        "commands:\n"
+        f"  {command_name}:\n"
+        "    runtime: python\n"
+        f"    entrypoint: commands/{command_name}.py\n",
+        encoding="utf-8",
+    )
     return path
 
 
@@ -209,7 +223,7 @@ def test_cli_scripts_shims_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     etc.mkdir(parents=True)
     _set_env(monkeypatch, home, etc, var)
     release = _release(tmp_path / "release")
-    install_named_release(release, home / "scripts/releases", home / "scripts/current", "default")
+    install_release(release, home / "scripts/releases", home / "scripts/current")
 
     assert cli.main(["scripts", "shims"]) == 0
 
@@ -238,40 +252,10 @@ def test_cli_module_entrypoint(monkeypatch: pytest.MonkeyPatch) -> None:
     assert exc.value.code == 0
 
 
-def test_command_validation_rejects_double_dash_and_trailing_dash() -> None:
-    with pytest.raises(ValueError, match="invalid command name: foo--bar"):
-        command_name_from_relative_path(Path("foo-") / "bar.py")
-    with pytest.raises(ValueError, match="invalid command name: foo-"):
-        command_name_from_relative_path(Path("foo-.py"))
-
-
-def test_discover_commands_rejects_missing_symlink_and_traversal(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    with pytest.raises(ValueError, match="commands directory not found"):
-        discover_commands(tmp_path / "missing")
-
-    commands = tmp_path / "commands"
-    commands.mkdir()
-    target = tmp_path / "target.py"
-    target.write_text("print('x')\n", encoding="utf-8")
-    (commands / "linked.py").symlink_to(target)
-    with pytest.raises(ValueError, match="symlink is not allowed"):
-        discover_commands(commands)
-
-    (commands / "linked.py").unlink()
-    inner = commands / "sample.py"
-    inner.write_text("print('x')\n", encoding="utf-8")
-    original_resolve = Path.resolve
-
-    def fake_resolve(self: Path, *args, **kwargs):
-        if self == inner:
-            return tmp_path / "outside.py"
-        return original_resolve(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "resolve", fake_resolve)
-    with pytest.raises(ValueError, match="path traversal detected"):
-        discover_commands(commands)
+def test_manifest_name_validation_rejects_invalid_identifiers() -> None:
+    for name in ["foo--bar", "foo-", "Foo", "foo_bar", ""]:
+        with pytest.raises(ValueError, match="invalid command name"):
+            validate_name(name, kind="command")
 
 
 def test_release_validation_rejects_missing_empty_and_invalid_inputs(tmp_path: Path) -> None:
@@ -284,18 +268,12 @@ def test_release_validation_rejects_missing_empty_and_invalid_inputs(tmp_path: P
     with pytest.raises(ValueError, match="VERSION is empty"):
         read_version(empty)
 
-    with pytest.raises(ValueError, match="source directory not found"):
+    with pytest.raises(ValueError, match="release directory not found"):
         validate_release(tmp_path / "missing")
 
-    for name in ["current", "Bad"]:
+    for name in ["Bad", "bad_name"]:
         with pytest.raises(ValueError, match="invalid release name"):
-            validate_release_name(name)
-
-    release = _release(tmp_path / "release")
-    for name in ["current", "Bad"]:
-        with pytest.raises(ValueError, match="invalid release name"):
-            install_named_release(release, tmp_path / "releases", tmp_path / "current", name)
-
+            validate_name(name, kind="release")
 
 def test_install_release_rolls_back_when_replacement_rename_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -304,7 +282,7 @@ def test_install_release_rolls_back_when_replacement_rename_fails(
     releases = tmp_path / "releases"
     current = tmp_path / "current"
     install_release(source, releases, current)
-    target = releases / "0.1.0"
+    target = releases / "default/0.1.0"
     original_rename = Path.rename
 
     def fail_staging_rename(self: Path, target_path: Path):
@@ -316,7 +294,7 @@ def test_install_release_rolls_back_when_replacement_rename_fails(
     with pytest.raises(RuntimeError, match="rename failed"):
         install_release(source, releases, current)
 
-    assert current.resolve() == target
+    assert (current / "default").resolve() == target
     assert target.exists()
 
 
@@ -337,19 +315,19 @@ def test_install_release_cleans_staging_when_initial_rename_fails(
     with pytest.raises(RuntimeError, match="rename failed"):
         install_release(source, releases, current)
 
-    assert not (releases / "0.1.0").exists()
+    assert not (releases / "default/0.1.0").exists()
 
 
-def test_install_named_release_backs_up_legacy_current_file(tmp_path: Path) -> None:
+def test_install_release_rejects_non_directory_current_root(tmp_path: Path) -> None:
     source = _release(tmp_path / "source")
     current = tmp_path / "scripts/current"
     current.parent.mkdir(parents=True)
     current.write_text("legacy", encoding="utf-8")
 
-    install_named_release(source, tmp_path / "scripts/releases", current, "default")
+    with pytest.raises(ValueError, match="scripts current root must be a directory"):
+        install_release(source, tmp_path / "scripts/releases", current)
 
-    assert (current / "default").is_symlink()
-    assert len(list(current.parent.glob("current.legacy.*"))) == 1
+    assert current.read_text(encoding="utf-8") == "legacy"
 
 
 def test_runner_resolve_unknown_command(tmp_path: Path) -> None:
@@ -368,9 +346,9 @@ def test_runner_redacts_sensitive_arguments(monkeypatch: pytest.MonkeyPatch, tmp
     scripts_python.parent.mkdir(parents=True)
     scripts_python.symlink_to(Path("/usr/bin/python3"))
     release = _release(tmp_path / "release")
-    install_named_release(release, home / "scripts/releases", home / "scripts/current", "default")
-    other = _release(tmp_path / "other", command_name="other")
-    install_named_release(other, home / "scripts/releases", home / "scripts/current", "other")
+    install_release(release, home / "scripts/releases", home / "scripts/current")
+    other = _release(tmp_path / "other", release_name="other", command_name="other")
+    install_release(other, home / "scripts/releases", home / "scripts/current")
     class Proc:
         returncode = 0
 
@@ -507,8 +485,10 @@ def test_scriptsets_rejects_invalid_current_root_and_entries(tmp_path: Path) -> 
     current.unlink()
     current.mkdir()
     (current / "regular").write_text("ignored", encoding="utf-8")
-    assert active_releases(current) == []
+    with pytest.raises(ValueError, match="scripts current entry must be a symlink"):
+        active_releases(current)
 
+    (current / "regular").unlink()
     (current / "Bad").symlink_to(tmp_path / "missing")
     with pytest.raises(ValueError, match="invalid release name"):
         active_releases(current)
@@ -668,3 +648,7 @@ def test_yaml_utilities(tmp_path: Path) -> None:
     path = tmp_path / "nested/config.yml"
     dump_yaml_file(path, {"a": 1})
     assert load_yaml_file(path) == {"a": 1}
+
+    path.write_text("a: 1\na: 2\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate YAML key: a"):
+        load_yaml_file(path)

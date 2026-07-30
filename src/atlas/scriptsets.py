@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .commands import discover_commands
+from .manifests import ReleaseManifest, load_manifest, validate_name
 from .releases import read_version
-
-RELEASE_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
-RESERVED_RELEASE_NAMES = {"", ".", "..", "current", "releases", "tmp"}
 
 
 @dataclass(frozen=True)
@@ -20,6 +16,7 @@ class ActiveRelease:
     name: str
     root: Path
     version: str
+    manifest: ReleaseManifest
 
 
 @dataclass(frozen=True)
@@ -33,30 +30,31 @@ class ReleaseCommand:
     release_root: Path
 
 
-def validate_release_name(name: str) -> str:
-    """Validate and return a release name."""
-    if name in RESERVED_RELEASE_NAMES:
-        raise ValueError(f"invalid release name: {name}")
-    if not RELEASE_NAME_RE.fullmatch(name):
-        raise ValueError(f"invalid release name: {name}")
-    return name
-
-
 def active_releases(current_root: Path) -> list[ActiveRelease]:
     """Return releases activated under ``current_root``."""
     if not current_root.exists():
         return []
-    if not current_root.is_dir():
+    if not current_root.is_dir() or current_root.is_symlink():
         raise ValueError(f"scripts current root must be a directory: {current_root}")
     releases: list[ActiveRelease] = []
     for entry in sorted(current_root.iterdir(), key=lambda item: item.name):
         if not entry.is_symlink():
-            continue
-        name = validate_release_name(entry.name)
+            raise ValueError(f"scripts current entry must be a symlink: {entry}")
+        name = validate_name(entry.name, kind="release")
         root = entry.resolve()
         if not root.exists() or not root.is_dir():
             raise ValueError(f"active release target not found: {entry}")
-        releases.append(ActiveRelease(name=name, root=root, version=read_version(root)))
+        manifest = load_manifest(root)
+        if manifest.name != name:
+            raise ValueError(f"active release name mismatch: {name} != {manifest.name}")
+        releases.append(
+            ActiveRelease(
+                name=name,
+                root=root,
+                version=read_version(root),
+                manifest=manifest,
+            )
+        )
     return releases
 
 
@@ -64,13 +62,13 @@ def discover_release_commands(current_root: Path) -> list[ReleaseCommand]:
     """Discover commands across all active releases."""
     commands: list[ReleaseCommand] = []
     for release in active_releases(current_root):
-        for entry in discover_commands(release.root / "commands"):
+        for name, artifact in release.manifest.commands.items():
             commands.append(
                 ReleaseCommand(
-                    name=entry.name,
+                    name=name,
                     release_name=release.name,
                     release_version=release.version,
-                    script_path=entry.script_path,
+                    script_path=artifact.entrypoint,
                     release_root=release.root,
                 )
             )

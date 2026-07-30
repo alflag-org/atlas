@@ -49,6 +49,15 @@ def test_regenerate_shims_removes_stale_files_and_preserves_directories(tmp_path
     (release / "commands").mkdir(parents=True)
     (release / "VERSION").write_text("0.1.0\n", encoding="utf-8")
     (release / "commands/sample.py").write_text("print('sample')\n", encoding="utf-8")
+    (release / "release.yml").write_text(
+        "schema: atlas.release/v1\n"
+        "name: sample\n"
+        "commands:\n"
+        "  sample:\n"
+        "    runtime: python\n"
+        "    entrypoint: commands/sample.py\n",
+        encoding="utf-8",
+    )
     current.mkdir(parents=True)
     (current / "sample").symlink_to(release, target_is_directory=True)
     shims = tmp_path / "shims"
@@ -112,8 +121,17 @@ def test_scripts_shims_fails_on_collision(monkeypatch, tmp_path: Path) -> None:
         (release / "commands").mkdir(parents=True)
         (release / "VERSION").write_text("0.1.0\n", encoding="utf-8")
         (release / "commands/dup.py").write_text("print('dup')\n", encoding="utf-8")
+        (release / "release.yml").write_text(
+            "schema: atlas.release/v1\n"
+            f"name: {name}\n"
+            "commands:\n"
+            "  dup:\n"
+            "    runtime: python\n"
+            "    entrypoint: commands/dup.py\n",
+            encoding="utf-8",
+        )
         if name == "one":
-            assert main(["scripts", "install", str(release), "--name", name]) == 0
+            assert main(["scripts", "install", str(release)]) == 0
             continue
         with pytest.raises(ValueError, match="command name collision: dup found in releases: one, two"):
-            main(["scripts", "install", str(release), "--name", name])
+            main(["scripts", "install", str(release)])

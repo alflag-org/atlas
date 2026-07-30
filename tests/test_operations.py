@@ -362,7 +362,7 @@ def test_config_diff_many_runs_through_shims_with_nested_correlation(
     atlas_paths,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake_ansible = atlas_paths.scripts_python.parent / "ansible-playbook"
+    fake_ansible = atlas_paths.runtime_python.parent / "ansible-playbook"
     fake_ansible.write_text(
         "#!/bin/sh\n"
         "printf 'ansible-playbook:%s\\n' \"$*\"\n",
@@ -370,7 +370,7 @@ def test_config_diff_many_runs_through_shims_with_nested_correlation(
     )
     fake_ansible.chmod(0o755)
 
-    assert cli.main(["scripts", "install", str(OPERATIONS)]) == 0
+    assert cli.main(["release", "install", str(OPERATIONS)]) == 0
     monkeypatch.chdir(PROVISIONING_FIXTURE)
     process = subprocess.run(
         [

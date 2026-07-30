@@ -14,8 +14,6 @@ def _set_env(monkeypatch, home: Path, etc: Path, var: Path) -> None:
     monkeypatch.setenv("ATLAS_ETC_DIR", str(etc))
     monkeypatch.setenv("ATLAS_VAR_DIR", str(var))
     monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
-    monkeypatch.setenv("ATLAS_SCRIPTS_CURRENT_DIR", str(home / "scripts/current"))
-    monkeypatch.setenv("ATLAS_SCRIPTS_DIR", str(home / "scripts/current"))
 
 
 def _write_release(path: Path, release_version: str, command_name: str, marker: str) -> Path:
@@ -45,9 +43,11 @@ from sharedmod import IDENT
 
 def main() -> None:
     payload = {
-        "release": os.environ["ATLAS_SCRIPT_RELEASE_NAME"],
-        "scripts_dir": os.environ["ATLAS_SCRIPTS_DIR"],
-        "current_dir": os.environ["ATLAS_SCRIPTS_CURRENT_DIR"],
+        "release": os.environ["ATLAS_RELEASE_NAME"],
+        "release_root": os.environ["ATLAS_RELEASE_ROOT"],
+        "artifact": os.environ["ATLAS_ARTIFACT_NAME"],
+        "artifact_type": os.environ["ATLAS_ARTIFACT_TYPE"],
+        "legacy_present": any(name.startswith("ATLAS_SCRIPT") or name.startswith("ATLAS_SCRIPTS") for name in os.environ),
         "ident": IDENT,
         "pythonpath": os.environ["PYTHONPATH"].split(":"),
     }
@@ -75,18 +75,19 @@ def test_run_and_logs(monkeypatch, tmp_path: Path) -> None:
 
     (etc / "host.yml").write_text("name: t1\nsite: kng01\n", encoding="utf-8")
     (etc / "config.yml").write_text(
-        "runtime:\n  python:\n    version: '3.12'\nscripts:\n  source: ''\n", encoding="utf-8"
+        "runtime:\n  python:\n    version: '3.12'\nreleases: {}\n",
+        encoding="utf-8",
     )
 
     _set_env(monkeypatch, home, etc, var)
-    scripts_python = home / "runtime/python/envs/scripts/bin/python"
-    scripts_python.parent.mkdir(parents=True, exist_ok=True)
+    runtime_python = home / "runtime/python/envs/scripts/bin/python"
+    runtime_python.parent.mkdir(parents=True, exist_ok=True)
     python3 = shutil.which("python3")
     assert python3 is not None
-    scripts_python.symlink_to(Path(python3))
+    runtime_python.symlink_to(Path(python3))
 
-    release_src = Path("examples/basic-scripts-release").resolve()
-    assert main(["scripts", "install", str(release_src)]) == 0
+    release_src = Path("examples/basic-release").resolve()
+    assert main(["release", "install", str(release_src)]) == 0
 
     rc1 = main(["run", "sample", "hello", "--name=test"])
     assert rc1 == 0
@@ -111,24 +112,26 @@ def test_run_sets_release_env_and_pythonpath_order(monkeypatch, tmp_path: Path, 
     (etc / "host.yml").write_text("name: t1\nsite: kng01\n", encoding="utf-8")
     _set_env(monkeypatch, home, etc, var)
     monkeypatch.setenv("PYTHONPATH", "/existing/pythonpath")
-    scripts_python = home / "runtime/python/envs/scripts/bin/python"
-    scripts_python.parent.mkdir(parents=True, exist_ok=True)
+    runtime_python = home / "runtime/python/envs/scripts/bin/python"
+    runtime_python.parent.mkdir(parents=True, exist_ok=True)
     python3 = shutil.which("python3")
     assert python3 is not None
-    scripts_python.symlink_to(Path(python3))
+    runtime_python.symlink_to(Path(python3))
 
     alpha = _write_release(tmp_path / "alpha", "0.1.0", "alpha", "alpha")
     beta = _write_release(tmp_path / "beta", "0.2.0", "beta", "beta")
-    assert main(["scripts", "install", str(alpha)]) == 0
-    assert main(["scripts", "install", str(beta)]) == 0
+    assert main(["release", "install", str(alpha)]) == 0
+    assert main(["release", "install", str(beta)]) == 0
 
     assert main(["run", "alpha"]) == 0
     payload = json.loads((var / "runner-env.json").read_text(encoding="utf-8"))
-    alpha_root = home / "scripts/releases/alpha/0.1.0"
-    beta_root = home / "scripts/releases/beta/0.2.0"
+    alpha_root = home / "releases/alpha/0.1.0"
+    beta_root = home / "releases/beta/0.2.0"
     assert payload["release"] == "alpha"
-    assert payload["scripts_dir"] == str(alpha_root)
-    assert payload["current_dir"] == str(home / "scripts/current")
+    assert payload["release_root"] == str(alpha_root)
+    assert payload["artifact"] == "alpha"
+    assert payload["artifact_type"] == "command"
+    assert payload["legacy_present"] is False
     assert payload["ident"] == "alpha"
     assert payload["pythonpath"][0] == str(alpha_root / "modules")
     assert payload["pythonpath"][1] == str(beta_root / "modules")
@@ -136,7 +139,7 @@ def test_run_sets_release_env_and_pythonpath_order(monkeypatch, tmp_path: Path, 
     assert payload["pythonpath"][-1] == "/existing/pythonpath"
 
 
-def test_run_fails_on_command_collision(monkeypatch, tmp_path: Path) -> None:
+def test_run_fails_on_command_collision(monkeypatch, tmp_path: Path, capsys) -> None:
     home = tmp_path / "opt/atlas"
     etc = tmp_path / "etc/atlas"
     var = tmp_path / "var/lib/atlas"
@@ -161,15 +164,15 @@ def test_run_fails_on_command_collision(monkeypatch, tmp_path: Path) -> None:
             encoding="utf-8",
         )
 
-    assert main(["scripts", "install", str(release_one)]) == 0
-    with pytest.raises(ValueError, match="command name collision: collision found in releases: one, two"):
-        main(["scripts", "install", str(release_two)])
-    assert (home / "scripts/current/one").is_symlink()
-    assert not (home / "scripts/current/two").exists()
-    assert main(["scripts", "list"]) == 0
+    assert main(["release", "install", str(release_one)]) == 0
+    assert main(["release", "install", str(release_two)]) == 2
+    assert "command name collision: collision found in releases: one, two" in capsys.readouterr().err
+    assert (home / "current/one").is_symlink()
+    assert not (home / "current/two").exists()
+    assert main(["release", "list"]) == 0
 
 
-def test_run_fails_when_scripts_python_is_missing(monkeypatch, tmp_path: Path) -> None:
+def test_run_fails_when_runtime_python_is_missing(monkeypatch, tmp_path: Path, capsys) -> None:
     home = tmp_path / "opt/atlas"
     etc = tmp_path / "etc/atlas"
     var = tmp_path / "var/lib/atlas"
@@ -178,13 +181,14 @@ def test_run_fails_when_scripts_python_is_missing(monkeypatch, tmp_path: Path) -
 
     (etc / "host.yml").write_text("name: t1\nsite: kng01\n", encoding="utf-8")
     (etc / "config.yml").write_text(
-        "runtime:\n  python:\n    version: '3.12'\nscripts:\n  source: ''\n", encoding="utf-8"
+        "runtime:\n  python:\n    version: '3.12'\nreleases: {}\n",
+        encoding="utf-8",
     )
 
     _set_env(monkeypatch, home, etc, var)
 
-    release_src = Path("examples/basic-scripts-release").resolve()
-    assert main(["scripts", "install", str(release_src)]) == 0
+    release_src = Path("examples/basic-release").resolve()
+    assert main(["release", "install", str(release_src)]) == 0
 
-    with pytest.raises(ValueError, match="scripts python executable not found"):
-        main(["run", "sample", "hello", "--name=test"])
+    assert main(["run", "sample", "hello", "--name=test"]) == 2
+    assert "runtime python executable not found" in capsys.readouterr().err

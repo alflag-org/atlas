@@ -11,7 +11,7 @@ class Sample:
 
     def hello(self, name: str = "world") -> None:
         ctx = get_context()
-        print(build_message(name=name, host=ctx.host.name, script=ctx.script.name))
+        print(build_message(name=name, host=ctx.host.name, artifact=ctx.artifact.name))
 
     def echo(self, value: str) -> str:
         return value

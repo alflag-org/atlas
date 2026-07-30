@@ -1,4 +1,4 @@
-"""Source resolution for local, archive, HTTP, git, and registry releases."""
+"""Source resolution for local, archive, HTTP, and git releases."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from pathlib import Path
 from urllib.parse import urldefrag, urlparse
 from urllib.request import urlopen
 
-from .config import AtlasConfig
 from .files import remove_path
 
 ARCHIVE_SUFFIXES = (".tar", ".tar.gz", ".tgz", ".zip")
@@ -58,12 +57,16 @@ def _validate_zip_member(root: Path, member: zipfile.ZipInfo) -> None:
 
 
 def _find_release_root(extracted_root: Path) -> Path:
-    if (extracted_root / "VERSION").exists() and (extracted_root / "commands").is_dir():
+    if (extracted_root / "VERSION").is_file() and (extracted_root / "release.yml").is_file():
         return extracted_root
     children = [entry for entry in extracted_root.iterdir() if entry.is_dir()]
-    if len(children) == 1 and (children[0] / "VERSION").exists() and (children[0] / "commands").is_dir():
+    if (
+        len(children) == 1
+        and (children[0] / "VERSION").is_file()
+        and (children[0] / "release.yml").is_file()
+    ):
         return children[0]
-    raise ValueError(f"archive does not contain an Atlas scripts release: {extracted_root}")
+    raise ValueError(f"archive does not contain an Atlas release: {extracted_root}")
 
 
 def extract_archive(archive_path: Path, cache_dir: Path) -> Path:
@@ -124,41 +127,27 @@ def clone_git_source(source: str, cache_dir: Path) -> Path:
         else:
             subprocess.run(["git", "clone", "--depth", "1", repo_url, str(tmp)], check=True)
     except FileNotFoundError as exc:
-        raise ValueError("git command is required for git scripts source") from exc
+        raise ValueError("git command is required for a git release source") from exc
     except subprocess.CalledProcessError as exc:
         raise ValueError(f"git source clone failed: {repo_url}") from exc
     return tmp
 
 
-def _resolve_registry(source: str, config: AtlasConfig | None, cache_dir: Path) -> Path | None:
-    if config is None:
-        return None
-    entry = config.scripts.registries.get(source)
-    if entry is None:
-        return None
-    return resolve_source(entry.source, config=config, cache_dir=cache_dir)
-
-
-def resolve_source(source: str, *, config: AtlasConfig | None = None, cache_dir: Path | None = None) -> Path:
-    """Resolve a scripts source into a local release directory path."""
+def resolve_source(source: str, *, cache_dir: Path | None = None) -> Path:
+    """Resolve a release source into a local directory path."""
     source = source.strip()
     if not source:
-        raise ValueError("scripts source is required")
-
-    if cache_dir is not None:
-        registry_path = _resolve_registry(source, config, cache_dir)
-        if registry_path is not None:
-            return registry_path
+        raise ValueError("release source is required")
 
     if source.startswith("git+"):
         if cache_dir is None:
-            raise ValueError("cache_dir is required for git scripts source")
+            raise ValueError("cache_dir is required for a git release source")
         return clone_git_source(source, cache_dir)
 
     parsed = urlparse(source)
     if parsed.scheme in {"http", "https"}:
         if cache_dir is None:
-            raise ValueError("cache_dir is required for remote archive scripts source")
+            raise ValueError("cache_dir is required for a remote release archive")
         return download_archive(source, cache_dir)
 
     local = Path(source[7:]) if source.startswith("file://") else Path(source)
@@ -166,10 +155,8 @@ def resolve_source(source: str, *, config: AtlasConfig | None = None, cache_dir:
         return local
     if local.exists() and local.is_file() and is_archive_name(local.name):
         if cache_dir is None:
-            raise ValueError("cache_dir is required for archive scripts source")
+            raise ValueError("cache_dir is required for a release archive")
         return extract_archive(local, cache_dir)
     if local.exists():
-        raise ValueError(f"unsupported scripts source: {source}")
-    if cache_dir is not None and config is not None:
-        raise ValueError(f"scripts source not found and registry alias is undefined: {source}")
+        raise ValueError(f"unsupported release source: {source}")
     return local

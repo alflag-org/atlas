@@ -16,13 +16,11 @@ def configure_paths(monkeypatch, tmp_path: Path) -> AtlasPaths:
     monkeypatch.setenv("ATLAS_ETC_DIR", str(etc))
     monkeypatch.setenv("ATLAS_VAR_DIR", str(var))
     monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
-    monkeypatch.setenv("ATLAS_SCRIPTS_CURRENT_DIR", str(home / "scripts/current"))
-    monkeypatch.setenv("ATLAS_SCRIPTS_DIR", str(home / "scripts/current"))
     etc.mkdir(parents=True)
     (etc / "host.yml").write_text("name: test-host\nsite: test\n", encoding="utf-8")
     paths = get_paths()
-    paths.scripts_python.parent.mkdir(parents=True)
-    paths.scripts_python.symlink_to(sys.executable)
+    paths.runtime_python.parent.mkdir(parents=True)
+    paths.runtime_python.symlink_to(sys.executable)
     return paths
 
 
@@ -53,8 +51,8 @@ def make_release(
         entrypoint.write_text(
             "from __future__ import annotations\n"
             "import os\n"
-            "print(f\"{os.environ['ATLAS_SCRIPT_NAME']}:"
-            "{os.environ['ATLAS_SCRIPT_RELEASE_NAME']}\")\n",
+            "print(f\"{os.environ['ATLAS_ARTIFACT_NAME']}:"
+            "{os.environ['ATLAS_RELEASE_NAME']}\")\n",
             encoding="utf-8",
         )
         command_entries[command] = {

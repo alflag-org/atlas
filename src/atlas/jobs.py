@@ -15,7 +15,7 @@ def list_jobs(paths: AtlasPaths, release_name: str | None = None) -> list[Execut
     """List jobs across active releases or within one release."""
     refs: list[ExecutableRef] = []
     found_release = release_name is None
-    for release in active_releases(paths.scripts_current_root):
+    for release in active_releases(paths.current_root):
         if release_name is not None and release.name != release_name:
             continue
         found_release = True
@@ -30,7 +30,7 @@ def list_jobs(paths: AtlasPaths, release_name: str | None = None) -> list[Execut
 
 def run_job(paths: AtlasPaths, release_name: str, job_name: str, args: list[str]) -> int:
     """Run one direct job in the caller's current working directory."""
-    job = resolve_job(paths.scripts_current_root, release_name, job_name)
+    job = resolve_job(paths.current_root, release_name, job_name)
     return execute(
         paths,
         job,
@@ -52,7 +52,7 @@ def run_job_instance(paths: AtlasPaths, name: str) -> int:
     """Resolve and execute one ``jobs.d`` instance."""
     instance = load_job_instance(paths.jobs_dir, name)
     _validate_caller_user(instance)
-    job = resolve_job(paths.scripts_current_root, instance.release, instance.job)
+    job = resolve_job(paths.current_root, instance.release, instance.job)
     timeout = (
         instance.timeout_seconds
         if instance.timeout_seconds is not None

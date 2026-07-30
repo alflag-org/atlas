@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 
 from atlas.catalog import active_releases, command_index
-from atlas.config import AtlasConfig, RegistryEntry, RuntimeConfig, ScriptsConfig
 from atlas.manifests import load_manifest
 from atlas.releases import install_release
 from atlas.sources import resolve_source
@@ -126,8 +125,8 @@ def test_install_release_supports_multiple_active_releases(tmp_path: Path) -> No
         command_name="kitsunebi-command",
         version="0.2.0",
     )
-    releases = tmp_path / "scripts/releases"
-    current = tmp_path / "scripts/current"
+    releases = tmp_path / "releases"
+    current = tmp_path / "current"
 
     common_target = install_release(common, releases, current)
     kitsunebi_target = install_release(kitsunebi, releases, current)
@@ -140,20 +139,19 @@ def test_install_release_supports_multiple_active_releases(tmp_path: Path) -> No
     assert sorted(command_index(current)) == ["common-command", "kitsunebi-command"]
 
 
-def test_install_release_rejects_legacy_current_symlink(tmp_path: Path) -> None:
+def test_install_release_rejects_current_root_symlink(tmp_path: Path) -> None:
     source = _release(tmp_path / "source")
-    releases = tmp_path / "scripts/releases"
-    current = tmp_path / "scripts/current"
-    legacy_target = tmp_path / "legacy-target"
-    legacy_target.mkdir(parents=True)
-    current.parent.mkdir(parents=True)
-    current.symlink_to(legacy_target, target_is_directory=True)
+    releases = tmp_path / "releases"
+    current = tmp_path / "current"
+    redirected_target = tmp_path / "redirected-target"
+    redirected_target.mkdir(parents=True)
+    current.symlink_to(redirected_target, target_is_directory=True)
 
-    with pytest.raises(ValueError, match="scripts current root must be a directory"):
+    with pytest.raises(ValueError, match="current root must be a directory"):
         install_release(source, releases, current)
 
     assert current.is_symlink()
-    assert current.resolve() == legacy_target
+    assert current.resolve() == redirected_target
 
 
 def test_resolve_local_tar_archive(tmp_path: Path) -> None:
@@ -247,7 +245,7 @@ def test_resolve_git_source_with_ref(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("atlas.sources.subprocess.run", fake_run)
 
     resolved = resolve_source(
-        "git+https://example.test/scripts.git#v1.0.0",
+        "git+https://example.test/releases.git#v1.0.0",
         cache_dir=tmp_path / "cache",
     )
 
@@ -260,7 +258,7 @@ def test_resolve_git_source_with_ref(monkeypatch, tmp_path: Path) -> None:
             "1",
             "--branch",
             "v1.0.0",
-            "https://example.test/scripts.git",
+            "https://example.test/releases.git",
             str(resolved),
         ]
     ]
@@ -278,7 +276,7 @@ def test_resolve_git_source_ref_falls_back_to_fetch(monkeypatch, tmp_path: Path)
     monkeypatch.setattr("atlas.sources.subprocess.run", fake_run)
 
     resolved = resolve_source(
-        "git+https://example.test/scripts.git#abc123",
+        "git+https://example.test/releases.git#abc123",
         cache_dir=tmp_path / "cache",
     )
 
@@ -290,35 +288,10 @@ def test_resolve_git_source_ref_falls_back_to_fetch(monkeypatch, tmp_path: Path)
             "1",
             "--branch",
             "abc123",
-            "https://example.test/scripts.git",
+            "https://example.test/releases.git",
             str(resolved),
         ],
-        ["git", "clone", "--depth", "1", "https://example.test/scripts.git", str(resolved)],
+        ["git", "clone", "--depth", "1", "https://example.test/releases.git", str(resolved)],
         ["git", "-C", str(resolved), "fetch", "--depth", "1", "origin", "abc123"],
         ["git", "-C", str(resolved), "checkout", "--detach", "FETCH_HEAD"],
     ]
-
-
-def test_resolve_registry_alias(tmp_path: Path) -> None:
-    release = _release(tmp_path / "release")
-    config = AtlasConfig(
-        path=tmp_path / "config.yml",
-        runtime=RuntimeConfig(python_version="3.12"),
-        scripts=ScriptsConfig(
-            source="sample-registry",
-            registries={"sample-registry": RegistryEntry(source=str(release))},
-        ),
-    )
-
-    assert resolve_source("sample-registry", config=config, cache_dir=tmp_path / "cache") == release
-
-
-def test_resolve_undefined_registry_alias_fails(tmp_path: Path) -> None:
-    config = AtlasConfig(
-        path=tmp_path / "config.yml",
-        runtime=RuntimeConfig(python_version="3.12"),
-        scripts=ScriptsConfig(source="missing", registries={}),
-    )
-
-    with pytest.raises(ValueError, match="registry alias is undefined"):
-        resolve_source("missing", config=config, cache_dir=tmp_path / "cache")

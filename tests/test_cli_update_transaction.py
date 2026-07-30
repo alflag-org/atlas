@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from atlas.cli import main
 
 
@@ -12,8 +10,6 @@ def _set_env(monkeypatch, home: Path, etc: Path, var: Path) -> None:
     monkeypatch.setenv("ATLAS_ETC_DIR", str(etc))
     monkeypatch.setenv("ATLAS_VAR_DIR", str(var))
     monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
-    monkeypatch.setenv("ATLAS_SCRIPTS_CURRENT_DIR", str(home / "scripts/current"))
-    monkeypatch.setenv("ATLAS_SCRIPTS_DIR", str(home / "scripts/current"))
 
 
 def _write_release(path: Path, release_name: str, release_version: str, command_name: str) -> Path:
@@ -33,7 +29,11 @@ def _write_release(path: Path, release_name: str, release_version: str, command_
     return path
 
 
-def test_scripts_update_rolls_back_all_target_releases_on_collision(monkeypatch, tmp_path: Path) -> None:
+def test_release_update_rolls_back_all_target_releases_on_collision(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
     home = tmp_path / "opt/atlas"
     etc = tmp_path / "etc/atlas"
     var = tmp_path / "var/lib/atlas"
@@ -43,13 +43,13 @@ def test_scripts_update_rolls_back_all_target_releases_on_collision(monkeypatch,
 
     old_one = _write_release(tmp_path / "old-one", "one", "0.1.0", "one-cmd")
     old_two = _write_release(tmp_path / "old-two", "two", "0.2.0", "two-cmd")
-    assert main(["scripts", "install", str(old_one)]) == 0
-    assert main(["scripts", "install", str(old_two)]) == 0
+    assert main(["release", "install", str(old_one)]) == 0
+    assert main(["release", "install", str(old_two)]) == 0
 
-    old_one_target = home / "scripts/releases/one/0.1.0"
-    old_two_target = home / "scripts/releases/two/0.2.0"
-    assert (home / "scripts/current/one").resolve() == old_one_target
-    assert (home / "scripts/current/two").resolve() == old_two_target
+    old_one_target = home / "releases/one/0.1.0"
+    old_two_target = home / "releases/two/0.2.0"
+    assert (home / "current/one").resolve() == old_one_target
+    assert (home / "current/two").resolve() == old_two_target
 
     new_one = _write_release(tmp_path / "new-one", "one", "0.3.0", "dup")
     new_two = _write_release(tmp_path / "new-two", "two", "0.4.0", "dup")
@@ -58,26 +58,29 @@ def test_scripts_update_rolls_back_all_target_releases_on_collision(monkeypatch,
 runtime:
   python:
     version: "3.12.8"
-scripts:
-  releases:
-    one:
-      source: "file://{new_one}"
-    two:
-      source: "file://{new_two}"
+releases:
+  one:
+    source: "file://{new_one}"
+  two:
+    source: "file://{new_two}"
 """.strip()
         + "\n",
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="command name collision: dup found in releases: one, two"):
-        main(["scripts", "update"])
+    assert main(["release", "update"]) == 2
+    assert "command name collision: dup found in releases: one, two" in capsys.readouterr().err
 
-    assert (home / "scripts/current/one").resolve() == old_one_target
-    assert (home / "scripts/current/two").resolve() == old_two_target
-    assert main(["scripts", "list"]) == 0
+    assert (home / "current/one").resolve() == old_one_target
+    assert (home / "current/two").resolve() == old_two_target
+    assert main(["release", "list"]) == 0
 
 
-def test_scripts_update_single_release_rolls_back_on_collision(monkeypatch, tmp_path: Path) -> None:
+def test_release_update_single_release_rolls_back_on_collision(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
     home = tmp_path / "opt/atlas"
     etc = tmp_path / "etc/atlas"
     var = tmp_path / "var/lib/atlas"
@@ -87,13 +90,13 @@ def test_scripts_update_single_release_rolls_back_on_collision(monkeypatch, tmp_
 
     old_one = _write_release(tmp_path / "old-one", "one", "0.1.0", "one-cmd")
     old_two = _write_release(tmp_path / "old-two", "two", "0.2.0", "two-cmd")
-    assert main(["scripts", "install", str(old_one)]) == 0
-    assert main(["scripts", "install", str(old_two)]) == 0
+    assert main(["release", "install", str(old_one)]) == 0
+    assert main(["release", "install", str(old_two)]) == 0
 
-    old_one_target = home / "scripts/releases/one/0.1.0"
-    old_two_target = home / "scripts/releases/two/0.2.0"
-    assert (home / "scripts/current/one").resolve() == old_one_target
-    assert (home / "scripts/current/two").resolve() == old_two_target
+    old_one_target = home / "releases/one/0.1.0"
+    old_two_target = home / "releases/two/0.2.0"
+    assert (home / "current/one").resolve() == old_one_target
+    assert (home / "current/two").resolve() == old_two_target
 
     new_one = _write_release(tmp_path / "new-one", "one", "0.3.0", "two-cmd")
     (etc / "config.yml").write_text(
@@ -101,20 +104,79 @@ def test_scripts_update_single_release_rolls_back_on_collision(monkeypatch, tmp_
 runtime:
   python:
     version: "3.12.8"
-scripts:
-  releases:
-    one:
-      source: "file://{new_one}"
-    two:
-      source: "file://{old_two}"
+releases:
+  one:
+    source: "file://{new_one}"
+  two:
+    source: "file://{old_two}"
 """.strip()
         + "\n",
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="command name collision: two-cmd found in releases: one, two"):
-        main(["scripts", "update", "one"])
+    assert main(["release", "update", "one"]) == 2
+    assert (
+        "command name collision: two-cmd found in releases: one, two"
+        in capsys.readouterr().err
+    )
 
-    assert (home / "scripts/current/one").resolve() == old_one_target
-    assert (home / "scripts/current/two").resolve() == old_two_target
-    assert main(["scripts", "list"]) == 0
+    assert (home / "current/one").resolve() == old_one_target
+    assert (home / "current/two").resolve() == old_two_target
+    assert main(["release", "list"]) == 0
+
+
+def test_release_install_reports_failed_host_artifact_restore(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    etc.mkdir(parents=True)
+    _set_env(monkeypatch, home, etc, var)
+    source = _write_release(tmp_path / "source", "sample", "0.1.0", "sample-show")
+    monkeypatch.setattr(
+        "atlas.cli._refresh_host_artifacts",
+        lambda paths: (_ for _ in ()).throw(RuntimeError("refresh failed")),
+    )
+
+    assert main(["release", "install", str(source)]) == 2
+    assert (
+        "release installation failed and host artifacts could not be restored"
+        in capsys.readouterr().err
+    )
+    assert not (home / "current/sample").exists()
+
+
+def test_release_update_reports_failed_host_artifact_restore(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    etc.mkdir(parents=True)
+    _set_env(monkeypatch, home, etc, var)
+    source = _write_release(tmp_path / "source", "sample", "0.1.0", "sample-show")
+    (etc / "config.yml").write_text(
+        "runtime:\n"
+        "  python:\n"
+        '    version: "3.12"\n'
+        "releases:\n"
+        "  sample:\n"
+        f'    source: "{source}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "atlas.cli._refresh_host_artifacts",
+        lambda paths: (_ for _ in ()).throw(RuntimeError("refresh failed")),
+    )
+
+    assert main(["release", "update"]) == 2
+    assert (
+        "release update failed and host artifacts could not be restored"
+        in capsys.readouterr().err
+    )
+    assert not (home / "current/sample").exists()

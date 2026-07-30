@@ -12,7 +12,7 @@ from .yamlutil import load_yaml_file
 SCHEMA = "atlas.release/v1"
 NAME_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 RUNTIMES = {"python"}
-RESERVED_COMMAND_NAMES = {"atlas", "artifact-runner", "script-runner"}
+RESERVED_COMMAND_NAMES = {"atlas", "artifact-runner"}
 
 
 @dataclass(frozen=True)

@@ -7,7 +7,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     ATLAS_ETC_DIR=/etc/atlas \
     ATLAS_VAR_DIR=/var/lib/atlas \
     ATLAS_RUNTIME_DIR=/opt/atlas/runtime \
-    ATLAS_SCRIPTS_DIR=/opt/atlas/scripts/current \
     PATH=/opt/atlas/bin:/opt/atlas/shims:/opt/pyenv/bin:$PATH
 
 WORKDIR /workspace
@@ -49,10 +48,10 @@ COPY . .
 RUN mkdir -p "$ATLAS_ETC_DIR" "$ATLAS_VAR_DIR" \
     && cp docker/atlas/config.yml "$ATLAS_ETC_DIR/config.yml" \
     && cp docker/atlas/host.yml "$ATLAS_ETC_DIR/host.yml" \
-    && atlas scripts install /workspace/examples/basic-scripts-release \
+    && atlas release install /workspace/examples/basic-release \
     && atlas runtime install
 
-CMD ["sh", "-c", "ruff check src tests && pytest -q && python -m build"]
+CMD ["sh", "-c", "ruff check src operations tests && pytest -q && python -m build"]
 
 
 FROM dev AS wheel
@@ -90,4 +89,4 @@ RUN python -m pip install --no-cache-dir /tmp/*.whl \
 
 USER atlas
 
-CMD ["sh", "-c", "atlas status && atlas scripts list && atlas run sample hello --name=docker"]
+CMD ["sh", "-c", "atlas status && atlas release list && atlas run sample hello --name=docker"]

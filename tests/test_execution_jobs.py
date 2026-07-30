@@ -24,8 +24,8 @@ from atlas.execution import (
 from atlas.job_instances import list_job_instances, load_job_instance
 from atlas.jobs import list_jobs, run_job, run_job_instance
 from atlas.launchers import (
+    ensure_artifact_runner,
     ensure_atlas_launcher,
-    ensure_script_runner,
     regenerate_shims,
 )
 from atlas.locks import acquire_lock
@@ -35,8 +35,8 @@ from atlas.releases import install_release
 def _activate(paths, source: Path) -> None:
     install_release(
         source,
-        paths.scripts_releases_root,
-        paths.scripts_current_root,
+        paths.releases_root,
+        paths.current_root,
     )
 
 
@@ -70,7 +70,7 @@ def test_execute_sets_environment_and_logs_correlation(
     monkeypatch.setenv("ATLAS_RUN_ID", "parent-run")
     monkeypatch.setenv("ATLAS_OPERATION_ID", "root-operation")
     monkeypatch.setenv("PYTHONPATH", "/existing")
-    command = resolve_command(atlas_paths.scripts_current_root, "sample-show")
+    command = resolve_command(atlas_paths.current_root, "sample-show")
     atlas_paths.var.mkdir(parents=True)
 
     assert execute(
@@ -99,7 +99,7 @@ def test_execute_sets_environment_and_logs_correlation(
 def test_execute_root_run_has_own_operation_id(atlas_paths, release_factory) -> None:
     source = release_factory()
     _activate(atlas_paths, source)
-    command = resolve_command(atlas_paths.scripts_current_root, "sample-show")
+    command = resolve_command(atlas_paths.current_root, "sample-show")
 
     assert execute(atlas_paths, command, []) == 0
 
@@ -117,7 +117,7 @@ def test_execute_handles_empty_caller_path(
     _activate(atlas_paths, source)
     monkeypatch.delenv("PATH", raising=False)
     monkeypatch.delenv("PYTHONPATH", raising=False)
-    command = resolve_command(atlas_paths.scripts_current_root, "sample-show")
+    command = resolve_command(atlas_paths.current_root, "sample-show")
     assert execute(atlas_paths, command, []) == 0
 
 
@@ -125,6 +125,7 @@ def test_execute_orders_path_and_preserves_caller_environment(
     atlas_paths,
     release_factory,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     source = release_factory(name="selected")
     (source / "modules").mkdir()
@@ -134,6 +135,14 @@ def test_execute_orders_path_and_preserves_caller_environment(
     _activate(atlas_paths, other)
     monkeypatch.setenv("PATH", "/caller/bin")
     monkeypatch.setenv("PYTHONPATH", "/caller/python")
+    monkeypatch.setenv("ATLAS_SCRIPT_NAME", "legacy-parent")
+    monkeypatch.setenv("ATLAS_SCRIPTS_DIR", "/legacy-parent")
+    legacy_environment = tmp_path / "legacy.env"
+    legacy_environment.write_text(
+        "ATLAS_SCRIPT_RELEASE_NAME=legacy-file\n"
+        "ATLAS_SCRIPTS_CURRENT_DIR=/legacy-file\n",
+        encoding="utf-8",
+    )
     captured: dict[str, object] = {}
 
     class Finished:
@@ -160,23 +169,43 @@ def test_execute_orders_path_and_preserves_caller_environment(
         },
     )
     monkeypatch.setattr("atlas.execution.subprocess.Popen", fake_popen)
-    command = resolve_command(atlas_paths.scripts_current_root, "sample-show")
+    command = resolve_command(atlas_paths.current_root, "sample-show")
 
-    assert execute(atlas_paths, command, []) == 0
+    assert execute(
+        atlas_paths,
+        command,
+        [],
+        environment_files=(legacy_environment,),
+    ) == 0
 
     env = captured["env"]
     assert isinstance(env, dict)
     assert env["PATH"].split(os.pathsep) == [
         str(atlas_paths.shims),
-        str(atlas_paths.scripts_python.parent),
+        str(atlas_paths.runtime_python.parent),
         "/caller/bin",
     ]
     assert env["PYTHONPATH"].split(os.pathsep) == [
-        str((atlas_paths.scripts_current_root / "selected").resolve() / "modules"),
-        str((atlas_paths.scripts_current_root / "other").resolve() / "modules"),
+        str((atlas_paths.current_root / "selected").resolve() / "modules"),
+        str((atlas_paths.current_root / "other").resolve() / "modules"),
         str(atlas_paths.home / "lib/python"),
         "/caller/python",
     ]
+    assert env["ATLAS_RELEASE_NAME"] == "selected"
+    assert env["ATLAS_RELEASE_VERSION"] == "1.0.0"
+    assert env["ATLAS_RELEASE_ROOT"] == str(
+        (atlas_paths.current_root / "selected").resolve()
+    )
+    assert env["ATLAS_ARTIFACT_NAME"] == "sample-show"
+    assert env["ATLAS_ARTIFACT_TYPE"] == "command"
+    for legacy_name in (
+        "ATLAS_SCRIPT_NAME",
+        "ATLAS_SCRIPT_RELEASE_NAME",
+        "ATLAS_SCRIPT_VERSION",
+        "ATLAS_SCRIPTS_DIR",
+        "ATLAS_SCRIPTS_CURRENT_DIR",
+    ):
+        assert legacy_name not in env
     assert captured["start_new_session"] is True
     assert captured["text"] is True
 
@@ -324,9 +353,9 @@ def test_direct_job_inherits_cwd_and_passthrough(
     with pytest.raises(ValueError, match="unknown release"):
         list_jobs(atlas_paths, "missing")
     with pytest.raises(ValueError, match="unknown release"):
-        resolve_job(atlas_paths.scripts_current_root, "missing", "collect")
+        resolve_job(atlas_paths.current_root, "missing", "collect")
     with pytest.raises(ValueError, match="unknown job"):
-        resolve_job(atlas_paths.scripts_current_root, "worker", "missing")
+        resolve_job(atlas_paths.current_root, "worker", "missing")
 
 
 def test_job_instance_uses_job_default_timeout(
@@ -480,7 +509,7 @@ def test_job_instance_directory_and_symlink_fail_closed(atlas_paths, tmp_path: P
 def test_environment_file_validation(atlas_paths, release_factory, tmp_path: Path) -> None:
     source = release_factory(name="worker", commands=(), jobs=("collect",))
     _activate(atlas_paths, source)
-    job = resolve_job(atlas_paths.scripts_current_root, "worker", "collect")
+    job = resolve_job(atlas_paths.current_root, "worker", "collect")
     with pytest.raises(ValueError, match="must be absolute"):
         execute(atlas_paths, job, [], environment_files=(Path("relative"),))
     with pytest.raises(ValueError, match="not found"):
@@ -559,7 +588,7 @@ def test_execute_timeout_terminates_process_group(atlas_paths, release_factory) 
         encoding="utf-8",
     )
     _activate(atlas_paths, source)
-    job = resolve_job(atlas_paths.scripts_current_root, "worker", "slow-job")
+    job = resolve_job(atlas_paths.current_root, "worker", "slow-job")
     started = time.monotonic()
 
     assert execute(atlas_paths, job, [], timeout_seconds=1) == 124
@@ -577,7 +606,7 @@ def test_execute_normalizes_signal_exit(atlas_paths, release_factory) -> None:
         encoding="utf-8",
     )
     _activate(atlas_paths, source)
-    command = resolve_command(atlas_paths.scripts_current_root, "signal-stop")
+    command = resolve_command(atlas_paths.current_root, "signal-stop")
     assert execute(atlas_paths, command, []) == 128 + signal.SIGTERM
 
 
@@ -588,13 +617,13 @@ def test_execute_validates_runtime_cwd_and_timeout(
 ) -> None:
     source = release_factory()
     _activate(atlas_paths, source)
-    command = resolve_command(atlas_paths.scripts_current_root, "sample-show")
+    command = resolve_command(atlas_paths.current_root, "sample-show")
     with pytest.raises(ValueError, match="working directory not found"):
         execute(atlas_paths, command, [], cwd=tmp_path / "missing")
     with pytest.raises(ValueError, match="timeout must be a positive"):
         execute(atlas_paths, command, [], timeout_seconds=0)
-    atlas_paths.scripts_python.unlink()
-    with pytest.raises(ValueError, match="scripts python executable not found"):
+    atlas_paths.runtime_python.unlink()
+    with pytest.raises(ValueError, match="runtime python executable not found"):
         execute(atlas_paths, command, [])
 
 
@@ -605,7 +634,7 @@ def test_execute_reports_popen_missing_after_precheck(
 ) -> None:
     source = release_factory()
     _activate(atlas_paths, source)
-    command = resolve_command(atlas_paths.scripts_current_root, "sample-show")
+    command = resolve_command(atlas_paths.current_root, "sample-show")
 
     def missing(*args, **kwargs):
         raise FileNotFoundError("gone")
@@ -718,7 +747,7 @@ def test_execute_logs_and_reraises_keyboard_interrupt(
 ) -> None:
     source = release_factory()
     _activate(atlas_paths, source)
-    command = resolve_command(atlas_paths.scripts_current_root, "sample-show")
+    command = resolve_command(atlas_paths.current_root, "sample-show")
 
     class Interrupted:
         pid = 123
@@ -776,11 +805,11 @@ def test_cli_job_commands_and_instances(atlas_paths, release_factory, capsys) ->
     assert "schema: atlas.job-instance/v1" in capsys.readouterr().out
     assert main(["job", "instance", "run", "worker-collect"]) == 0
 
-    ensure_script_runner(atlas_paths.script_runner, atlas_paths.bin_dir / "atlas")
+    ensure_artifact_runner(atlas_paths.artifact_runner, atlas_paths.bin_dir / "atlas")
     assert regenerate_shims(
-        atlas_paths.scripts_current_root,
+        atlas_paths.current_root,
         atlas_paths.shims,
-        atlas_paths.script_runner,
+        atlas_paths.artifact_runner,
     ) == []
     assert not (atlas_paths.shims / "collect").exists()
 
@@ -797,14 +826,14 @@ def test_nested_shim_execution_preserves_operation_and_parent(
     )
     _activate(atlas_paths, source)
     ensure_atlas_launcher(atlas_paths.bin_dir / "atlas")
-    ensure_script_runner(atlas_paths.script_runner, atlas_paths.bin_dir / "atlas")
+    ensure_artifact_runner(atlas_paths.artifact_runner, atlas_paths.bin_dir / "atlas")
     regenerate_shims(
-        atlas_paths.scripts_current_root,
+        atlas_paths.current_root,
         atlas_paths.shims,
-        atlas_paths.script_runner,
+        atlas_paths.artifact_runner,
     )
 
-    parent = resolve_command(atlas_paths.scripts_current_root, "parent")
+    parent = resolve_command(atlas_paths.current_root, "parent")
     assert execute(atlas_paths, parent, []) == 0
 
     records = {record["artifact"]: record for record in _all_logs(atlas_paths)}

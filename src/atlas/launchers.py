@@ -1,4 +1,4 @@
-"""Launcher, script runner, and shim generation."""
+"""Atlas launcher, artifact runner, and command shim generation."""
 
 from __future__ import annotations
 
@@ -31,8 +31,8 @@ def ensure_atlas_launcher(path: Path) -> None:
     path.chmod(0o755)
 
 
-def ensure_script_runner(path: Path, atlas_bin: Path) -> None:
-    """Create the common script runner used by generated shims."""
+def ensure_artifact_runner(path: Path, atlas_bin: Path) -> None:
+    """Create the shared artifact runner used by generated shims."""
     content = (
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n\n"
@@ -44,7 +44,7 @@ def ensure_script_runner(path: Path, atlas_bin: Path) -> None:
     path.chmod(0o755)
 
 
-def regenerate_shims(current_root: Path, shims_dir: Path, script_runner: Path) -> list[str]:
+def regenerate_shims(current_root: Path, shims_dir: Path, artifact_runner: Path) -> list[str]:
     """Regenerate command shims for all active release commands."""
     names = list(command_index(current_root))
     shims_dir.mkdir(parents=True, exist_ok=True)
@@ -56,5 +56,5 @@ def regenerate_shims(current_root: Path, shims_dir: Path, script_runner: Path) -
         shim = shims_dir / name
         if shim.exists() and shim.is_dir() and not shim.is_symlink():
             raise ValueError(f"shim path is a directory: {shim}")
-        shim.symlink_to(script_runner)
+        shim.symlink_to(artifact_runner)
     return names

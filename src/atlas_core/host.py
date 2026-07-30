@@ -1,4 +1,4 @@
-"""Host profile loading for scripts executed by Atlas."""
+"""Host profile loading for release artifacts executed by Atlas."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import yaml
 
 @dataclass(frozen=True)
 class HostProfile:
-    """Host metadata exposed to Atlas scripts."""
+    """Host metadata exposed to Atlas release artifacts."""
 
     name: str
     site: str = ""

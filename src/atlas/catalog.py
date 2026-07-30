@@ -17,7 +17,7 @@ from .releases import read_version
 
 @dataclass(frozen=True)
 class ActiveRelease:
-    """One release activated under the scripts current directory."""
+    """One release activated under the current release root."""
 
     name: str
     version: str
@@ -47,11 +47,11 @@ def active_releases(current_root: Path) -> list[ActiveRelease]:
     if not current_root.exists():
         return []
     if not current_root.is_dir() or current_root.is_symlink():
-        raise ValueError(f"scripts current root must be a directory: {current_root}")
+        raise ValueError(f"current root must be a directory: {current_root}")
     releases: list[ActiveRelease] = []
     for entry in sorted(current_root.iterdir(), key=lambda item: item.name):
         if not entry.is_symlink():
-            raise ValueError(f"scripts current entry must be a symlink: {entry}")
+            raise ValueError(f"current entry must be a symlink: {entry}")
         name = validate_name(entry.name, kind="release")
         root = entry.resolve()
         if not root.is_dir():

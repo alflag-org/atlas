@@ -117,7 +117,7 @@ def _pythonpath(paths: AtlasPaths, executable: ExecutableRef, env: dict[str, str
     selected_modules = executable.release.root / "modules"
     if selected_modules.is_dir():
         module_paths.append(str(selected_modules))
-    for release in active_releases(paths.scripts_current_root):
+    for release in active_releases(paths.current_root):
         if release.name == executable.release.name:
             continue
         modules = release.root / "modules"
@@ -141,8 +141,11 @@ def _environment(
     env = os.environ.copy()
     for path in environment_files:
         env.update(_parse_environment_file(path))
+    for name in tuple(env):
+        if name.startswith(("ATLAS_SCRIPT_", "ATLAS_SCRIPTS_")):
+            env.pop(name)
     caller_path = env.get("PATH", "")
-    path_parts = [str(paths.shims), str(paths.scripts_python.parent)]
+    path_parts = [str(paths.shims), str(paths.runtime_python.parent)]
     if caller_path:
         path_parts.append(caller_path)
     env.update(
@@ -152,12 +155,11 @@ def _environment(
             "ATLAS_VAR_DIR": str(paths.var),
             "ATLAS_RUNTIME_DIR": str(paths.runtime),
             "ATLAS_TMP_DIR": str(paths.tmp),
-            "ATLAS_SCRIPTS_DIR": str(executable.release.root),
-            "ATLAS_SCRIPTS_CURRENT_DIR": str(paths.scripts_current_root),
-            "ATLAS_SCRIPT_NAME": executable.artifact.name,
-            "ATLAS_SCRIPT_VERSION": executable.release.version,
-            "ATLAS_SCRIPT_RELEASE_NAME": executable.release.name,
+            "ATLAS_RELEASE_NAME": executable.release.name,
+            "ATLAS_RELEASE_VERSION": executable.release.version,
             "ATLAS_ARTIFACT_TYPE": executable.artifact_type,
+            "ATLAS_ARTIFACT_NAME": executable.artifact.name,
+            "ATLAS_RELEASE_ROOT": str(executable.release.root),
             "ATLAS_HOST_FILE": str(paths.etc / "host.yml"),
             "ATLAS_RUN_ID": run_id,
             "ATLAS_PARENT_RUN_ID": parent_run_id or "",
@@ -247,8 +249,8 @@ def execute(
     working_directory = Path.cwd() if cwd is None else cwd
     if not working_directory.is_absolute() or not working_directory.is_dir():
         raise ValueError(f"working directory not found: {working_directory}")
-    if not paths.scripts_python.is_file():
-        raise ValueError(f"scripts python executable not found: {paths.scripts_python}")
+    if not paths.runtime_python.is_file():
+        raise ValueError(f"runtime python executable not found: {paths.runtime_python}")
     if timeout_seconds is not None and (
         isinstance(timeout_seconds, bool)
         or not isinstance(timeout_seconds, int)
@@ -267,7 +269,7 @@ def execute(
         operation_id=operation_id,
         environment_files=environment_files,
     )
-    command = [str(paths.scripts_python), str(executable.artifact.entrypoint), *args]
+    command = [str(paths.runtime_python), str(executable.artifact.entrypoint), *args]
     display_args = redact_args(args)
     print(f"$ {shlex.join([executable.artifact.name, *display_args])}", file=sys.stderr)
     started_at = datetime.now(UTC)
@@ -285,7 +287,7 @@ def execute(
                 start_new_session=True,
             )
         except FileNotFoundError as exc:
-            raise ValueError(f"runtime executable not found: {paths.scripts_python}") from exc
+            raise ValueError(f"runtime executable not found: {paths.runtime_python}") from exc
         with _forward_termination_signal(process):
             try:
                 return_code = process.wait(timeout=timeout_seconds)

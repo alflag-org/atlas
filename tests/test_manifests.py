@@ -542,7 +542,7 @@ def test_validate_name_uses_artifact_label_and_reserved_command_names() -> None:
     assert validate_name("config-diff") == "config-diff"
     with pytest.raises(ValueError, match="invalid artifact name"):
         validate_name("config_diff")
-    for name in ["atlas", "artifact-runner", "script-runner"]:
+    for name in ["atlas", "artifact-runner"]:
         with pytest.raises(ValueError, match="reserved command name"):
             validate_name(name, kind="command")
 

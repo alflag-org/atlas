@@ -13,12 +13,12 @@ import pytest
 
 from atlas import cli
 from atlas.catalog import active_releases, resolve_command
-from atlas.config import AtlasConfig, RuntimeConfig, ScriptsConfig
 from atlas.launchers import regenerate_shims
 from atlas.manifests import validate_name
 from atlas.releases import (
     install_release,
     read_version,
+    reversible_release_install,
     validate_release,
 )
 from atlas.runtime import RuntimeStatus, install_runtime
@@ -36,8 +36,6 @@ def _set_env(monkeypatch: pytest.MonkeyPatch, home: Path, etc: Path, var: Path) 
     monkeypatch.setenv("ATLAS_ETC_DIR", str(etc))
     monkeypatch.setenv("ATLAS_VAR_DIR", str(var))
     monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
-    monkeypatch.setenv("ATLAS_SCRIPTS_CURRENT_DIR", str(home / "scripts/current"))
-    monkeypatch.setenv("ATLAS_SCRIPTS_DIR", str(home / "scripts/current"))
 
 
 def _release(
@@ -85,9 +83,9 @@ def _fake_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[list[
 
             return Proc()
         if cmd[:3] == [str(pyenv_python), "-m", "venv"]:
-            scripts_python = Path(cmd[3]) / "bin/python"
-            scripts_python.parent.mkdir(parents=True, exist_ok=True)
-            scripts_python.write_text("", encoding="utf-8")
+            runtime_python = Path(cmd[3]) / "bin/python"
+            runtime_python.parent.mkdir(parents=True, exist_ok=True)
+            runtime_python.write_text("", encoding="utf-8")
         return None
 
     monkeypatch.setattr("atlas.runtime.subprocess.run", fake_run)
@@ -133,9 +131,9 @@ def test_cli_runtime_status_without_config_and_with_pyenv_error(
         lambda runtime_root, python_version: RuntimeStatus(
             provider="pyenv",
             provider_available=True,
-            scripts_venv=home / "runtime/python/envs/scripts",
-            scripts_python=home / "runtime/python/envs/scripts/bin/python",
-            scripts_python_exists=False,
+            artifacts_venv=home / "runtime/python/envs/scripts",
+            runtime_python=home / "runtime/python/envs/scripts/bin/python",
+            runtime_python_exists=False,
             pyenv_python_error="pyenv command failed",
         ),
     )
@@ -145,7 +143,7 @@ def test_cli_runtime_status_without_config_and_with_pyenv_error(
     out = capsys.readouterr().out
     assert "provider available: true" in out
     assert "pyenv python error: pyenv command failed" in out
-    assert "scripts python exists: false" in out
+    assert "runtime python exists: false" in out
 
 
 def test_cli_runtime_status_without_pyenv_path_or_error(
@@ -162,9 +160,9 @@ def test_cli_runtime_status_without_pyenv_path_or_error(
         lambda runtime_root, python_version: RuntimeStatus(
             provider="pyenv",
             provider_available=False,
-            scripts_venv=home / "runtime/python/envs/scripts",
-            scripts_python=home / "runtime/python/envs/scripts/bin/python",
-            scripts_python_exists=False,
+            artifacts_venv=home / "runtime/python/envs/scripts",
+            runtime_python=home / "runtime/python/envs/scripts/bin/python",
+            runtime_python_exists=False,
         ),
     )
 
@@ -173,7 +171,7 @@ def test_cli_runtime_status_without_pyenv_path_or_error(
     out = capsys.readouterr().out
     assert "pyenv python:" not in out
     assert "pyenv python error:" not in out
-    assert "scripts venv:" in out
+    assert "artifacts venv:" in out
 
 
 def test_cli_runtime_install_prints_result(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
@@ -182,7 +180,8 @@ def test_cli_runtime_install_prints_result(monkeypatch: pytest.MonkeyPatch, tmp_
     var = tmp_path / "var/lib/atlas"
     etc.mkdir(parents=True)
     (etc / "config.yml").write_text(
-        "runtime:\n  python:\n    version: '3.12.3'\nscripts:\n  source: sample\n", encoding="utf-8"
+        "runtime:\n  python:\n    version: '3.12.3'\nreleases: {}\n",
+        encoding="utf-8",
     )
     _set_env(monkeypatch, home, etc, var)
     monkeypatch.setattr(
@@ -194,53 +193,55 @@ def test_cli_runtime_install_prints_result(monkeypatch: pytest.MonkeyPatch, tmp_
     assert cli.main(["runtime", "install"]) == 0
 
     out = capsys.readouterr().out
-    assert f"installed scripts python: {home / 'runtime/bin/python'}" in out
+    assert f"installed runtime python: {home / 'runtime/bin/python'}" in out
     assert "configured python version: 3.12.3" in out
 
 
-def test_cli_scripts_update_rejects_unconfigured_release(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_cli_release_update_rejects_unconfigured_release(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
 ) -> None:
     home = tmp_path / "opt/atlas"
     etc = tmp_path / "etc/atlas"
     var = tmp_path / "var/lib/atlas"
     etc.mkdir(parents=True)
     (etc / "config.yml").write_text(
-        "runtime:\n  python:\n    version: '3.12.3'\nscripts:\n  releases:\n    known: sample\n",
+        "runtime:\n  python:\n    version: '3.12.3'\n"
+        "releases:\n  known:\n    source: sample\n",
         encoding="utf-8",
     )
     _set_env(monkeypatch, home, etc, var)
 
-    with pytest.raises(ValueError, match="scripts release is not configured: missing"):
-        cli.main(["scripts", "update", "missing"])
+    assert cli.main(["release", "update", "missing"]) == 2
+    assert "release is not configured: missing" in capsys.readouterr().err
 
 
-def test_cli_scripts_shims_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
+def test_cli_release_shims_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
     home = tmp_path / "opt/atlas"
     etc = tmp_path / "etc/atlas"
     var = tmp_path / "var/lib/atlas"
     etc.mkdir(parents=True)
     _set_env(monkeypatch, home, etc, var)
     release = _release(tmp_path / "release")
-    install_release(release, home / "scripts/releases", home / "scripts/current")
+    install_release(release, home / "releases", home / "current")
 
-    assert cli.main(["scripts", "shims"]) == 0
+    assert cli.main(["release", "shims"]) == 0
 
     assert "generated shims: 1" in capsys.readouterr().out
 
 
-def test_cli_current_target_snapshot_rejects_broken_state(tmp_path: Path) -> None:
+def test_release_install_rejects_broken_current_entry(tmp_path: Path) -> None:
     current = tmp_path / "current"
     current.mkdir()
     (current / "default").mkdir()
+    source = _release(tmp_path / "source")
 
-    with pytest.raises(ValueError, match="scripts current entry must be a symlink"):
-        cli._capture_current_targets(current, ["default"])
+    with pytest.raises(ValueError, match="current entry must be a symlink"):
+        install_release(source, tmp_path / "releases", current)
 
     (current / "default").rmdir()
     (current / "default").symlink_to(tmp_path / "missing")
     with pytest.raises(ValueError, match="active release target not found"):
-        cli._capture_current_targets(current, ["default"])
+        install_release(source, tmp_path / "releases", current)
 
 
 def test_cli_module_entrypoint(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -317,16 +318,94 @@ def test_install_release_cleans_staging_when_initial_rename_fails(
     assert not (releases / "default/0.1.0").exists()
 
 
+def test_install_release_rejects_non_directory_release_target(tmp_path: Path) -> None:
+    source = _release(tmp_path / "source")
+    target = tmp_path / "releases/default/0.1.0"
+    target.parent.mkdir(parents=True)
+    target.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="release target must be a directory"):
+        install_release(source, tmp_path / "releases", tmp_path / "current")
+
+
+def test_install_release_retains_backup_when_previous_version_restore_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = _release(tmp_path / "source")
+    releases = tmp_path / "releases"
+    current = tmp_path / "current"
+    install_release(source, releases, current)
+    original_rename = Path.rename
+
+    def fail_install_and_restore(self: Path, target: Path):
+        if ".tmp." in self.name:
+            raise RuntimeError("install failed")
+        if ".bak." in self.name:
+            raise RuntimeError("restore failed")
+        return original_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", fail_install_and_restore)
+    with pytest.raises(RuntimeError, match="previous release could not be restored"):
+        install_release(source, releases, current)
+
+    assert list((releases / "default").glob("*.bak.*"))
+
+
+def test_reversible_release_install_restores_same_version_contents(tmp_path: Path) -> None:
+    source = _release(tmp_path / "source")
+    releases = tmp_path / "releases"
+    current = tmp_path / "current"
+    install_release(source, releases, current)
+    installed_command = releases / "default/0.1.0/commands/sample.py"
+    installed_command.write_text("print('old')\n", encoding="utf-8")
+    (source / "commands/sample.py").write_text("print('new')\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="downstream failure"):
+        with reversible_release_install(source, releases, current):
+            raise RuntimeError("downstream failure")
+
+    assert installed_command.read_text(encoding="utf-8") == "print('old')\n"
+    assert (current / "default").resolve() == releases / "default/0.1.0"
+
+
+def test_reversible_release_install_reports_failed_link_restore(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    old = _release(tmp_path / "old", version="0.1.0")
+    new = _release(tmp_path / "new", version="0.2.0")
+    releases = tmp_path / "releases"
+    current = tmp_path / "current"
+    install_release(old, releases, current)
+    original_replace = __import__("atlas.releases").releases._replace_symlink
+    calls = 0
+
+    def fail_restore(link: Path, target: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("link restore failed")
+        original_replace(link, target)
+
+    monkeypatch.setattr("atlas.releases._replace_symlink", fail_restore)
+    with pytest.raises(RuntimeError, match="release installation failed and rollback failed"):
+        with reversible_release_install(new, releases, current):
+            raise RuntimeError("downstream failure")
+
+    assert (releases / "default/0.1.0").is_dir()
+    assert not (current / "default").exists()
+
+
 def test_install_release_rejects_non_directory_current_root(tmp_path: Path) -> None:
     source = _release(tmp_path / "source")
-    current = tmp_path / "scripts/current"
-    current.parent.mkdir(parents=True)
-    current.write_text("legacy", encoding="utf-8")
+    current = tmp_path / "current"
+    current.write_text("not a directory", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="scripts current root must be a directory"):
-        install_release(source, tmp_path / "scripts/releases", current)
+    with pytest.raises(ValueError, match="current root must be a directory"):
+        install_release(source, tmp_path / "releases", current)
 
-    assert current.read_text(encoding="utf-8") == "legacy"
+    assert current.read_text(encoding="utf-8") == "not a directory"
 
 
 def test_runner_resolve_unknown_command(tmp_path: Path) -> None:
@@ -341,13 +420,13 @@ def test_runner_redacts_sensitive_arguments(monkeypatch: pytest.MonkeyPatch, tmp
     etc.mkdir(parents=True)
     var.mkdir(parents=True)
     _set_env(monkeypatch, home, etc, var)
-    scripts_python = home / "runtime/python/envs/scripts/bin/python"
-    scripts_python.parent.mkdir(parents=True)
-    scripts_python.symlink_to(Path("/usr/bin/python3"))
+    runtime_python = home / "runtime/python/envs/scripts/bin/python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.symlink_to(Path("/usr/bin/python3"))
     release = _release(tmp_path / "release")
-    install_release(release, home / "scripts/releases", home / "scripts/current")
+    install_release(release, home / "releases", home / "current")
     other = _release(tmp_path / "other", release_name="other", command_name="other")
-    install_release(other, home / "scripts/releases", home / "scripts/current")
+    install_release(other, home / "releases", home / "current")
     assert cli.main(["run", "sample", "--token", "abc", "--api-key=def", "DB_PASSWORD=ghi"]) == 0
 
     log = (var / "logs/runs.jsonl").read_text(encoding="utf-8")
@@ -358,12 +437,12 @@ def test_runtime_install_uses_no_extra_requirements_for_release_without_requirem
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     calls = _fake_runtime(monkeypatch, tmp_path)
-    scripts_root = tmp_path / "scripts/current/default"
-    scripts_root.mkdir(parents=True)
+    release_root = tmp_path / "current/default"
+    release_root.mkdir(parents=True)
 
-    install_runtime(tmp_path / "runtime", "3.12.3", [scripts_root])
+    install_runtime(tmp_path / "runtime", "3.12.3", [release_root])
 
-    assert calls[-2][1:] == ["-m", "pip", "install", "fire", "PyYAML"]
+    assert calls[-2][1:] == ["-m", "pip", "install", "PyYAML"]
 
 
 def test_runtime_helpers_report_subprocess_failures(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -468,18 +547,18 @@ def test_runtime_install_leaves_no_venv_when_final_rename_fails_without_backup(
     assert not (runtime / "python/envs/scripts").exists()
 
 
-def test_scriptsets_rejects_invalid_current_root_and_entries(tmp_path: Path) -> None:
+def test_catalog_rejects_invalid_current_root_and_entries(tmp_path: Path) -> None:
     assert active_releases(tmp_path / "missing") == []
 
     current = tmp_path / "current"
     current.write_text("not a dir", encoding="utf-8")
-    with pytest.raises(ValueError, match="scripts current root must be a directory"):
+    with pytest.raises(ValueError, match="current root must be a directory"):
         active_releases(current)
 
     current.unlink()
     current.mkdir()
     (current / "regular").write_text("ignored", encoding="utf-8")
-    with pytest.raises(ValueError, match="scripts current entry must be a symlink"):
+    with pytest.raises(ValueError, match="current entry must be a symlink"):
         active_releases(current)
 
     (current / "regular").unlink()
@@ -502,7 +581,7 @@ def test_regenerate_shims_rejects_command_path_directory(tmp_path: Path) -> None
     (shims / "sample").mkdir(parents=True)
 
     with pytest.raises(ValueError, match="shim path is a directory"):
-        regenerate_shims(current, shims, tmp_path / "script-runner")
+        regenerate_shims(current, shims, tmp_path / "artifact-runner")
 
 
 def test_sources_rejects_absolute_archive_members(tmp_path: Path) -> None:
@@ -551,12 +630,12 @@ def test_sources_rejects_archives_without_release_and_unsupported_archive(tmp_pa
         info = tarfile.TarInfo("README.md")
         info.size = 0
         tf.addfile(info, io.BytesIO())
-    with pytest.raises(ValueError, match="does not contain an Atlas scripts release"):
+    with pytest.raises(ValueError, match="does not contain an Atlas release"):
         resolve_source(str(archive), cache_dir=tmp_path / "cache")
 
     unsupported = tmp_path / "release.rar"
     unsupported.write_text("x", encoding="utf-8")
-    with pytest.raises(ValueError, match="unsupported scripts source"):
+    with pytest.raises(ValueError, match="unsupported release source"):
         resolve_source(str(unsupported), cache_dir=tmp_path / "cache")
 
     with pytest.raises(ValueError, match="unsupported archive source"):
@@ -588,9 +667,11 @@ def test_sources_rejects_remote_archive_without_archive_suffix(tmp_path: Path) -
 def test_sources_git_variants_and_failures(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls: list[list[str]] = []
     monkeypatch.setattr("atlas.sources.subprocess.run", lambda cmd, check: calls.append(cmd))
-    resolved = resolve_source("git+https://example.test/scripts.git", cache_dir=tmp_path / "cache")
+    resolved = resolve_source("git+https://example.test/releases.git", cache_dir=tmp_path / "cache")
     assert resolved == tmp_path / "cache/sources" / f"git.tmp.{__import__('os').getpid()}"
-    assert calls == [["git", "clone", "--depth", "1", "https://example.test/scripts.git", str(resolved)]]
+    assert calls == [
+        ["git", "clone", "--depth", "1", "https://example.test/releases.git", str(resolved)]
+    ]
 
     with pytest.raises(ValueError, match="repository URL is required"):
         clone_git_source("git+", tmp_path / "cache")
@@ -600,38 +681,33 @@ def test_sources_git_variants_and_failures(monkeypatch: pytest.MonkeyPatch, tmp_
 
     monkeypatch.setattr("atlas.sources.subprocess.run", missing_git)
     with pytest.raises(ValueError, match="git command is required"):
-        clone_git_source("git+https://example.test/scripts.git", tmp_path / "cache")
+        clone_git_source("git+https://example.test/releases.git", tmp_path / "cache")
 
     def failed_git(cmd, check):
         raise subprocess.CalledProcessError(1, cmd)
 
     monkeypatch.setattr("atlas.sources.subprocess.run", failed_git)
     with pytest.raises(ValueError, match="git source clone failed"):
-        clone_git_source("git+https://example.test/scripts.git", tmp_path / "cache")
+        clone_git_source("git+https://example.test/releases.git", tmp_path / "cache")
 
 
 def test_resolve_source_requires_cache_for_remote_sources_and_handles_missing_local(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(ValueError, match="scripts source is required"):
+    with pytest.raises(ValueError, match="release source is required"):
         resolve_source("  ")
-    with pytest.raises(ValueError, match="cache_dir is required for git"):
-        resolve_source("git+https://example.test/scripts.git")
-    with pytest.raises(ValueError, match="cache_dir is required for remote archive"):
+    with pytest.raises(ValueError, match="cache_dir is required for a git"):
+        resolve_source("git+https://example.test/releases.git")
+    with pytest.raises(ValueError, match="cache_dir is required for a remote release archive"):
         resolve_source("https://example.test/release.tar.gz")
 
     archive = tmp_path / "release.zip"
     archive.write_text("not zip", encoding="utf-8")
-    with pytest.raises(ValueError, match="cache_dir is required for archive"):
+    with pytest.raises(ValueError, match="cache_dir is required for a release archive"):
         resolve_source(str(archive))
 
     assert resolve_source(str(tmp_path / "missing")) == tmp_path / "missing"
-    config = AtlasConfig(
-        path=tmp_path / "config.yml",
-        runtime=RuntimeConfig(python_version="3.12.3"),
-        scripts=ScriptsConfig(source="alias"),
-    )
-    assert resolve_source("alias", config=config) == Path("alias")
+    assert resolve_source("alias") == Path("alias")
     assert resolve_source("missing", cache_dir=tmp_path / "cache") == Path("missing")
 
 

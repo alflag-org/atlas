@@ -9,8 +9,8 @@ class Sample2:
     def show_release(self) -> dict[str, str]:
         ctx = get_context()
         return {
-            "script": ctx.script.name,
-            "version": ctx.script.version,
+            "artifact": ctx.artifact.name,
+            "version": ctx.artifact.version,
             "host": ctx.host.name,
         }
 

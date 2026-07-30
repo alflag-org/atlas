@@ -3,7 +3,6 @@ x-atlas-env: &atlas-env
   ATLAS_ETC_DIR: /etc/atlas
   ATLAS_VAR_DIR: /var/lib/atlas
   ATLAS_RUNTIME_DIR: /opt/atlas/runtime
-  ATLAS_SCRIPTS_DIR: /opt/atlas/scripts/current
 
 services:
   atlas:
@@ -23,6 +22,6 @@ services:
       sh -c "atlas status
       && atlas runtime status
       && atlas run sample hello --name=docker-check
-      && ruff check src tests
+      && ruff check src operations tests
       && pytest -q
       && python -m build"

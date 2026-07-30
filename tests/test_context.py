@@ -16,16 +16,19 @@ def _context_env(tmp_path: Path) -> dict[str, str]:
         "ATLAS_ETC_DIR": str(tmp_path / "etc"),
         "ATLAS_VAR_DIR": str(tmp_path / "var"),
         "ATLAS_RUNTIME_DIR": str(tmp_path / "runtime"),
-        "ATLAS_SCRIPTS_CURRENT_DIR": str(tmp_path / "scripts/current"),
-        "ATLAS_SCRIPTS_DIR": str(tmp_path / "scripts/releases/basic/2026.05.10-001"),
+        "ATLAS_RELEASE_ROOT": str(tmp_path / "opt/releases/basic/2026.05.10-001"),
         "ATLAS_HOST_FILE": str(host),
-        "ATLAS_SCRIPT_NAME": "sample",
-        "ATLAS_SCRIPT_RELEASE_NAME": "basic-scripts",
-        "ATLAS_SCRIPT_VERSION": "2026.05.10-001",
+        "ATLAS_ARTIFACT_NAME": "sample",
+        "ATLAS_ARTIFACT_TYPE": "command",
+        "ATLAS_RELEASE_NAME": "basic",
+        "ATLAS_RELEASE_VERSION": "2026.05.10-001",
+        "ATLAS_RUN_ID": "run-id",
+        "ATLAS_PARENT_RUN_ID": "parent-id",
+        "ATLAS_OPERATION_ID": "operation-id",
     }
 
 
-def test_get_context_from_env_mapping_returns_host_paths_and_script(tmp_path: Path) -> None:
+def test_get_context_from_env_mapping_returns_host_paths_and_artifact(tmp_path: Path) -> None:
     env = _context_env(tmp_path)
 
     ctx = get_context(env=env)
@@ -33,18 +36,30 @@ def test_get_context_from_env_mapping_returns_host_paths_and_script(tmp_path: Pa
     assert ctx.host.name == "test-host"
     assert ctx.host.site == "kng01"
     assert ctx.paths.home == tmp_path / "opt"
-    assert ctx.script.name == "sample"
-    assert ctx.script.release_name == "basic-scripts"
-    assert ctx.script.version == "2026.05.10-001"
-    assert ctx.script.release_root == tmp_path / "scripts/releases/basic/2026.05.10-001"
-    assert ctx.paths.script_release_root == ctx.script.release_root
+    assert ctx.artifact.name == "sample"
+    assert ctx.artifact.artifact_type == "command"
+    assert ctx.artifact.release_name == "basic"
+    assert ctx.artifact.version == "2026.05.10-001"
+    assert ctx.artifact.release_root == tmp_path / "opt/releases/basic/2026.05.10-001"
+    assert ctx.artifact.run_id == "run-id"
+    assert ctx.artifact.parent_run_id == "parent-id"
+    assert ctx.artifact.operation_id == "operation-id"
+    assert ctx.paths.release_root == ctx.artifact.release_root
 
 
 @pytest.mark.parametrize(
     "key",
-    ["ATLAS_SCRIPT_NAME", "ATLAS_SCRIPT_RELEASE_NAME", "ATLAS_SCRIPTS_DIR"],
+    [
+        "ATLAS_ARTIFACT_NAME",
+        "ATLAS_ARTIFACT_TYPE",
+        "ATLAS_RELEASE_NAME",
+        "ATLAS_RELEASE_VERSION",
+        "ATLAS_RELEASE_ROOT",
+        "ATLAS_RUN_ID",
+        "ATLAS_OPERATION_ID",
+    ],
 )
-def test_missing_required_script_environment_fails(tmp_path: Path, key: str) -> None:
+def test_missing_required_artifact_environment_fails(tmp_path: Path, key: str) -> None:
     env = _context_env(tmp_path)
     env.pop(key)
 
@@ -52,11 +67,11 @@ def test_missing_required_script_environment_fails(tmp_path: Path, key: str) -> 
         get_context(env=env)
 
 
-def test_script_version_defaults_to_empty_string(tmp_path: Path) -> None:
+def test_empty_parent_run_id_represents_a_root_run(tmp_path: Path) -> None:
     env = _context_env(tmp_path)
-    env.pop("ATLAS_SCRIPT_VERSION")
+    env["ATLAS_PARENT_RUN_ID"] = ""
 
-    assert get_context(env=env).script.version == ""
+    assert get_context(env=env).artifact.parent_run_id is None
 
 
 def test_to_dict_is_json_friendly(tmp_path: Path) -> None:
@@ -65,6 +80,7 @@ def test_to_dict_is_json_friendly(tmp_path: Path) -> None:
     data = ctx.to_dict()
 
     assert data["host"]["name"] == "test-host"
-    assert data["script"]["release_root"] == str(ctx.script.release_root)
-    assert data["paths"]["script_release_root"] == str(ctx.paths.script_release_root)
+    assert data["artifact"]["release_root"] == str(ctx.artifact.release_root)
+    assert data["artifact"]["parent_run_id"] == "parent-id"
+    assert data["paths"]["release_root"] == str(ctx.paths.release_root)
     json.dumps(data)

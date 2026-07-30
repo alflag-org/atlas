@@ -31,11 +31,11 @@ def _service(paths, release_factory):
     )
     target = install_release(
         source,
-        paths.scripts_releases_root,
-        paths.scripts_current_root,
+        paths.releases_root,
+        paths.current_root,
     )
     return target, resolve_service(
-        paths.scripts_current_root,
+        paths.current_root,
         "worker",
         "refresh",
     )
@@ -323,11 +323,11 @@ def test_systemd_service_without_timer(
     )
     install_release(
         source,
-        atlas_paths.scripts_releases_root,
-        atlas_paths.scripts_current_root,
+        atlas_paths.releases_root,
+        atlas_paths.current_root,
     )
     service = resolve_service(
-        atlas_paths.scripts_current_root,
+        atlas_paths.current_root,
         "worker",
         "refresh",
     )
@@ -372,11 +372,11 @@ def test_systemd_accepts_declared_command(
     )
     install_release(
         command_source,
-        atlas_paths.scripts_releases_root,
-        atlas_paths.scripts_current_root,
+        atlas_paths.releases_root,
+        atlas_paths.current_root,
     )
     command_service = resolve_service(
-        atlas_paths.scripts_current_root,
+        atlas_paths.current_root,
         "reader",
         "status",
     )
@@ -447,13 +447,13 @@ def test_init_cli_uses_systemd_adapter(
     other = release_factory(name="other", commands=("other-show",))
     install_release(
         source,
-        atlas_paths.scripts_releases_root,
-        atlas_paths.scripts_current_root,
+        atlas_paths.releases_root,
+        atlas_paths.current_root,
     )
     install_release(
         other,
-        atlas_paths.scripts_releases_root,
-        atlas_paths.scripts_current_root,
+        atlas_paths.releases_root,
+        atlas_paths.current_root,
     )
     calls: list[str] = []
 
@@ -485,5 +485,5 @@ def test_init_cli_uses_systemd_adapter(
     assert cli.main(["init", "remove", "worker", "refresh"]) == 0
     assert "atlas-worker-refresh.service" in capsys.readouterr().out
     assert calls == ["diff:refresh", "install:refresh", "remove:refresh"]
-    with pytest.raises(ValueError, match="unknown release"):
-        cli.main(["init", "list", "missing"])
+    assert cli.main(["init", "list", "missing"]) == 2
+    assert "unknown release: missing" in capsys.readouterr().err

@@ -13,10 +13,10 @@ class NestedSample:
         return {
             "host": ctx.host.name,
             "site": ctx.host.site,
-            "script": ctx.script.name,
-            "release": ctx.script.release_name,
-            "version": ctx.script.version,
-            "release_root": str(ctx.script.release_root),
+            "artifact": ctx.artifact.name,
+            "release": ctx.artifact.release_name,
+            "version": ctx.artifact.version,
+            "release_root": str(ctx.artifact.release_root),
         }
 
 

@@ -17,6 +17,7 @@ systemd artifacts in ``release.yml``.
    releases
    jobs
    operations
+   reviewed-operations
    legacy-repositories
    migration
 

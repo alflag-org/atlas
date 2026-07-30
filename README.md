@@ -180,7 +180,7 @@ must invoke its declared command, and a job-backed service must invoke a matchin
 Instance locks use non-blocking OS advisory locks under `/var/lib/atlas/locks`. Timeouts terminate
 the complete child process group, then kill it if graceful termination does not complete.
 
-## First-party configuration artifacts
+## First-party operation artifacts
 
 The repository contains a separately packaged `operations` release:
 
@@ -192,6 +192,18 @@ config-apply <playbook> <target>
 inventory-show
 config-diff-many <playbook> [target...]
 inventory-refresh --site <site>  # non-public job
+
+proxmox-status <provider>
+vm-create-plan <provider> <input>
+vm-create-apply <provider> [plan] --confirm <plan-id>
+vm-create-verify <provider> [plan-or-evidence]
+vm-create-rollback <provider> [evidence] --confirm <plan-id>
+vm-template-create-plan <provider> <input>
+vm-template-create-apply <provider> [plan] --confirm <plan-id>
+vm-template-create-verify <provider> [plan-or-evidence]
+vm-template-create-rollback <provider> [evidence] --confirm <plan-id>
+operation-artifact-validate [artifact]
+operation-artifact-inspect [artifact]
 ```
 
 These artifacts treat the caller's current directory as an Ansible project. Commands require
@@ -199,6 +211,11 @@ These artifacts treat the caller's current directory as an Ansible project. Comm
 `inventories/<site>/hosts.yml`. They do not install dependencies, change Git state, or discover
 projects. `config-diff-many` calls the public `config-diff` executable as a child process; it does
 not import the primitive implementation.
+
+The Proxmox commands require explicit, strict provider and operation input files. Plan and
+evidence JSON are emitted only on stdout. Apply and rollback bind the provider and input file
+digests, require the exact plan ID, and never discover Ares configuration or Daedalus inventory.
+See [Reviewed Proxmox operations](docs/reviewed-operations.rst).
 
 ```bash
 cd /home/ops/repos/provisioning

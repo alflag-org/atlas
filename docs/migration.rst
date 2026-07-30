@@ -93,3 +93,10 @@ packaging, or Atlas shim into that repository.
 Before retiring an old wrapper, compare its check and diff results against ``config-check`` and
 ``config-diff`` on representative targets. Archive an old repository only after real-host smoke
 tests and the observation period succeed.
+
+For former Ares VM and template operations, convert environment-owned values
+to the explicit provider definition and operation input described in
+:doc:`reviewed-operations`. Replace the umbrella executable with the separate
+plan, apply, verify, rollback, validate, and inspect commands. Atlas has no old
+schema reader, implicit configuration path, inventory adapter, import alias,
+or ownership-marker compatibility.

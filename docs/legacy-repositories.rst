@@ -188,6 +188,12 @@ only the files listed here, rename their public schemas and symbols to
 Atlas-owned terms, and remove their implicit file writes and product-wide CLI
 dispatch.
 
+The extraction is now implemented by the first-party ``operations`` release.
+The source paths below record provenance and the accepted responsibility
+boundary; they are not compatibility imports. The final schemas, command
+syntax, evidence output, and rollback checks are documented in
+:doc:`reviewed-operations`.
+
 Artifact parsing and serialization:
 
 .. code-block:: text
@@ -344,16 +350,15 @@ appear in that repository.
 Implementation order
 --------------------
 
-1. Add Atlas-owned plan, evidence, safety, artifact, and Proxmox adapter
-   modules with the final ``atlas.operation/v1`` contract.
-2. Add one manifest entrypoint for each final command listed above.
-3. Port and rewrite only the tests associated with retained behavior.
-4. Verify unit, integration-fixture, coverage, lint, package, and release
-   artifact checks in Atlas.
-5. Convert real provider definitions in their external repository without
+Atlas now contains the final ``atlas.operation/v1`` modules, one manifest
+entrypoint per command, rewritten retained-behavior tests, and local release
+verification. The remaining migration sequence is:
+
+1. Convert real provider definitions in their external repository without
    adding an Atlas wrapper or package.
-6. Remove or archive Hermes and Ares only after replacement commands pass
-   authorized real-host smoke tests and the observation period.
+2. Run authorized real-host smoke tests for plan, apply, verify, and rollback.
+3. Observe the replacement for the agreed period.
+4. Remove or archive Hermes and Ares only after those checks pass.
 
 No repository-wide copy, compatibility import, product-name alias, legacy
 schema reader, or umbrella command is permitted.

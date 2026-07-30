@@ -3,8 +3,8 @@
 
 .. note::
 
-   このページは現行の Atlas 0.3 scripts runtime を説明します。後続 PR で実装する
-   Atlas 1.0 の構成は :doc:`architecture`、導入順序は :doc:`migration` を参照してください。
+   このページは command-only manifest stage の scripts runtime を説明します。後続 PR で実装する
+   Atlas 1.0 の全体構成は :doc:`architecture`、導入順序は :doc:`migration` を参照してください。
 
 Atlas の役割
 ------------
@@ -48,13 +48,12 @@ Atlas は pyenv や OS パッケージのインストールまでは行いませ
 リリースとコマンド
 ------------------
 
-スクリプトリリースは ``VERSION`` と ``commands/`` を持つディレクトリです。
-``commands/`` 配下の ``.py`` ファイルは、相対パスからコマンド名へ変換されます。
-たとえば ``commands/admin/restart.py`` は ``admin-restart`` になります。
+スクリプトリリースは ``VERSION`` と ``release.yml`` を持つディレクトリです。
+``release.yml`` の ``commands`` に command 名、``python`` runtime、release root からの entrypoint を明示します。
+``commands/`` に置いただけの Python file は公開されません。
 
-コマンド名は小文字英数字と ``-`` を使う形に制限されます。
-``atlas`` と ``script-runner`` は予約名です。
-リリース名は小文字英数字、``_``、``-`` を使えますが、``current``、``releases``、``tmp`` などの管理名は使えません。
+release 名と command 名は ``[a-z][a-z0-9]*(?:-[a-z0-9]+)*`` に制限されます。
+``atlas``、``script-runner``、``artifact-runner`` は command の予約名です。
 
 失敗時の基本方針
 ----------------
@@ -62,6 +61,7 @@ Atlas は pyenv や OS パッケージのインストールまでは行いませ
 Atlas は曖昧な状態を許容せず、失敗を明示します。
 
 * コマンド名が複数リリースで衝突した場合は失敗
+* ``release.yml`` に unknown key、重複 YAML key、未対応 schema/runtime がある場合は失敗
 * リリース内に symlink が含まれる場合は失敗
 * archive 展開時に path traversal や symlink がある場合は失敗
 * runtime Python が見つからない場合は失敗

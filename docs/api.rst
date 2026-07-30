@@ -82,10 +82,10 @@ maintainer 向け内部 API
    :recursive:
 
    cli
-   commands
    config
    files
    launchers
+   manifests
    paths
    releases
    runner

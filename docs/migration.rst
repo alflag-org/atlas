@@ -4,7 +4,9 @@ Staged migration from Atlas 0.3 to Atlas 1.0
 Current and final interfaces
 ----------------------------
 
-The current runtime remains the source of truth until each implementation pull request lands.
+The table below records the Atlas 0.3 baseline and the final target. This checkout has completed
+the command-only manifest stage: ``release.yml`` is required and implicit command discovery has
+been removed, while the scripts CLI and filesystem paths remain current behavior.
 
 .. list-table::
    :header-rows: 1

@@ -4,9 +4,10 @@ Atlas 1.0 target architecture
 Status and current behavior
 ---------------------------
 
-This page records the accepted Atlas 1.0 target. The current checkout continues to implement the
-Atlas 0.3 scripts runtime until the corresponding migration pull requests land. Adding this page
-does not change release discovery, command execution, paths, configuration, or CLI behavior.
+This page records the accepted Atlas 1.0 target. The current checkout implements strict
+``release.yml`` parsing and manifest-declared command artifacts while retaining the scripts CLI,
+execution path, configuration, and filesystem names. Jobs, services, init artifacts, and the final
+filesystem terminology remain later migration stages.
 
 Atlas responsibilities
 ----------------------

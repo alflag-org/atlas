@@ -21,7 +21,7 @@ Atlas の CLI は ``atlas`` コマンドから操作します。
 状態確認
 --------
 
-``atlas status`` は設定ファイル、ホストプロファイル、アクティブなリリース、検出済みコマンド数、shim などの配置を表示します。
+``atlas status`` は設定ファイル、ホストプロファイル、アクティブなリリース、manifest に宣言されたコマンド数、shim などの配置を表示します。
 まずこのコマンドでホストの見え方を確認します。
 
 .. code-block:: bash
@@ -49,7 +49,7 @@ pyenv 本体と Python build に必要な OS 依存は、事前にホストへ�
 リリースのインストール
 ----------------------
 
-ローカルディレクトリをリリース名 ``sample`` としてインストールする例です。
+ローカルディレクトリをインストールする例です。リリース名 ``sample`` は ``release.yml`` が決めます。
 
 .. code-block:: bash
 
@@ -58,12 +58,16 @@ pyenv 本体と Python build に必要な OS 依存は、事前にホストへ�
 インストール時には以下が行われます。
 
 * リリース構造と ``VERSION`` の検証
-* ``commands/`` 配下の Python コマンド検出
+* strict YAML の ``release.yml`` と schema の検証
+* manifest に明示された Python command の entrypoint 検証
 * リリース内 symlink の拒否
 * ``/opt/atlas/scripts/releases/<name>/<version>`` への配置
 * ``/opt/atlas/scripts/current/<name>`` symlink の更新
 * ``atlas_core`` の同期
 * launcher と shim の生成
+
+``--name`` は manifest 名を上書きしません。自動処理で期待する名前を明示的に照合する場合だけ指定し、
+manifest の ``name`` と異なる値ならインストールを中止します。
 
 設定済みリリースの更新
 ----------------------
@@ -119,7 +123,7 @@ pyenv 本体と Python build に必要な OS 依存は、事前にホストへ�
 shim 経由の実行
 ---------------
 
-``/opt/atlas/shims`` を ``PATH`` に追加すると、検出済みコマンドを直接実行できます。
+``/opt/atlas/shims`` を ``PATH`` に追加すると、manifest に宣言されたコマンドを直接実行できます。
 
 .. code-block:: bash
 

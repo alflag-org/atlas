@@ -1,15 +1,15 @@
 # atlas
 
 Atlas is a lightweight runtime manager for Python-based script releases, especially Python Fire commands.
-It installs the runtime, installs script releases, discovers commands, loads host context,
+It installs the runtime, validates manifest-declared script releases, loads host context,
 generates shims, and records execution logs in JSONL without adding extra orchestration.
 
 ## Atlas 1.0 design status
 
-The current checkout still implements the Atlas 0.3 scripts runtime described below. The accepted
-Atlas 1.0 target separates manifest-declared commands, jobs, services, and init artifacts while
-keeping environment-specific desired state in independent repositories. This documentation-only
-change does not alter runtime behavior.
+The current checkout implements the command-only manifest stage of the Atlas 1.0 migration while
+retaining the Atlas 0.3 scripts CLI and filesystem paths. The accepted target additionally
+separates jobs, services, and init artifacts and keeps environment-specific desired state in
+independent repositories.
 
 - [Target architecture](docs/architecture.rst)
 - [Architecture decision](docs/adr/0001-release-artifacts-and-repository-boundaries.rst)
@@ -65,7 +65,7 @@ Use `docker compose run --build --rm atlas` or `docker compose run --build --rm 
 
 Atlas keeps the command path small:
 
-- `atlas.commands` discovers release commands and validates their names.
+- `atlas.manifests` strictly parses `release.yml` and validates declared command artifacts.
 - `atlas.sources` resolves local, archive, HTTP(S), git, and registry sources.
 - `atlas.releases` validates and atomically installs scripts releases.
 - `atlas.runtime` handles pyenv-backed scripts runtime installation and status.
@@ -77,7 +77,7 @@ Atlas keeps the command path small:
 - `atlas status`
 - `atlas runtime status`
 - `atlas runtime install`
-- `atlas scripts install <source> [--name <release-name>]`
+- `atlas scripts install <source> [--name <manifest-name>]`
 - `atlas scripts update [release-name]`
 - `atlas scripts list [--verbose]`
 - `atlas scripts shims`
@@ -204,7 +204,7 @@ If command names collide across active releases, Atlas fails closed in `scripts 
 
 The repository includes two local example releases:
 
-- `examples/basic-scripts-release`: a standalone release with a top-level command, a nested command, and a release-local module. Use it for single-release smoke tests and command-discovery examples.
+- `examples/basic-scripts-release`: a standalone release with a top-level command, a nested command, and a release-local module. Use it for single-release smoke tests and manifest-validation examples.
 - `examples/companion-scripts-release`: a second independent release with a small command surface. Use it alongside `basic-scripts-release` when checking multi-release configuration, updates, status output, and command routing.
 
 ```bash

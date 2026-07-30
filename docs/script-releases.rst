@@ -1,105 +1,112 @@
-スクリプトリリース
-==================
+Command-only script releases
+============================
 
-リリース構造
-------------
+Required files
+--------------
 
-Atlas が扱うリリースは、少なくとも ``VERSION`` と ``commands/`` を含むディレクトリです。
+The manifest stage of Atlas requires ``VERSION`` and ``release.yml``. Command files, release-local
+modules, and dependency files remain ordinary release contents, but only commands declared in the
+manifest are public.
 
 .. code-block:: text
 
-   my-release/
+   sample/
      VERSION
+     release.yml
      commands/
        hello.py
        admin/
          restart.py
      modules/
-       my_release_helpers/
+       sample_helpers/
          __init__.py
      requirements.txt
 
-``VERSION`` は空でない文字列である必要があります。
-``commands/`` は必須です。
-``modules/`` と requirements ファイルは任意です。
+``VERSION`` must contain a non-empty value that is safe as one filesystem segment. A release
+cannot contain symlinks.
 
-コマンド名の決定
-----------------
+Manifest
+--------
 
-``commands/`` 配下の ``.py`` ファイルは、相対パスの各 segment を ``-`` で結合したコマンド名になります。
+The command-only schema is ``atlas.release/v1``:
 
-.. list-table::
-   :header-rows: 1
+.. code-block:: yaml
 
-   * - ファイル
-     - コマンド名
-   * - ``commands/hello.py``
-     - ``hello``
-   * - ``commands/admin/restart.py``
-     - ``admin-restart``
-   * - ``commands/db/backup/full.py``
-     - ``db-backup-full``
+   schema: atlas.release/v1
+   name: sample
+   commands:
+     hello:
+       runtime: python
+       entrypoint: commands/hello.py
+     admin-restart:
+       runtime: python
+       entrypoint: commands/admin/restart.py
 
-各 segment は ``^[a-z][a-z0-9-]*$`` に一致する必要があります。
-``atlas`` と ``script-runner`` は予約済みです。
+The YAML parser rejects duplicate keys. The manifest rejects unknown keys, unsupported schemas,
+unsupported runtimes, invalid names, missing entrypoints, absolute paths, parent traversal,
+symlinks, and non-Python command entrypoints. A Python file that is present below ``commands/``
+but absent from the manifest is not published.
 
-リリース内モジュール
---------------------
+Release and command names use this grammar:
 
-``modules/`` が存在する場合、Atlas は対象リリースの ``modules/`` を ``PYTHONPATH`` の先頭へ追加します。
-他のアクティブリリースの ``modules/`` も後続に追加されます。
-リリース固有の helper は、標準的な Python package として ``modules/`` 配下へ置いてください。
+.. code-block:: text
+
+   [a-z][a-z0-9]*(?:-[a-z0-9]+)*
+
+``atlas``, ``script-runner``, and ``artifact-runner`` are reserved command names. Public command
+names normally follow ``<domain>-<verb>`` as described in :doc:`architecture`.
+
+The manifest ``name`` is canonical. ``atlas scripts install --name`` may assert the expected name
+but cannot rename a release. A configured ``scripts.releases`` key must therefore match the source
+manifest name.
+
+Release-local modules
+---------------------
+
+When ``modules/`` exists, Atlas places the selected release's module directory first on
+``PYTHONPATH``. Module directories from other active releases follow it. Release helpers should be
+normal Python packages below ``modules/``.
 
 .. code-block:: python
 
-   from my_release_helpers.formatting import format_message
+   from sample_helpers.formatting import format_message
 
    def main(name: str = "world") -> None:
        print(format_message(name))
 
-依存関係
---------
+Dependencies
+------------
 
-``atlas runtime install`` は各リリースの ``requirements.lock`` または ``requirements.txt`` を検出して scripts venv に入れます。
-両方ある場合は ``requirements.lock`` が優先されます。
-
-リリース更新後に Python 依存が変わった場合は、runtime を再インストールしてください。
+``atlas runtime install`` installs ``requirements.lock`` or ``requirements.txt`` from active
+releases into the scripts environment. When both exist, ``requirements.lock`` wins. Reinstall the
+runtime after changing release dependencies.
 
 .. code-block:: bash
 
-   atlas scripts update common
+   atlas scripts update sample
    atlas runtime install
 
-安全性の制約
-------------
+Stable runtime API
+------------------
 
-Atlas はリリース内の symlink を許可しません。
-archive からインストールする場合も、絶対パス、path traversal、symlink、hard link を拒否します。
-
-これは、配布物が Atlas の管理ディレクトリ外を書き換えたり、意図しないファイルを参照したりすることを避けるためです。
-
-atlas_core の利用
------------------
-
-インストール済みスクリプトは ``atlas`` 内部モジュールではなく ``atlas_core`` を import してください。
+Installed commands import ``atlas_core`` rather than modules below ``atlas``:
 
 .. code-block:: python
 
    from atlas_core import get_context
 
    def main() -> None:
-       ctx = get_context()
-       print(ctx.host.name)
-       print(ctx.script.release_name)
+       context = get_context()
+       print(context.host.name)
+       print(context.script.release_name)
 
-``atlas_core`` は scripts runtime に同期される安定 API です。
-``atlas`` パッケージはホスト側 CLI 実装の内部 API として扱ってください。
+``atlas_core`` is synchronized into the scripts runtime. The ``atlas`` package remains an
+implementation detail of the host CLI.
 
-実行ログ
---------
+Run records
+-----------
 
-``atlas run`` は実行ごとに ``/var/lib/atlas/logs/runs.jsonl`` へ 1 行の JSON を追記します。
-記録される主な項目は timestamp、release、script、args、version、exit_code、duration_ms です。
-
-引数に ``password``、``token``、``secret``、``key`` などを含むオプション名がある場合、値は ``***`` にマスクされます。
-ログファイルのローテーションや収集はホスト側の通常のログ基盤で行ってください。
+``atlas run`` appends one JSON object per execution to ``/var/lib/atlas/logs/runs.jsonl``. The
+current record includes timestamp, release, script, arguments, version, exit status, and duration.
+Values passed through option names containing ``password``, ``token``, ``secret``, or ``key`` are
+redacted. The host's normal logging system remains responsible for rotation and collection.

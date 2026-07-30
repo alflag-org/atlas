@@ -62,7 +62,7 @@ Sphinx theme は ``shibuya`` を使います。
 サンプル YAML は最小構成と複数リリース構成を分けます。
 
 ``script-releases`` はリリース作者向けです。
-``VERSION``、``commands/``、``modules/``、requirements、ログの扱いをまとめます。
+``VERSION``、``release.yml``、``commands/``、``modules/``、requirements、ログの扱いをまとめます。
 
 ``operations`` は本番ホストでの確認順です。
 障害時の説明は、症状から確認コマンドへ進める構成にします。

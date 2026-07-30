@@ -20,6 +20,39 @@ commands:
   config-diff-many:
     runtime: python
     entrypoint: commands/config-diff-many.py
+  proxmox-status:
+    runtime: python
+    entrypoint: commands/proxmox-status.py
+  vm-create-plan:
+    runtime: python
+    entrypoint: commands/vm-create-plan.py
+  vm-create-apply:
+    runtime: python
+    entrypoint: commands/vm-create-apply.py
+  vm-create-verify:
+    runtime: python
+    entrypoint: commands/vm-create-verify.py
+  vm-create-rollback:
+    runtime: python
+    entrypoint: commands/vm-create-rollback.py
+  vm-template-create-plan:
+    runtime: python
+    entrypoint: commands/vm-template-create-plan.py
+  vm-template-create-apply:
+    runtime: python
+    entrypoint: commands/vm-template-create-apply.py
+  vm-template-create-verify:
+    runtime: python
+    entrypoint: commands/vm-template-create-verify.py
+  vm-template-create-rollback:
+    runtime: python
+    entrypoint: commands/vm-template-create-rollback.py
+  operation-artifact-validate:
+    runtime: python
+    entrypoint: commands/operation-artifact-validate.py
+  operation-artifact-inspect:
+    runtime: python
+    entrypoint: commands/operation-artifact-inspect.py
 
 jobs:
   inventory-refresh:

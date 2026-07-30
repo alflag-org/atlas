@@ -65,6 +65,17 @@ def test_operations_release_manifest_is_valid() -> None:
         "config-apply",
         "inventory-show",
         "config-diff-many",
+        "proxmox-status",
+        "vm-create-plan",
+        "vm-create-apply",
+        "vm-create-verify",
+        "vm-create-rollback",
+        "vm-template-create-plan",
+        "vm-template-create-apply",
+        "vm-template-create-verify",
+        "vm-template-create-rollback",
+        "operation-artifact-validate",
+        "operation-artifact-inspect",
     ]
     assert list(manifest.jobs) == ["inventory-refresh"]
     assert manifest.jobs["inventory-refresh"].default_timeout_seconds == 300
@@ -73,7 +84,7 @@ def test_operations_release_manifest_is_valid() -> None:
     assert service.systemd.service.name == "inventory-refresh.service"
     assert service.systemd.timer is not None
     assert service.systemd.timer.name == "inventory-refresh.timer"
-    assert (OPERATIONS / "VERSION").read_text(encoding="utf-8") == "1.0.0\n"
+    assert (OPERATIONS / "VERSION").read_text(encoding="utf-8") == "1.1.0\n"
     assert (OPERATIONS / "requirements.txt").read_text(encoding="utf-8").startswith(
         "ansible-core"
     )
@@ -458,12 +469,24 @@ def test_inventory_refresh_job_reports_invalid_site(
         "config-apply",
         "inventory-show",
         "config-diff-many",
+        "proxmox-status",
+        "vm-create-plan",
+        "vm-create-apply",
+        "vm-create-verify",
+        "vm-create-rollback",
+        "vm-template-create-plan",
+        "vm-template-create-apply",
+        "vm-template-create-verify",
+        "vm-template-create-rollback",
+        "operation-artifact-validate",
+        "operation-artifact-inspect",
     ],
 )
 def test_operation_script_entrypoints_show_help(
     command_name: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    assert callable(_load_command(command_name))
     monkeypatch.setattr(sys, "argv", [command_name, "--help"])
     with pytest.raises(SystemExit) as error:
         runpy.run_path(

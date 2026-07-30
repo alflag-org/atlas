@@ -236,7 +236,8 @@ def execute(
         environment_files=environment_files,
     )
     command = [str(paths.runtime_python), str(executable.artifact.entrypoint), *args]
-    print(f"$ {shlex.join([executable.artifact.name, *args])}", file=sys.stderr)
+    display_args = redact_args(args)
+    print(f"$ {shlex.join([executable.artifact.name, *display_args])}", file=sys.stderr)
     started_at = datetime.now(timezone.utc)
     started = time.perf_counter()
     context = git_context(working_directory)

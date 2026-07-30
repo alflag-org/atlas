@@ -61,7 +61,9 @@ def test_execute_sets_final_environment_and_logs_correlation(
 
     stdout, stderr = capfd.readouterr()
     assert "sample-show:test-host" in stdout
-    assert "$ sample-show --token secret KEY=value" in stderr
+    assert "$ sample-show --token '***' 'KEY=***'" in stderr
+    assert "secret" not in stderr
+    assert "KEY=value" not in stderr
     record = _last_log(atlas_paths)
     assert record["parent_run_id"] == "parent-run"
     assert record["operation_id"] == "root-operation"

@@ -25,7 +25,7 @@ jobs:
       - run: |
           python -m coverage run -m pytest -q
           python -m coverage report
-      - run: ruff check src tests
+      - run: ruff check src operations tests
       - run: python -m build
       - name: Smoke test vNext commands
         env:

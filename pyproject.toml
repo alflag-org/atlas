@@ -37,7 +37,10 @@ include = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = [
+  "src",
+  "operations/modules",
+]
 
 [tool.ruff]
 target-version = "py311"
@@ -74,8 +77,8 @@ select = [
 [tool.coverage.run]
 branch = true
 source = [
-  "atlas",
-  "atlas_core",
+  "src",
+  "operations",
 ]
 
 [tool.coverage.report]

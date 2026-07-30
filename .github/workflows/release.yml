@@ -23,6 +23,14 @@ jobs:
           pip install -e '.[dev]'
       - run: pytest -q
       - run: python -m build
+      - name: Package first-party operations release
+        run: |
+          set -euo pipefail
+          operations_version="$(tr -d '\n' < operations/VERSION)"
+          git archive \
+            --format=tar.gz \
+            --output="dist/atlas-operations-${operations_version}.tar.gz" \
+            HEAD:operations
       - run: sha256sum dist/* > release-checksums.txt
       - uses: softprops/action-gh-release@v2
         with:

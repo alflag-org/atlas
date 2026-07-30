@@ -4,14 +4,14 @@ from pathlib import Path
 
 import pytest
 
+from atlas.catalog import active_releases, command_index
 from atlas.manifests import (
-    CommandArtifact,
+    ExecutableArtifact,
     ReleaseManifest,
     load_manifest,
     validate_name,
 )
 from atlas.releases import read_version, validate_release
-from atlas.scriptsets import active_releases, build_command_index
 
 
 def _release(
@@ -66,17 +66,18 @@ def test_load_manifest_declares_commands_explicitly(tmp_path: Path) -> None:
     assert manifest == ReleaseManifest(
         name="operations",
         commands={
-            "config-check": CommandArtifact(
+            "config-check": ExecutableArtifact(
                 name="config-check",
                 runtime="python",
                 entrypoint=(release / "commands/config-check.py").resolve(),
             ),
-            "inventory-show": CommandArtifact(
+            "inventory-show": ExecutableArtifact(
                 name="inventory-show",
                 runtime="python",
                 entrypoint=(release / "commands/inventory-show.py").resolve(),
             ),
         },
+        jobs={},
     )
     assert "not-declared" not in manifest.commands
 
@@ -88,6 +89,101 @@ def test_load_manifest_allows_a_release_without_commands(tmp_path: Path) -> None
     )
 
     assert load_manifest(release).commands == {}
+
+
+def test_load_manifest_declares_non_public_jobs(tmp_path: Path) -> None:
+    release = _release(
+        tmp_path / "release",
+        manifest=(
+            "schema: atlas.release/v1\n"
+            "name: worker\n"
+            "commands: {}\n"
+            "jobs:\n"
+            "  inventory-refresh:\n"
+            "    runtime: python\n"
+            "    entrypoint: jobs/inventory-refresh.py\n"
+            "    default_timeout_seconds: 300\n"
+        ),
+        command_files=("jobs/inventory-refresh.py",),
+    )
+
+    manifest = load_manifest(release)
+
+    assert manifest.commands == {}
+    assert manifest.jobs["inventory-refresh"] == ExecutableArtifact(
+        name="inventory-refresh",
+        runtime="python",
+        entrypoint=(release / "jobs/inventory-refresh.py").resolve(),
+        default_timeout_seconds=300,
+    )
+
+
+@pytest.mark.parametrize(
+    ("jobs", "expected_exception", "message"),
+    [
+        ("[]", TypeError, "jobs must be a mapping"),
+        ("{1: {}}", TypeError, "job name must be a string"),
+        ("{Bad: {}}", ValueError, "invalid job name"),
+        (
+            "{collect: {runtime: python, entrypoint: jobs/collect.py, extra: true}}",
+            ValueError,
+            "jobs.collect has unknown key: extra",
+        ),
+        (
+            "{collect: {runtime: python, entrypoint: jobs/collect.py, "
+            "default_timeout_seconds: 0}}",
+            ValueError,
+            "must be a positive integer",
+        ),
+        (
+            "{collect: {runtime: python, entrypoint: jobs/collect.py, "
+            "default_timeout_seconds: true}}",
+            ValueError,
+            "must be a positive integer",
+        ),
+    ],
+)
+def test_load_manifest_rejects_invalid_jobs(
+    tmp_path: Path,
+    jobs: str,
+    expected_exception: type[Exception],
+    message: str,
+) -> None:
+    release = _release(
+        tmp_path / "release",
+        manifest=(
+            "schema: atlas.release/v1\n"
+            "name: worker\n"
+            "commands: {}\n"
+            f"jobs: {jobs}\n"
+        ),
+        command_files=("jobs/collect.py",),
+    )
+
+    with pytest.raises(expected_exception, match=message):
+        load_manifest(release)
+
+
+def test_load_manifest_rejects_command_job_name_overlap(tmp_path: Path) -> None:
+    release = _release(
+        tmp_path / "release",
+        manifest=(
+            "schema: atlas.release/v1\n"
+            "name: worker\n"
+            "commands:\n"
+            "  collect:\n"
+            "    runtime: python\n"
+            "    entrypoint: commands/sample.py\n"
+            "jobs:\n"
+            "  collect:\n"
+            "    runtime: python\n"
+            "    entrypoint: jobs/collect.py\n"
+        ),
+        command_files=("commands/sample.py", "jobs/collect.py"),
+    )
+
+    with pytest.raises(ValueError, match="command and job names overlap: collect"):
+        load_manifest(release)
 
 
 @pytest.mark.parametrize(
@@ -308,4 +404,4 @@ def test_command_index_uses_only_manifest_declarations(tmp_path: Path) -> None:
     current.mkdir()
     (current / "sample").symlink_to(release, target_is_directory=True)
 
-    assert list(build_command_index(current)) == ["sample"]
+    assert list(command_index(current)) == ["sample"]

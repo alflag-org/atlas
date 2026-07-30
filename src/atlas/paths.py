@@ -20,7 +20,10 @@ class AtlasPaths:
     scripts_releases_root: Path
     scripts_current_root: Path
     scripts: Path
+    jobs_dir: Path
+    env_dir: Path
     logs: Path
+    locks: Path
     cache: Path
     shims: Path
     bin_dir: Path
@@ -44,7 +47,10 @@ def get_paths() -> AtlasPaths:
     )
     scripts_releases_root = scripts_root / "releases"
     scripts = scripts_current_root
+    jobs_dir = etc / "jobs.d"
+    env_dir = etc / "env"
     logs = var / "logs"
+    locks = var / "locks"
     cache = var / "cache"
     shims = home / "shims"
     bin_dir = home / "bin"
@@ -60,7 +66,10 @@ def get_paths() -> AtlasPaths:
         scripts_releases_root=scripts_releases_root,
         scripts_current_root=scripts_current_root,
         scripts=scripts,
+        jobs_dir=jobs_dir,
+        env_dir=env_dir,
         logs=logs,
+        locks=locks,
         cache=cache,
         shims=shims,
         bin_dir=bin_dir,
@@ -73,6 +82,7 @@ def ensure_dirs(paths: AtlasPaths) -> None:
     """Create writable Atlas state directories if they are missing."""
     paths.var.mkdir(parents=True, exist_ok=True)
     paths.logs.mkdir(parents=True, exist_ok=True)
+    paths.locks.mkdir(parents=True, exist_ok=True)
     paths.cache.mkdir(parents=True, exist_ok=True)
     paths.home.mkdir(parents=True, exist_ok=True)
     paths.tmp.mkdir(parents=True, exist_ok=True)

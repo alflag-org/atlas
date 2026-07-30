@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+import yaml
 
 from atlas_core.host import get_host
 
+from .catalog import active_releases, command_index, resolve_command, resolve_job
 from .config import load_config
+from .errors import AtlasError
+from .execution import execute
 from .files import remove_path
+from .job_instances import list_job_instances, load_job_instance
+from .jobs import list_jobs, run_job, run_job_instance
 from .launchers import (
     ensure_atlas_launcher,
     ensure_script_runner,
@@ -18,9 +26,7 @@ from .launchers import (
 from .manifests import load_manifest, validate_name
 from .paths import ensure_dirs, get_paths
 from .releases import install_release
-from .runner import resolve_command_path, run_command
 from .runtime import install_runtime, runtime_status
-from .scriptsets import active_releases, build_command_index, discover_release_commands
 from .sources import resolve_source
 
 
@@ -60,7 +66,7 @@ def cmd_status(_: argparse.Namespace) -> int:
     config_path = p.etc / "config.yml"
     host_path = p.etc / "host.yml"
     releases = active_releases(p.scripts_current_root)
-    count = len(build_command_index(p.scripts_current_root)) if releases else 0
+    commands = command_index(p.scripts_current_root) if releases else {}
     host_name = "unknown"
     if host_path.exists():
         try:
@@ -74,7 +80,8 @@ def cmd_status(_: argparse.Namespace) -> int:
     print(f"active releases count: {len(releases)}")
     for release in releases:
         print(f"release: {release.name} {release.version} {release.root}")
-    print(f"commands count: {count}")
+    print(f"commands count: {len(commands)}")
+    print(f"jobs count: {sum(len(release.manifest.jobs) for release in releases)}")
     print(f"python scripts path: {p.scripts_python}")
     print(f"shims path: {p.shims}")
     return 0
@@ -184,15 +191,16 @@ def cmd_scripts_update(args: argparse.Namespace) -> int:
 
 
 def cmd_scripts_list(args: argparse.Namespace) -> int:
-    """List discovered commands across active releases."""
+    """List manifest-declared commands across active releases."""
     p = get_paths()
-    if args.verbose:
-        build_command_index(p.scripts_current_root)
-        for entry in discover_release_commands(p.scripts_current_root):
-            print(f"{entry.name}\t{entry.release_name}\t{entry.release_version}\t{entry.script_path}")
-        return 0
-    for name in build_command_index(p.scripts_current_root):
-        print(name)
+    for name, command in command_index(p.scripts_current_root).items():
+        if args.verbose:
+            print(
+                f"{name}\t{command.release.name}\t{command.release.version}\t"
+                f"{command.artifact.entrypoint}"
+            )
+        else:
+            print(name)
     return 0
 
 
@@ -206,17 +214,90 @@ def cmd_scripts_shims(_: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    """Run one discovered command."""
+    """Run one public command through the shared executor."""
     p = get_paths()
     ensure_dirs(p)
-    return run_command(p, args.command_name, args.args)
+    return execute(
+        p,
+        resolve_command(p.scripts_current_root, args.command_name),
+        args.args,
+    )
 
 
 def cmd_which(args: argparse.Namespace) -> int:
-    """Print the script path for one command."""
+    """Print the entrypoint for one command."""
     p = get_paths()
-    print(resolve_command_path(p.scripts_current_root, args.command_name))
+    print(resolve_command(p.scripts_current_root, args.command_name).artifact.entrypoint)
     return 0
+
+
+def cmd_job_list(args: argparse.Namespace) -> int:
+    """List non-public jobs."""
+    for job in list_jobs(get_paths(), args.release):
+        print(f"{job.release.name}\t{job.artifact.name}")
+    return 0
+
+
+def _job_data(release_name: str, job_name: str) -> dict[str, object]:
+    paths = get_paths()
+    job = resolve_job(paths.scripts_current_root, release_name, job_name)
+    return {
+        "release": job.release.name,
+        "version": job.release.version,
+        "job": job.artifact.name,
+        "runtime": job.artifact.runtime,
+        "entrypoint": str(job.artifact.entrypoint),
+        "default_timeout_seconds": job.artifact.default_timeout_seconds,
+    }
+
+
+def cmd_job_inspect(args: argparse.Namespace) -> int:
+    """Print one job definition."""
+    print(yaml.safe_dump(_job_data(args.release, args.job), sort_keys=False), end="")
+    return 0
+
+
+def cmd_job_run(args: argparse.Namespace) -> int:
+    """Run one direct job."""
+    artifact_args = args.args[1:] if args.args[:1] == ["--"] else args.args
+    return run_job(get_paths(), args.release, args.job, artifact_args)
+
+
+def cmd_job_instance_list(_: argparse.Namespace) -> int:
+    """List configured job instances whose jobs exist."""
+    paths = get_paths()
+    for instance in list_job_instances(paths.jobs_dir):
+        resolve_job(paths.scripts_current_root, instance.release, instance.job)
+        print(instance.name)
+    return 0
+
+
+def _instance_data(name: str) -> dict[str, object]:
+    paths = get_paths()
+    instance = load_job_instance(paths.jobs_dir, name)
+    resolve_job(paths.scripts_current_root, instance.release, instance.job)
+    return {
+        "schema": "atlas.job-instance/v1",
+        "release": instance.release,
+        "job": instance.job,
+        "user": instance.user,
+        "working_directory": str(instance.working_directory),
+        "arguments": list(instance.arguments),
+        "environment_files": [str(path) for path in instance.environment_files],
+        "timeout_seconds": instance.timeout_seconds,
+        "lock": instance.lock,
+    }
+
+
+def cmd_job_instance_inspect(args: argparse.Namespace) -> int:
+    """Print one job instance."""
+    print(yaml.safe_dump(_instance_data(args.instance), sort_keys=False), end="")
+    return 0
+
+
+def cmd_job_instance_run(args: argparse.Namespace) -> int:
+    """Run one job instance."""
+    return run_job_instance(get_paths(), args.instance)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -258,6 +339,31 @@ def build_parser() -> argparse.ArgumentParser:
     p_which.add_argument("command_name")
     p_which.set_defaults(func=cmd_which)
 
+    p_job = sub.add_parser("job")
+    job_sub = p_job.add_subparsers(dest="job_cmd", required=True)
+    p_job_list = job_sub.add_parser("list")
+    p_job_list.add_argument("release", nargs="?")
+    p_job_list.set_defaults(func=cmd_job_list)
+    p_job_inspect = job_sub.add_parser("inspect")
+    p_job_inspect.add_argument("release")
+    p_job_inspect.add_argument("job")
+    p_job_inspect.set_defaults(func=cmd_job_inspect)
+    p_job_run = job_sub.add_parser("run")
+    p_job_run.add_argument("release")
+    p_job_run.add_argument("job")
+    p_job_run.add_argument("args", nargs=argparse.REMAINDER)
+    p_job_run.set_defaults(func=cmd_job_run)
+    p_job_instance = job_sub.add_parser("instance")
+    instance_sub = p_job_instance.add_subparsers(dest="instance_cmd", required=True)
+    p_instance_list = instance_sub.add_parser("list")
+    p_instance_list.set_defaults(func=cmd_job_instance_list)
+    p_instance_inspect = instance_sub.add_parser("inspect")
+    p_instance_inspect.add_argument("instance")
+    p_instance_inspect.set_defaults(func=cmd_job_instance_inspect)
+    p_instance_run = instance_sub.add_parser("run")
+    p_instance_run.add_argument("instance")
+    p_instance_run.set_defaults(func=cmd_job_instance_run)
+
     return parser
 
 
@@ -265,7 +371,11 @@ def main(argv: list[str] | None = None) -> int:
     """Run the Atlas CLI."""
     parser = build_parser()
     args = parser.parse_args(argv)
-    return int(args.func(args))
+    try:
+        return int(args.func(args))
+    except AtlasError as exc:
+        print(f"atlas: {exc}", file=sys.stderr)
+        return exc.exit_code
 
 
 if __name__ == "__main__":

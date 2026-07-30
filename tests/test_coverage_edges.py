@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from atlas import cli
+from atlas.catalog import active_releases, resolve_command
 from atlas.config import AtlasConfig, RuntimeConfig, ScriptsConfig
 from atlas.launchers import regenerate_shims
 from atlas.manifests import validate_name
@@ -20,9 +21,7 @@ from atlas.releases import (
     read_version,
     validate_release,
 )
-from atlas.runner import resolve_command_path
 from atlas.runtime import RuntimeStatus, install_runtime
-from atlas.scriptsets import active_releases
 from atlas.sources import (
     clone_git_source,
     download_archive,
@@ -332,7 +331,7 @@ def test_install_release_rejects_non_directory_current_root(tmp_path: Path) -> N
 
 def test_runner_resolve_unknown_command(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="unknown command: missing"):
-        resolve_command_path(tmp_path / "current", "missing")
+        resolve_command(tmp_path / "current", "missing")
 
 
 def test_runner_redacts_sensitive_arguments(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -349,11 +348,6 @@ def test_runner_redacts_sensitive_arguments(monkeypatch: pytest.MonkeyPatch, tmp
     install_release(release, home / "scripts/releases", home / "scripts/current")
     other = _release(tmp_path / "other", release_name="other", command_name="other")
     install_release(other, home / "scripts/releases", home / "scripts/current")
-    class Proc:
-        returncode = 0
-
-    monkeypatch.setattr("atlas.runner.subprocess.run", lambda *args, **kwargs: Proc())
-
     assert cli.main(["run", "sample", "--token", "abc", "--api-key=def", "DB_PASSWORD=ghi"]) == 0
 
     log = (var / "logs/runs.jsonl").read_text(encoding="utf-8")

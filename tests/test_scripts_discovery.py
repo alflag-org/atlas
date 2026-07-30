@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
+from atlas.catalog import active_releases, command_index
 from atlas.config import AtlasConfig, RegistryEntry, RuntimeConfig, ScriptsConfig
 from atlas.manifests import load_manifest
 from atlas.releases import install_release
-from atlas.scriptsets import active_releases, build_command_index
 from atlas.sources import resolve_source
 
 
@@ -137,7 +137,7 @@ def test_install_release_supports_multiple_active_releases(tmp_path: Path) -> No
     assert (current / "common").resolve() == common_target
     assert (current / "kitsunebi").resolve() == kitsunebi_target
     assert [release.name for release in active_releases(current)] == ["common", "kitsunebi"]
-    assert sorted(build_command_index(current)) == ["common-command", "kitsunebi-command"]
+    assert sorted(command_index(current)) == ["common-command", "kitsunebi-command"]
 
 
 def test_install_release_rejects_legacy_current_symlink(tmp_path: Path) -> None:

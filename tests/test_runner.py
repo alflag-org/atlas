@@ -96,7 +96,8 @@ def test_run_and_logs(monkeypatch, tmp_path: Path) -> None:
     line = (var / "logs/runs.jsonl").read_text(encoding="utf-8").strip().splitlines()[-1]
     record = json.loads(line)
     assert record["release"] == "sample"
-    assert record["script"] == "group-nested-sample"
+    assert record["artifact_type"] == "command"
+    assert record["artifact"] == "group-nested-sample"
     assert record["exit_code"] == 0
 
 

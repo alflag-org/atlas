@@ -6,8 +6,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from .catalog import command_index
 from .files import remove_path
-from .scriptsets import build_command_index
 
 
 def sync_atlas_core(home: Path) -> None:
@@ -46,7 +46,7 @@ def ensure_script_runner(path: Path, atlas_bin: Path) -> None:
 
 def regenerate_shims(current_root: Path, shims_dir: Path, script_runner: Path) -> list[str]:
     """Regenerate command shims for all active release commands."""
-    names = list(build_command_index(current_root))
+    names = list(command_index(current_root))
     shims_dir.mkdir(parents=True, exist_ok=True)
     for item in shims_dir.iterdir():
         if item.is_dir() and not item.is_symlink():

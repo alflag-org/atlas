@@ -6,10 +6,10 @@ generates shims, and records execution logs in JSONL without adding extra orches
 
 ## Atlas 1.0 design status
 
-The current checkout implements manifest-declared commands and jobs, job instances, their shared
-correlated execution path, and the first-party operations release while retaining the Atlas 0.3
-scripts CLI and filesystem paths. Services, init artifacts, final filesystem terminology, and
-external desired-state migration remain later stages.
+The current checkout implements manifest-declared commands, jobs, and services; job instances;
+their shared correlated execution path; the first-party operations release; and systemd init
+artifact validation, diff, installation, and removal. It still retains the Atlas 0.3 scripts CLI
+and filesystem paths. Final filesystem terminology and production cutover remain later stages.
 
 - [Target architecture](docs/architecture.rst)
 - [Architecture decision](docs/adr/0001-release-artifacts-and-repository-boundaries.rst)
@@ -65,10 +65,11 @@ Use `docker compose run --build --rm atlas` or `docker compose run --build --rm 
 
 Atlas keeps the command path small:
 
-- `atlas.manifests` strictly parses `release.yml` and validates command and job artifacts.
-- `atlas.catalog` resolves active releases and executable artifacts.
+- `atlas.manifests` strictly parses `release.yml` and validates command, job, and service artifacts.
+- `atlas.catalog` resolves active releases and their executable and service artifacts.
 - `atlas.execution` runs commands and jobs with correlation, Git context, timeout, redaction, and logs.
 - `atlas.job_instances` and `atlas.jobs` validate and run non-public jobs.
+- `atlas.init.systemd` validates, diffs, atomically installs, and removes Atlas-owned systemd units.
 - `atlas.locks` provides non-blocking advisory job locks.
 - `operations/` is a separately versioned first-party release containing reusable configuration commands.
 - `atlas.sources` resolves local, archive, HTTP(S), git, and registry sources.
@@ -93,11 +94,15 @@ Atlas keeps the command path small:
 - `atlas job instance list`
 - `atlas job instance inspect <instance-name>`
 - `atlas job instance run <instance-name>`
+- `atlas init list [release-name]`
+- `atlas init diff <release-name> <service-name>`
+- `atlas init install <release-name> <service-name>`
+- `atlas init remove <release-name> <service-name>`
 
 ## First-party operations release
 
 `operations/` is released separately from the Atlas core wheel. Its manifest publishes six
-commands and no jobs:
+commands, one non-public job, and one systemd-backed service:
 
 - `config-validate <playbook>`
 - `config-check <playbook> <target>`
@@ -105,11 +110,17 @@ commands and no jobs:
 - `config-apply <playbook> <target>`
 - `inventory-show`
 - `config-diff-many <playbook> [target...]`
+- `inventory-refresh --site <site>` (job)
+- `inventory-refresh` (service and hourly timer)
 
 Run these commands from an independent Ansible project root containing `ansible.cfg` and
 `playbooks/<name>.yml`. Atlas does not install collections, change Git state, or supply inventory
 and playbooks. `config-apply` always requires an explicit target. `config-diff-many` invokes the
 public `config-diff` executable for each target so nested runs retain one operation ID.
+The inventory job runs `ansible-inventory` against
+`inventories/<site>/hosts.yml` with `--graph --flush-cache`. Its service uses a host-owned job
+instance and can be reviewed and installed with `atlas init`; Atlas never enables or starts it
+automatically. See [the operations runbook](docs/operations.rst) for the complete sequence.
 
 The release workflow publishes `atlas-operations-<version>.tar.gz` alongside the Atlas wheel and
 source archive. `operations/requirements.txt` declares its runtime dependency on `ansible-core`.

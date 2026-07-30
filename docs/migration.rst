@@ -5,10 +5,11 @@ Current and final interfaces
 ----------------------------
 
 The table below records the Atlas 0.3 baseline and the final target. This checkout has completed
-the manifest, job, and first-party operations command stages: implicit command discovery is
+the manifest, job, first-party operations, and systemd init stages: implicit command discovery is
 removed, jobs and job instances use the shared correlated executor, only commands receive shims,
-and ``operations/`` is packaged separately from the Atlas core wheel. The scripts CLI,
-configuration environment, and filesystem paths remain current behavior.
+services bind declared artifacts to validated systemd files, and ``operations/`` is packaged
+separately from the Atlas core wheel. The scripts CLI, configuration environment, and filesystem
+paths remain current behavior.
 
 .. list-table::
    :header-rows: 1
@@ -38,6 +39,11 @@ configuration environment, and filesystem paths remain current behavior.
 The migration is staged to keep every review and validation bounded. Staging does not create a
 compatibility promise: the final release does not read the old configuration, expose old CLI
 aliases, map old environment variables, or preserve old filesystem aliases.
+
+The independent ``alflag-org/provisioning`` repository has been bootstrapped from the Daedalus
+Ansible history. Real-host comparison, the observation period, Daedalus retirement, and Global
+Registry registration still require their external prerequisites. The init stage was completed
+without treating those production prerequisites as permission to skip or simulate them.
 
 Pull request sequence
 ---------------------

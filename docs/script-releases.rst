@@ -1,5 +1,5 @@
-Command and job script releases
-===============================
+Command, job, and service script releases
+==========================================
 
 Required files
 --------------
@@ -19,6 +19,10 @@ declared jobs are reached only through ``atlas job``.
          restart.py
      jobs/
        inventory-refresh.py
+     init/
+       systemd/
+         inventory-refresh.service
+         inventory-refresh.timer
      modules/
        sample_helpers/
          __init__.py
@@ -48,6 +52,13 @@ The current schema is ``atlas.release/v1``:
        runtime: python
        entrypoint: jobs/inventory-refresh.py
        default_timeout_seconds: 300
+   services:
+     inventory-refresh:
+       job: inventory-refresh
+       init:
+         systemd:
+           service: init/systemd/inventory-refresh.service
+           timer: init/systemd/inventory-refresh.timer
 
 The YAML parser rejects duplicate keys. The manifest rejects unknown keys, unsupported schemas,
 unsupported runtimes, invalid names, missing entrypoints, absolute paths, parent traversal,
@@ -56,6 +67,11 @@ but absent from the manifest is not published.
 
 Command and job names cannot overlap within one release. Only commands receive shims. A job may
 set a positive ``default_timeout_seconds`` value; a job instance may override it.
+
+A service binds exactly one command or job to a required systemd service file and an optional
+timer file. The referenced command or job must exist in the same manifest. Init artifact paths
+must remain inside the release, must not traverse symlinks, and must use the matching
+``.service`` or ``.timer`` suffix. Atlas 1.0 implements only the ``systemd`` init mapping.
 
 Release and command names use this grammar:
 
@@ -89,8 +105,9 @@ First-party operations release
 
 ``operations/`` follows the same manifest contract but remains a release artifact separate from
 the Atlas core wheel. Its ``VERSION`` and ``release.yml`` declare six public configuration
-commands. The release contains no environment inventory, playbooks, roles, or Git-management
-logic; callers supply an independent Ansible project as the working directory.
+commands, the non-public ``inventory-refresh`` job, and a systemd service and timer for that job.
+The release contains no environment inventory, playbooks, roles, or Git-management logic;
+callers supply an independent Ansible project as the working directory.
 
 The tag release workflow archives the contents of ``operations/`` as
 ``atlas-operations-<version>.tar.gz``. Runtime dependencies come from

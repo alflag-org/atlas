@@ -22,7 +22,7 @@ First-party operations release
 ------------------------------
 
 repository の ``operations/`` は Atlas core wheel と別に version を持つ release artifact です。
-``release.yml`` は次の command だけを公開します。
+``release.yml`` publishes the following six commands:
 
 .. list-table::
    :header-rows: 1
@@ -41,6 +41,14 @@ repository の ``operations/`` は Atlas core wheel と別に version を持つ 
      - ``ansible-inventory --graph``
    * - ``config-diff-many <playbook> [target...]``
      - target ごとに public ``config-diff`` executable を一回ずつ実行
+
+The same manifest declares the non-public ``inventory-refresh`` job and a systemd service with an
+hourly timer. The job validates ``inventories/<site>/hosts.yml`` below the current Ansible project,
+then invokes:
+
+.. code-block:: text
+
+   ansible-inventory -i inventories/<site>/hosts.yml --graph --flush-cache
 
 command は current working directory を Ansible project root として扱い、通常ファイルの
 ``ansible.cfg`` と ``playbooks/<name>.yml`` を要求します。playbook 名は
@@ -72,6 +80,81 @@ release tag の workflow は ``atlas-operations-<version>.tar.gz`` を Atlas cor
 別に生成します。Global Registry からの取得は、Global Registry が software-release API を
 公開するまで利用できません。Atlas 側で未定義の resource kind や host-local alias を
 registry integration として追加しません。
+
+Scheduled inventory refresh
+---------------------------
+
+Install the operations release and its runtime dependencies before configuring the timer:
+
+.. code-block:: bash
+
+   atlas scripts install ./operations
+   atlas runtime install
+
+Create ``/etc/atlas/jobs.d/provisioning-inventory-refresh.yml``. The example below assumes that
+the provisioning repository is available to the ``ops`` user at ``/srv/provisioning``:
+
+.. code-block:: yaml
+
+   schema: atlas.job-instance/v1
+   release: operations
+   job: inventory-refresh
+   user: ops
+   working_directory: /srv/provisioning
+   arguments:
+     - --site
+     - default
+   timeout_seconds: 300
+   lock: provisioning-inventory-refresh
+
+The instance user must be ``ops`` because the release's service file declares ``User=ops``.
+The working directory must contain a regular ``ansible.cfg`` and a regular
+``inventories/default/hosts.yml``. Validate the instance and the unit differences before changing
+systemd state:
+
+.. code-block:: bash
+
+   atlas job instance inspect provisioning-inventory-refresh
+   atlas init list operations
+   atlas init diff operations inventory-refresh
+
+``atlas init diff`` also validates that the service uses exactly
+``ExecStart=/opt/atlas/bin/atlas job instance run provisioning-inventory-refresh``, that the
+instance resolves to ``operations/inventory-refresh``, and that the unit does not contain a
+versioned release path.
+
+Install the validated unit files as root:
+
+.. code-block:: bash
+
+   sudo /opt/atlas/bin/atlas init install operations inventory-refresh
+   systemctl cat atlas-operations-inventory-refresh.service
+   systemctl cat atlas-operations-inventory-refresh.timer
+
+Installation writes mode ``0644``, owner ``root:root`` files using atomic replacement and runs
+only ``systemctl daemon-reload``. Atlas does not enable or start the timer. Make that lifecycle
+change explicitly with systemd after reviewing the installed definitions:
+
+.. code-block:: bash
+
+   sudo systemctl enable --now atlas-operations-inventory-refresh.timer
+   systemctl list-timers atlas-operations-inventory-refresh.timer
+   systemctl status atlas-operations-inventory-refresh.timer
+   journalctl -u atlas-operations-inventory-refresh.service
+
+For an update, install the new operations release, rebuild the runtime, run ``atlas init diff``,
+and then run ``atlas init install``. The install operation does not restart an active unit.
+
+Disable and stop the timer with systemd before removing its definitions:
+
+.. code-block:: bash
+
+   sudo systemctl disable --now atlas-operations-inventory-refresh.timer
+   sudo /opt/atlas/bin/atlas init remove operations inventory-refresh
+
+``atlas init remove`` deletes only the stable
+``atlas-operations-inventory-refresh.service`` and ``.timer`` destinations and then reloads
+systemd. It does not stop or disable either unit on the operator's behalf.
 
 リリース更新手順
 ----------------

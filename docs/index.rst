@@ -2,7 +2,7 @@ Atlas ドキュメント
 ==================
 
 Atlas は Python ベースのリリースを、ホスト上で安全に配布・更新・実行するための軽量なランタイムマネージャーです。
-manifest に宣言した command と job を同じ実行経路で扱い、ランタイム作成、リリースの検証とインストール、shim 生成、相関付き実行ログ、ホストコンテキスト提供を一つの小さな CLI にまとめます。
+manifest に宣言した command と job を同じ実行経路で扱い、service の systemd artifact を検証・比較・配置・削除し、ランタイム作成、リリースの検証とインストール、shim 生成、相関付き実行ログ、ホストコンテキスト提供を一つの小さな CLI にまとめます。
 同じ repository の ``operations/`` では、独立した first-party release として Ansible project を操作する command を提供します。
 
 Atlas が重視することは、スクリプト実行基盤に必要な境界を明確にすることです。

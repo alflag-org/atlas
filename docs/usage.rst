@@ -19,11 +19,13 @@ Atlas の CLI は ``atlas`` コマンドから操作します。
    atlas run sample hello --name=hoge
    atlas job list
    atlas job run operations inventory-refresh -- --site default
+   atlas init list
+   atlas init diff operations inventory-refresh
 
 状態確認
 --------
 
-``atlas status`` は設定ファイル、ホストプロファイル、アクティブなリリース、manifest に宣言されたコマンド数、shim などの配置を表示します。
+``atlas status`` は設定ファイル、ホストプロファイル、アクティブなリリース、manifest に宣言された command、job、service の数、shim などの配置を表示します。
 まずこのコマンドでホストの見え方を確認します。
 
 .. code-block:: bash
@@ -152,3 +154,21 @@ job は shim を持たない non-interactive artifact です。release 名と jo
 
 host 固有の working directory、argument、environment file、timeout、lock は
 ``/etc/atlas/jobs.d/<instance>.yml`` に置きます。schema と実行方法は :doc:`jobs` を参照してください。
+
+systemd artifact の確認と配置
+------------------------------
+
+manifest に宣言された service を一覧し、systemd の配置先との差分を確認します。
+
+.. code-block:: bash
+
+   atlas init list
+   atlas init list operations
+   atlas init diff operations inventory-refresh
+
+``atlas init install`` は検証済み unit を
+``/etc/systemd/system/atlas-<release>-<service>.service`` と任意の ``.timer`` へ原子的に
+配置し、``systemctl daemon-reload`` だけを実行します。``atlas init remove`` は同じ固定名
+だけを削除して定義を再読み込みします。enable、start、stop、restart は systemd の native
+command で明示的に行います。実際の job instance と timer の導入手順は :doc:`operations`
+を参照してください。

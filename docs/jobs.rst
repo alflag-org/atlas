@@ -58,8 +58,10 @@ User and environment behavior
 -----------------------------
 
 Atlas does not switch users or invoke ``sudo``. Direct instance execution fails when the declared
-user differs from the caller. A later systemd unit uses the same instance and supplies its user
-through native systemd configuration.
+user differs from the caller. A systemd service can invoke the same instance through
+``/opt/atlas/bin/atlas job instance run <instance>``. Before installation, Atlas requires the
+unit's single ``User=`` value to equal the instance's ``user`` and requires the instance to
+resolve to the service's declared release and job.
 
 Environment files accept ``NAME=value`` lines, comments, blank lines, and matching single or
 double quotes around a value. Atlas reads their values only into the child environment; it does
@@ -87,3 +89,11 @@ Every execution creates ``run_id``. A root execution sets ``operation_id`` to th
 no parent. A nested Atlas process reads ``ATLAS_RUN_ID`` and ``ATLAS_OPERATION_ID``, records the
 caller as ``parent_run_id``, and retains the operation ID. This relationship is written to
 ``/var/lib/atlas/logs/runs.jsonl`` together with cwd and read-only Git context.
+
+Systemd service artifacts
+-------------------------
+
+Use ``atlas init list`` and ``atlas init diff`` to inspect manifest-declared services. Installation
+writes only stable ``atlas-<release>-<service>.service`` and optional ``.timer`` names, then runs
+``systemctl daemon-reload``. Atlas does not enable, start, stop, or restart a unit. The complete
+``operations/inventory-refresh`` example is documented in :doc:`operations`.

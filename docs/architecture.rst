@@ -5,10 +5,11 @@ Status and current behavior
 ---------------------------
 
 This page records the accepted Atlas 1.0 target. The current checkout implements strict
-``release.yml`` parsing, command and job artifacts, job instances, advisory locks, timeout
-handling, correlated execution, and the separately versioned first-party ``operations`` release
-while retaining the scripts CLI, configuration, environment, and filesystem names. Services,
-init artifacts, and the final terminology remain later stages.
+``release.yml`` parsing, command, job, and service artifacts, job instances, advisory locks,
+timeout handling, correlated execution, the separately versioned first-party ``operations``
+release, and systemd init artifact handling. It retains the scripts CLI, configuration,
+environment, and filesystem names. The final terminology and production cutover remain later
+stages.
 
 Atlas responsibilities
 ----------------------

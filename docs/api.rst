@@ -87,6 +87,7 @@ maintainer 向け内部 API
    errors
    execution
    files
+   init
    job_instances
    jobs
    launchers

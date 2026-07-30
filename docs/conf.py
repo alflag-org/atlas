@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 project = "atlas"
 author = "atlas contributors"
-language = "ja"
+language = "en"
 with (ROOT / "pyproject.toml").open("rb") as fh:
     release = tomllib.load(fh)["project"]["version"]
 html_baseurl = "https://atlas-docs.jp0.workers.dev/"
@@ -29,16 +29,16 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 templates_path = ["_templates"]
 
 html_theme = "shibuya"
-html_title = "Atlas ドキュメント"
+html_title = "Atlas documentation"
 html_theme_options = {
     "accent_color": "blue",
     "color_mode": "auto",
     "ethical_ads_publisher": "",
     "globaltoc_expand_depth": 1,
-    "github_url": "https://github.com/viasnake/atlas",
+    "github_url": "https://github.com/alflag-org/atlas",
     "nav_links": [
-        {"title": "使い方", "url": "usage"},
-        {"title": "設定", "url": "configuration"},
+        {"title": "Usage", "url": "usage"},
+        {"title": "Configuration", "url": "configuration"},
         {"title": "Python API", "url": "api"},
     ],
     "nav_links_align": "left",

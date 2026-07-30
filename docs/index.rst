@@ -1,26 +1,25 @@
-Atlas ドキュメント
-==================
+Atlas documentation
+===================
 
-Atlas は Python ベースのスクリプトリリースを、ホスト上で安全に配布・更新・実行するための軽量なランタイムマネージャーです。
-Python Fire コマンドの運用を主な対象にしつつ、ランタイム作成、リリースの検証とインストール、コマンド検出、shim 生成、実行ログ記録、ホストコンテキスト提供を一つの小さな CLI にまとめます。
-
-Atlas が重視することは、スクリプト実行基盤に必要な境界を明確にすることです。
-リリース成果物は ``VERSION`` と ``commands/`` を持つディレクトリとして扱い、インストール済みリリースは symlink でアクティブ化します。
-コマンド名の衝突は黙って上書きせず、検出・shim 生成・実行・検索の各段階で失敗させます。
+Atlas is a host-side runtime for operating independent infrastructure repositories through
+small, composable UNIX commands. Releases explicitly declare commands, jobs, services, and
+systemd artifacts in ``release.yml``.
 
 .. toctree::
    :maxdepth: 2
-   :caption: 利用者向け
+   :caption: Operators
 
    concepts
+   architecture
    usage
    configuration
-   script-releases
+   releases
    operations
+   migration
 
 .. toctree::
    :maxdepth: 2
-   :caption: 開発者向け
+   :caption: Maintainers
 
    api
    development

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 import runpy
 import subprocess
@@ -8,6 +9,7 @@ import sys
 
 import pytest
 
+from atlas import cli
 from atlas.manifests import load_manifest
 from atlas_operations.config_project import (
     inventory_path,
@@ -279,6 +281,56 @@ def test_config_diff_many_skips_stdin_for_terminal(
     main = _load_command("config-diff-many")
     assert main(["site", "web01"]) == 0
     assert calls == [["config-diff", "site", "web01"]]
+
+
+def test_config_diff_many_runs_through_shims_with_nested_correlation(
+    atlas_paths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = Path("tests/fixtures/provisioning").resolve()
+    fake_ansible = atlas_paths.runtime_python.parent / "ansible-playbook"
+    fake_ansible.write_text(
+        "#!/bin/sh\n"
+        "printf 'ansible-playbook:%s\\n' \"$*\"\n",
+        encoding="utf-8",
+    )
+    fake_ansible.chmod(0o755)
+
+    assert cli.main(["release", "install", str(OPERATIONS)]) == 0
+    monkeypatch.chdir(project)
+    process = subprocess.run(
+        [
+            str(atlas_paths.shims / "config-diff-many"),
+            "site",
+            "fixture",
+        ],
+        input="fixture\nsecond\n",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert process.returncode == 0
+    assert process.stdout.splitlines() == [
+        "ansible-playbook:playbooks/site.yml --limit fixture --check --diff",
+        "ansible-playbook:playbooks/site.yml --limit second --check --diff",
+    ]
+    records = [
+        json.loads(line)
+        for line in (atlas_paths.logs / "runs.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    parent = next(record for record in records if record["artifact"] == "config-diff-many")
+    children = [record for record in records if record["artifact"] == "config-diff"]
+    assert parent["parent_run_id"] is None
+    assert parent["operation_id"] == parent["run_id"]
+    assert parent["cwd"] == str(project)
+    assert [child["args"] for child in children] == [
+        ["site", "fixture"],
+        ["site", "second"],
+    ]
+    assert all(child["parent_run_id"] == parent["run_id"] for child in children)
+    assert all(child["operation_id"] == parent["operation_id"] for child in children)
+    assert all(child["cwd"] == str(project) for child in children)
 
 
 def test_inventory_refresh_job_delegates_exact_argv(

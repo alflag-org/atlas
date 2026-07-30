@@ -40,6 +40,11 @@ Release update
 The runtime is rebuilt in a temporary virtual environment and moved into its final path before
 release requirements are installed. Existing runtime state is restored when installation fails.
 
+Atlas validates every configured release source before changing active releases. During install
+and multi-release update, previous version directories and active links remain recoverable until
+launcher and shim refresh succeeds. A failure restores the previous directories, links, and
+command shims, including a replacement of an existing version.
+
 Run logs
 --------
 
@@ -49,6 +54,7 @@ Environment-file paths may be logged, but their contents are not.
 
 Each record includes correlation identifiers, artifact identity, redacted arguments, working
 directory, Git context, exit code, duration, timeout state, and lock name.
+The execution diagnostic written to stderr uses the same redacted arguments.
 
 Troubleshooting
 ---------------

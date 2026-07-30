@@ -74,9 +74,9 @@ Manage Atlas systemd artifacts
    sudo atlas init remove operations inventory-refresh
 
 Every managed service must have exactly one ``ExecStart`` through ``/opt/atlas/bin/atlas`` and
-must invoke the command or job declared by its manifest. When a unit uses
-``atlas job instance run``, Atlas validates that its ``User=`` matches the
-job-instance user and that the instance references the service's declared release and job.
+must invoke the command declared by its manifest or a matching job instance. Job-backed services
+must use ``atlas job instance run``; Atlas validates that ``User=`` matches the job-instance user
+and that the instance references the service's declared release and job.
 
 Use native commands for lifecycle actions:
 

@@ -104,6 +104,10 @@ Only manifest commands receive shims. Jobs remain off `PATH` and run through `at
 relative Python files inside the release. Atlas rejects unknown manifest keys, unsupported runtimes, path traversal,
 symlinks, invalid references, and cross-release command collisions.
 
+Release installation keeps the previous version directory and active link recoverable until launcher and shim
+refresh succeeds. A failed install or multi-release update restores the previous directories, links, and command
+shims, including when an existing version is being replaced.
+
 ## CLI
 
 ```bash
@@ -160,9 +164,9 @@ lock: provisioning-inventory-refresh
 Atlas does not invoke `sudo`. A direct instance run fails when `user` differs from the caller. For a unit that runs
 a job instance, Atlas verifies that the native `User=` setting matches the instance user and that the instance
 references the service's release and job. Every managed service must have exactly one `ExecStart` through
-`/opt/atlas/bin/atlas`, and its command or job must match the manifest declaration. Instance locks use non-blocking
-OS advisory locks under `/var/lib/atlas/locks`. Timeouts terminate the complete child process group, then kill it if
-graceful termination does not complete.
+`/opt/atlas/bin/atlas`; a command-backed service must invoke its declared command, and a job-backed service must
+invoke a matching job instance. Instance locks use non-blocking OS advisory locks under `/var/lib/atlas/locks`.
+Timeouts terminate the complete child process group, then kill it if graceful termination does not complete.
 
 ## First-party configuration artifacts
 
@@ -203,6 +207,7 @@ Every command and job appends one JSON object to `/var/lib/atlas/logs/runs.jsonl
 
 Child shims inherit the parent run and operation identifiers. Atlas places `/opt/atlas/shims` and the runtime
 environment at the front of child `PATH`, preserves the caller's remaining `PATH`, and executes with `shell=False`.
+The command line printed to stderr uses the same redacted arguments as the run record.
 
 Release code should use `atlas_core`, not host-side modules under `atlas`:
 

@@ -50,4 +50,6 @@ Failure policy
 
 Atlas fails closed when a manifest has unknown keys, a path leaves the release root, a release
 contains symlinks, a command name collides, a job reference is missing, or a systemd destination
-is a symlink. It does not silently fall back to file discovery or legacy filesystem paths.
+is a symlink. The jobs, locks, and logs directories cannot be symlinks; instance, lock, and run-log
+files must have the expected regular-file type. Atlas does not silently fall back to file
+discovery or legacy filesystem paths.

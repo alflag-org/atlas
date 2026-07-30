@@ -1,6 +1,11 @@
 設計と概念
 ============
 
+.. note::
+
+   このページは現行の Atlas 0.3 scripts runtime を説明します。後続 PR で実装する
+   Atlas 1.0 の構成は :doc:`architecture`、導入順序は :doc:`migration` を参照してください。
+
 Atlas の役割
 ------------
 

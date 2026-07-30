@@ -20,6 +20,14 @@ Atlas が重視することは、スクリプト実行基盤に必要な境界�
 
 .. toctree::
    :maxdepth: 2
+   :caption: Atlas 1.0 設計
+
+   architecture
+   adr/0001-release-artifacts-and-repository-boundaries
+   migration
+
+.. toctree::
+   :maxdepth: 2
    :caption: 開発者向け
 
    api

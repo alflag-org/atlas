@@ -4,6 +4,17 @@ Atlas is a lightweight runtime manager for Python-based script releases, especia
 It installs the runtime, installs script releases, discovers commands, loads host context,
 generates shims, and records execution logs in JSONL without adding extra orchestration.
 
+## Atlas 1.0 design status
+
+The current checkout still implements the Atlas 0.3 scripts runtime described below. The accepted
+Atlas 1.0 target separates manifest-declared commands, jobs, services, and init artifacts while
+keeping environment-specific desired state in independent repositories. This documentation-only
+change does not alter runtime behavior.
+
+- [Target architecture](docs/architecture.rst)
+- [Architecture decision](docs/adr/0001-release-artifacts-and-repository-boundaries.rst)
+- [Staged migration and rollback](docs/migration.rst)
+
 ## Development Environment (mise)
 
 ```bash

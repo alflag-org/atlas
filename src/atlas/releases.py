@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -47,11 +49,13 @@ def validate_release(source: Path) -> ValidatedRelease:
     )
 
 
-def _replace_directory(source: Path, target: Path) -> None:
+def _replace_directory(source: Path, target: Path) -> Path | None:
     staging = target.parent / f"{target.name}.tmp.{os.getpid()}"
     backup = target.parent / f"{target.name}.bak.{os.getpid()}"
     remove_path(staging)
     remove_path(backup)
+    if target.is_symlink() or (target.exists() and not target.is_dir()):
+        raise ValueError(f"release target must be a directory: {target}")
     shutil.copytree(source, staging)
     replaced = False
     if target.exists():
@@ -71,7 +75,7 @@ def _replace_directory(source: Path, target: Path) -> None:
         raise
     finally:
         remove_path(staging)
-    remove_path(backup)
+    return backup if replaced else None
 
 
 def _replace_symlink(link: Path, target: Path) -> None:
@@ -81,14 +85,57 @@ def _replace_symlink(link: Path, target: Path) -> None:
     temporary.replace(link)
 
 
-def install_release(source: Path, releases_root: Path, current_root: Path) -> Path:
-    """Install and atomically activate one manifest-named release."""
+def _current_target(link: Path) -> Path | None:
+    if not link.exists() and not link.is_symlink():
+        return None
+    if not link.is_symlink():
+        raise ValueError(f"current entry must be a symlink: {link}")
+    target = link.resolve()
+    if not target.is_dir():
+        raise ValueError(f"active release target not found: {link}")
+    return target
+
+
+@contextmanager
+def reversible_release_install(
+    source: Path,
+    releases_root: Path,
+    current_root: Path,
+) -> Iterator[Path]:
+    """Restore the previous release directory and link if surrounding work fails."""
     release = validate_release(source)
     if current_root.exists() and (not current_root.is_dir() or current_root.is_symlink()):
         raise ValueError(f"current root must be a directory: {current_root}")
     target = releases_root / release.manifest.name / release.version
+    link = current_root / release.manifest.name
+    previous_target = _current_target(link)
     target.parent.mkdir(parents=True, exist_ok=True)
-    _replace_directory(release.root, target)
-    current_root.mkdir(parents=True, exist_ok=True)
-    _replace_symlink(current_root / release.manifest.name, target)
-    return target
+    backup = _replace_directory(release.root, target)
+    try:
+        current_root.mkdir(parents=True, exist_ok=True)
+        _replace_symlink(link, target)
+        yield target
+    except BaseException:
+        try:
+            remove_path(link)
+            remove_path(target)
+            if backup is not None:
+                backup.rename(target)
+            if previous_target is not None:
+                _replace_symlink(link, previous_target)
+        except Exception as rollback_error:
+            recovery_path = backup if backup is not None and backup.exists() else target
+            raise RuntimeError(
+                "release installation failed and rollback failed; "
+                f"recovery path: {recovery_path}"
+            ) from rollback_error
+        raise
+    else:
+        if backup is not None:
+            remove_path(backup)
+
+
+def install_release(source: Path, releases_root: Path, current_root: Path) -> Path:
+    """Install and atomically activate one manifest-named release."""
+    with reversible_release_install(source, releases_root, current_root) as target:
+        return target

@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import pwd
 import runpy
+import shutil
 import sys
 
 import pytest
@@ -181,6 +182,35 @@ def test_release_update_respects_enabled_and_specific_releases(
     capsys.readouterr()
 
 
+def test_release_update_snapshots_reused_source_directory(
+    atlas_paths,
+    release_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = release_factory(name="first", commands=("first-show",))
+    second = release_factory(name="second", commands=("second-show",))
+    _write_config(
+        atlas_paths,
+        "  first:\n    source: first-source\n"
+        "  second:\n    source: second-source\n",
+    )
+    shared = atlas_paths.cache / "sources/shared"
+
+    def reuse_source(source: str, *, cache_dir: Path) -> Path:
+        assert cache_dir == atlas_paths.cache
+        if shared.exists():
+            shutil.rmtree(shared)
+        shutil.copytree(first if source == "first-source" else second, shared)
+        return shared
+
+    monkeypatch.setattr(cli, "resolve_source", reuse_source)
+    assert cli.main(["release", "update"]) == 0
+    assert (atlas_paths.current_root / "first").resolve().name == "1.0.0"
+    assert (atlas_paths.current_root / "second").resolve().name == "1.0.0"
+    assert (atlas_paths.shims / "first-show").is_symlink()
+    assert (atlas_paths.shims / "second-show").is_symlink()
+
+
 def test_release_update_rolls_back_all_links_on_collision(
     atlas_paths,
     release_factory,
@@ -229,6 +259,66 @@ def test_release_install_rolls_back_new_link_on_collision(
     assert cli.main(["release", "install", str(second)]) == 2
     assert (atlas_paths.current_root / "first").is_symlink()
     assert not (atlas_paths.current_root / "second").exists()
+
+
+def test_release_install_restores_same_version_and_shims(
+    atlas_paths,
+    release_factory,
+    capsys,
+) -> None:
+    old = release_factory(
+        name="sample",
+        version="1.0.0",
+        commands=("old-command",),
+    )
+    assert cli.main(["release", "install", str(old)]) == 0
+    old_target = (atlas_paths.current_root / "sample").resolve()
+    old_entrypoint = old_target / "commands/old-command.py"
+    old_content = old_entrypoint.read_text(encoding="utf-8")
+    assert (atlas_paths.shims / "old-command").is_symlink()
+
+    new = release_factory(
+        name="sample",
+        version="1.0.0",
+        commands=("new-command",),
+    )
+    (atlas_paths.shims / "new-command").mkdir()
+    assert cli.main(["release", "install", str(new)]) == 2
+    assert "shim path is a directory" in capsys.readouterr().err
+
+    assert (atlas_paths.current_root / "sample").resolve() == old_target
+    assert old_entrypoint.read_text(encoding="utf-8") == old_content
+    assert not (old_target / "commands/new-command.py").exists()
+    assert (atlas_paths.shims / "old-command").is_symlink()
+
+
+@pytest.mark.parametrize(
+    ("command", "message"),
+    [
+        (["release", "install", "{source}"], "release installation failed"),
+        (["release", "update"], "release update failed"),
+    ],
+)
+def test_release_change_reports_host_artifact_restore_failure(
+    atlas_paths,
+    release_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    command: list[str],
+    message: str,
+) -> None:
+    source = release_factory(name="sample")
+    _write_config(atlas_paths, f"  sample:\n    source: {source}\n")
+    monkeypatch.setattr(
+        cli,
+        "_refresh_host_artifacts",
+        lambda paths: (_ for _ in ()).throw(ValueError("refresh failed")),
+    )
+    argv = [str(source) if item == "{source}" else item for item in command]
+    assert cli.main(argv) == 2
+    assert message in capsys.readouterr().err
+    assert not (atlas_paths.current_root / "sample").exists()
+    assert not (atlas_paths.releases_root / "sample/1.0.0").exists()
 
 
 def test_job_cli_commands(
@@ -365,34 +455,6 @@ def test_status_tolerates_invalid_host(atlas_paths, capsys) -> None:
     (atlas_paths.etc / "host.yml").unlink()
     assert cli.main(["status"]) == 0
     assert "host name: unknown" in capsys.readouterr().out
-
-
-def test_current_snapshot_validation_and_restore(tmp_path: Path) -> None:
-    current = tmp_path / "current"
-    current.mkdir()
-    assert cli._capture_current_targets(current, ["missing"]) == {"missing": None}
-    regular = current / "regular"
-    regular.write_text("bad", encoding="utf-8")
-    with pytest.raises(ValueError, match="must be a symlink"):
-        cli._capture_current_targets(current, ["regular"])
-    regular.unlink()
-    regular.symlink_to(tmp_path / "missing")
-    with pytest.raises(ValueError, match="target not found"):
-        cli._capture_current_targets(current, ["regular"])
-
-    target = tmp_path / "target"
-    target.mkdir()
-    regular.unlink()
-    regular.symlink_to(target, target_is_directory=True)
-    snapshots = cli._capture_current_targets(current, ["regular"])
-    replacement = tmp_path / "replacement"
-    replacement.mkdir()
-    regular.unlink()
-    regular.symlink_to(replacement, target_is_directory=True)
-    cli._restore_current_targets(current, snapshots)
-    assert regular.resolve() == target
-    cli._restore_current_targets(current, {"regular": None})
-    assert not regular.exists()
 
 
 def test_cli_module_entrypoint(monkeypatch: pytest.MonkeyPatch) -> None:

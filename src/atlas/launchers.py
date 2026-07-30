@@ -44,9 +44,20 @@ def ensure_artifact_runner(path: Path, atlas_bin: Path) -> None:
     path.chmod(0o755)
 
 
+def validate_shim_destinations(names: list[str], shims_dir: Path) -> None:
+    """Reject public command destinations that Atlas cannot replace."""
+    if shims_dir.is_symlink() or (shims_dir.exists() and not shims_dir.is_dir()):
+        raise ValueError(f"shims path must be a directory: {shims_dir}")
+    for name in names:
+        shim = shims_dir / name
+        if shim.exists() and shim.is_dir() and not shim.is_symlink():
+            raise ValueError(f"shim path is a directory: {shim}")
+
+
 def regenerate_shims(current_root: Path, shims_dir: Path, artifact_runner: Path) -> list[str]:
     """Replace public command shims; jobs are intentionally excluded."""
     names = list(command_index(current_root))
+    validate_shim_destinations(names, shims_dir)
     shims_dir.mkdir(parents=True, exist_ok=True)
     for item in shims_dir.iterdir():
         if item.is_dir() and not item.is_symlink():
@@ -54,7 +65,5 @@ def regenerate_shims(current_root: Path, shims_dir: Path, artifact_runner: Path)
         item.unlink()
     for name in names:
         shim = shims_dir / name
-        if shim.exists() and shim.is_dir() and not shim.is_symlink():
-            raise ValueError(f"shim path is a directory: {shim}")
         shim.symlink_to(artifact_runner)
     return names

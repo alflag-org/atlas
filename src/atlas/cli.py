@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 from pathlib import Path
+import shutil
 import sys
+from tempfile import TemporaryDirectory
 
 import yaml
 
@@ -21,7 +24,6 @@ from .catalog import (
 from .config import load_config
 from .errors import AtlasError
 from .execution import execute
-from .files import remove_path
 from .init import SystemdAdapter
 from .job_instances import list_job_instances, load_job_instance
 from .jobs import list_jobs, run_job, run_job_instance
@@ -32,37 +34,13 @@ from .launchers import (
     sync_atlas_core,
 )
 from .paths import AtlasPaths, ensure_dirs, get_paths
-from .releases import install_release, validate_release
+from .releases import reversible_release_install, validate_release
 from .runtime import install_runtime, runtime_status
 from .sources import resolve_source
 
 
 def _bool_text(value: bool) -> str:
     return str(value).lower()
-
-
-def _capture_current_targets(current_root: Path, names: list[str]) -> dict[str, Path | None]:
-    snapshots: dict[str, Path | None] = {}
-    for name in names:
-        link = current_root / name
-        if not link.exists() and not link.is_symlink():
-            snapshots[name] = None
-            continue
-        if not link.is_symlink():
-            raise ValueError(f"current entry must be a symlink: {link}")
-        target = link.resolve()
-        if not target.is_dir():
-            raise ValueError(f"active release target not found: {link}")
-        snapshots[name] = target
-    return snapshots
-
-
-def _restore_current_targets(current_root: Path, snapshots: dict[str, Path | None]) -> None:
-    for name, target in snapshots.items():
-        link = current_root / name
-        remove_path(link)
-        if target is not None:
-            link.symlink_to(target, target_is_directory=True)
 
 
 def _refresh_host_artifacts(paths: AtlasPaths) -> list[str]:
@@ -146,12 +124,20 @@ def cmd_release_install(args: argparse.Namespace) -> int:
     ensure_dirs(paths)
     source = resolve_source(args.source, cache_dir=paths.cache)
     release = validate_release(source)
-    snapshots = _capture_current_targets(paths.current_root, [release.manifest.name])
     try:
-        install_release(source, paths.releases_root, paths.current_root)
-        names = _refresh_host_artifacts(paths)
+        with reversible_release_install(
+            source,
+            paths.releases_root,
+            paths.current_root,
+        ):
+            names = _refresh_host_artifacts(paths)
     except Exception:
-        _restore_current_targets(paths.current_root, snapshots)
+        try:
+            _refresh_host_artifacts(paths)
+        except Exception as rollback_error:
+            raise RuntimeError(
+                "release installation failed and host artifacts could not be restored"
+            ) from rollback_error
         raise
     print(f"installed release: {release.manifest.name} {release.version}")
     print(f"commands: {len(names)}")
@@ -166,8 +152,8 @@ def cmd_release_update(args: argparse.Namespace) -> int:
     names = [args.release_name] if args.release_name else [
         name for name, release in config.releases.items() if release.enabled
     ]
-    snapshots = _capture_current_targets(paths.current_root, names)
-    try:
+    with ExitStack() as temporary_sources:
+        sources: list[Path] = []
         for name in names:
             configured = config.releases.get(name)
             if configured is None:
@@ -178,11 +164,33 @@ def cmd_release_update(args: argparse.Namespace) -> int:
                 raise ValueError(
                     f"configured release name mismatch: {name} != {release.manifest.name}"
                 )
-            install_release(source, paths.releases_root, paths.current_root)
-        _refresh_host_artifacts(paths)
-    except Exception:
-        _restore_current_targets(paths.current_root, snapshots)
-        raise
+            temporary_root = Path(
+                temporary_sources.enter_context(
+                    TemporaryDirectory(prefix="release-source.", dir=paths.tmp)
+                )
+            )
+            temporary_source = temporary_root / name
+            shutil.copytree(release.root, temporary_source)
+            sources.append(temporary_source)
+        try:
+            with ExitStack() as installations:
+                for source in sources:
+                    installations.enter_context(
+                        reversible_release_install(
+                            source,
+                            paths.releases_root,
+                            paths.current_root,
+                        )
+                    )
+                _refresh_host_artifacts(paths)
+        except Exception:
+            try:
+                _refresh_host_artifacts(paths)
+            except Exception as rollback_error:
+                raise RuntimeError(
+                    "release update failed and host artifacts could not be restored"
+                ) from rollback_error
+            raise
     return 0
 
 
@@ -436,7 +444,7 @@ def main(argv: list[str] | None = None) -> int:
     except AtlasError as error:
         print(f"atlas: {error}", file=sys.stderr)
         return error.exit_code
-    except (FileNotFoundError, ValueError) as error:
+    except (FileNotFoundError, RuntimeError, ValueError) as error:
         print(f"atlas: {error}", file=sys.stderr)
         return 2
 

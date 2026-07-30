@@ -14,6 +14,7 @@ from atlas.catalog import (
     resolve_service,
 )
 from atlas.config import load_config
+from atlas.files import remove_path
 from atlas.launchers import (
     ensure_artifact_runner,
     ensure_atlas_launcher,
@@ -21,7 +22,12 @@ from atlas.launchers import (
     sync_atlas_core,
 )
 from atlas.manifests import load_manifest, validate_name
-from atlas.releases import install_release, read_version, validate_release
+from atlas.releases import (
+    install_release,
+    read_version,
+    reversible_release_install,
+    validate_release,
+)
 from atlas.yamlutil import dump_yaml_file, load_yaml_file
 
 
@@ -299,6 +305,65 @@ def test_install_replaces_same_version_and_rejects_invalid_current(release_facto
         install_release(source, releases, invalid_current)
 
 
+def test_reversible_release_install_validates_and_restores_current_entry(
+    release_factory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = release_factory(name="sample", version="1.0.0")
+    releases = tmp_path / "releases"
+    current = tmp_path / "current"
+    old_target = install_release(old, releases, current)
+    old_content = (old_target / "commands/sample-show.py").read_text(encoding="utf-8")
+    new = release_factory(name="sample", version="1.0.0")
+    (new / "commands/sample-show.py").write_text("print('new')\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="after activation"):
+        with reversible_release_install(new, releases, current):
+            raise RuntimeError("after activation")
+    assert (current / "sample").resolve() == old_target
+    assert (old_target / "commands/sample-show.py").read_text(encoding="utf-8") == old_content
+    assert not list(old_target.parent.glob("*.bak.*"))
+
+    (current / "sample").unlink()
+    (current / "sample").write_text("bad", encoding="utf-8")
+    with pytest.raises(ValueError, match="current entry must be a symlink"):
+        install_release(new, releases, current)
+    (current / "sample").unlink()
+    (current / "sample").symlink_to(tmp_path / "missing")
+    with pytest.raises(ValueError, match="active release target not found"):
+        install_release(new, releases, current)
+
+    (current / "sample").unlink()
+    (current / "sample").symlink_to(old_target, target_is_directory=True)
+    def fail_target_remove(path: Path) -> None:
+        if path == old_target:
+            raise OSError("rollback remove failed")
+        remove_path(path)
+
+    with pytest.raises(RuntimeError, match="rollback failed; recovery path"):
+        with reversible_release_install(new, releases, current):
+            monkeypatch.setattr("atlas.releases.remove_path", fail_target_remove)
+            raise ValueError("refresh failed")
+
+
+@pytest.mark.parametrize("kind", ["file", "symlink"])
+def test_release_install_rejects_non_directory_version_target(
+    release_factory,
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    source = release_factory(name="sample")
+    target = tmp_path / "releases/sample/1.0.0"
+    target.parent.mkdir(parents=True)
+    if kind == "file":
+        target.write_text("bad", encoding="utf-8")
+    else:
+        target.symlink_to(tmp_path / "missing", target_is_directory=True)
+    with pytest.raises(ValueError, match="release target must be a directory"):
+        install_release(source, tmp_path / "releases", tmp_path / "current")
+
+
 @pytest.mark.parametrize("existing", [False, True])
 def test_release_directory_replacement_rolls_back_rename_failure(
     release_factory,
@@ -511,5 +576,23 @@ def test_regenerate_shims_rejects_directory_at_command_path(release_factory, tmp
     install_release(source, tmp_path / "releases", current)
     shims = tmp_path / "shims"
     (shims / "sample-show").mkdir(parents=True)
+    stale = shims / "stale"
+    stale.write_text("keep", encoding="utf-8")
     with pytest.raises(ValueError, match="shim path is a directory"):
         regenerate_shims(current, shims, tmp_path / "artifact-runner")
+    assert stale.read_text(encoding="utf-8") == "keep"
+
+    invalid_shims = tmp_path / "invalid-shims"
+    invalid_shims.write_text("bad", encoding="utf-8")
+    with pytest.raises(ValueError, match="shims path must be a directory"):
+        regenerate_shims(current, invalid_shims, tmp_path / "artifact-runner")
+
+    linked_shims = tmp_path / "linked-shims"
+    linked_shims.symlink_to(shims, target_is_directory=True)
+    with pytest.raises(ValueError, match="shims path must be a directory"):
+        regenerate_shims(current, linked_shims, tmp_path / "artifact-runner")
+
+    dangling_shims = tmp_path / "dangling-shims"
+    dangling_shims.symlink_to(tmp_path / "missing", target_is_directory=True)
+    with pytest.raises(ValueError, match="shims path must be a directory"):
+        regenerate_shims(current, dangling_shims, tmp_path / "artifact-runner")

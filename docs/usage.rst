@@ -17,6 +17,8 @@ Atlas の CLI は ``atlas`` コマンドから操作します。
    atlas scripts shims
    atlas which sample
    atlas run sample hello --name=hoge
+   atlas job list
+   atlas job run operations inventory-refresh -- --site default
 
 状態確認
 --------
@@ -136,3 +138,17 @@ shim を再生成する場合は次を実行します。
 .. code-block:: bash
 
    atlas scripts shims
+
+job の実行
+----------
+
+job は shim を持たない non-interactive artifact です。release 名と job 名を明示して実行します。
+
+.. code-block:: bash
+
+   atlas job list
+   atlas job inspect operations inventory-refresh
+   atlas job run operations inventory-refresh -- --site default
+
+host 固有の working directory、argument、environment file、timeout、lock は
+``/etc/atlas/jobs.d/<instance>.yml`` に置きます。schema と実行方法は :doc:`jobs` を参照してください。

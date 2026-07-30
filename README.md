@@ -6,10 +6,10 @@ generates shims, and records execution logs in JSONL without adding extra orches
 
 ## Atlas 1.0 design status
 
-The current checkout implements the command-only manifest stage of the Atlas 1.0 migration while
-retaining the Atlas 0.3 scripts CLI and filesystem paths. The accepted target additionally
-separates jobs, services, and init artifacts and keeps environment-specific desired state in
-independent repositories.
+The current checkout implements manifest-declared commands and jobs, job instances, and their
+shared correlated execution path while retaining the Atlas 0.3 scripts CLI and filesystem paths.
+Services, init artifacts, final filesystem terminology, and external desired-state migration
+remain later stages.
 
 - [Target architecture](docs/architecture.rst)
 - [Architecture decision](docs/adr/0001-release-artifacts-and-repository-boundaries.rst)
@@ -65,11 +65,14 @@ Use `docker compose run --build --rm atlas` or `docker compose run --build --rm 
 
 Atlas keeps the command path small:
 
-- `atlas.manifests` strictly parses `release.yml` and validates declared command artifacts.
+- `atlas.manifests` strictly parses `release.yml` and validates command and job artifacts.
+- `atlas.catalog` resolves active releases and executable artifacts.
+- `atlas.execution` runs commands and jobs with correlation, Git context, timeout, redaction, and logs.
+- `atlas.job_instances` and `atlas.jobs` validate and run non-public jobs.
+- `atlas.locks` provides non-blocking advisory job locks.
 - `atlas.sources` resolves local, archive, HTTP(S), git, and registry sources.
 - `atlas.releases` validates and atomically installs scripts releases.
 - `atlas.runtime` handles pyenv-backed scripts runtime installation and status.
-- `atlas.runner` executes one command and appends one JSONL run record.
 - `atlas.launchers` manages generated launchers and shims.
 
 ## Main commands
@@ -83,6 +86,12 @@ Atlas keeps the command path small:
 - `atlas scripts shims`
 - `atlas run <command-name> [args...]`
 - `atlas which <command-name>`
+- `atlas job list [release-name]`
+- `atlas job inspect <release-name> <job-name>`
+- `atlas job run <release-name> <job-name> [-- args...]`
+- `atlas job instance list`
+- `atlas job instance inspect <instance-name>`
+- `atlas job instance run <instance-name>`
 
 ## Runtime Version Semantics
 
@@ -103,7 +112,7 @@ runtime:
 
 Install Atlas under a dedicated prefix and keep these directories writable by the account that runs it:
 
-- `/etc/atlas` for `config.yml` and `host.yml`
+- `/etc/atlas` for `config.yml`, `host.yml`, `jobs.d/`, and environment files
 - `/opt/atlas` for runtime, shims, launchers, and installed scripts releases
 - `/var/lib/atlas` for logs, cache, and runtime state
 
@@ -117,7 +126,8 @@ atlas scripts shims
 ```
 
 Add `/opt/atlas/shims` to `PATH` for users or services that need to invoke release commands directly.
-Execution logs are appended to `/var/lib/atlas/logs/runs.jsonl`; rotate or collect that file with the host's usual log tooling.
+Execution logs are appended to `/var/lib/atlas/logs/runs.jsonl`; job locks are held below
+`/var/lib/atlas/locks`. Rotate or collect the log with the host's usual tooling.
 If `atlas runtime install` fails, check `atlas runtime status` first. It reports whether `pyenv` is visible to Atlas.
 Scripts releases are installed under `/opt/atlas/scripts/releases/<release-name>/<version>` and activated through
 `/opt/atlas/scripts/current/<release-name>` symlinks. Atlas does not add an implicit namespace or precedence across releases:

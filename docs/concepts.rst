@@ -3,7 +3,7 @@
 
 .. note::
 
-   このページは command-only manifest stage の scripts runtime を説明します。後続 PR で実装する
+   このページは command/job manifest stage の scripts runtime を説明します。後続 PR で実装する
    Atlas 1.0 の全体構成は :doc:`architecture`、導入順序は :doc:`migration` を参照してください。
 
 Atlas の役割
@@ -14,10 +14,11 @@ Atlas は、ホストに配置されたスクリプトリリースを実行可�
 
 * スクリプト実行用 Python ランタイムの作成
 * スクリプトリリースの検証、インストール、更新
-* リリース内の Python コマンド検出
+* manifest に宣言された Python command と job の検証
 * ``/opt/atlas/shims`` への shim 生成
+* job instance の timeout、lock、working directory、environment file の解決
 * 実行時環境変数と ``atlas_core`` コンテキストの提供
-* 実行結果の JSONL ログ記録
+* command と job の相関付き JSONL ログ記録
 
 Atlas は pyenv や OS パッケージのインストールまでは行いません。
 ホストの Python バージョン管理は pyenv に任せ、Atlas はその Python を使ってスクリプト用 venv を作ります。

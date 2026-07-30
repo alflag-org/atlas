@@ -5,8 +5,9 @@ Current and final interfaces
 ----------------------------
 
 The table below records the Atlas 0.3 baseline and the final target. This checkout has completed
-the command-only manifest stage: ``release.yml`` is required and implicit command discovery has
-been removed, while the scripts CLI and filesystem paths remain current behavior.
+the manifest and job stages: implicit command discovery is removed, jobs and job instances use the
+shared correlated executor, and only commands receive shims. The scripts CLI, configuration
+environment, and filesystem paths remain current behavior.
 
 .. list-table::
    :header-rows: 1

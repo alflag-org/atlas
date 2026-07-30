@@ -5,9 +5,9 @@ Status and current behavior
 ---------------------------
 
 This page records the accepted Atlas 1.0 target. The current checkout implements strict
-``release.yml`` parsing and manifest-declared command artifacts while retaining the scripts CLI,
-execution path, configuration, and filesystem names. Jobs, services, init artifacts, and the final
-filesystem terminology remain later migration stages.
+``release.yml`` parsing, command and job artifacts, job instances, advisory locks, timeout
+handling, and correlated execution while retaining the scripts CLI, configuration, environment,
+and filesystem names. Services, init artifacts, and the final terminology remain later stages.
 
 Atlas responsibilities
 ----------------------

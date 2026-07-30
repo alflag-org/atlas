@@ -82,14 +82,18 @@ maintainer 向け内部 API
    :recursive:
 
    cli
+   catalog
    config
+   errors
+   execution
    files
+   job_instances
+   jobs
    launchers
+   locks
    manifests
    paths
    releases
-   runner
    runtime
-   scriptsets
    sources
    yamlutil

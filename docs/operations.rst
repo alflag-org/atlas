@@ -50,6 +50,10 @@ shim はコマンドごとに symlink として生成され、共通の ``script
 実行ログは ``/var/lib/atlas/logs/runs.jsonl`` に追記されます。
 Atlas はログローテーションを行わないため、systemd、logrotate、外部 log collector などホスト側の標準機構で管理してください。
 
+各 record は ``run_id``、``parent_run_id``、``operation_id``、artifact type/name、cwd、
+Git context、timeout、lock、exit code を記録します。job instance の lock file は
+``/var/lib/atlas/locks`` に置かれ、取得できない場合は待機せず exit code 75 で失敗します。
+
 障害時の確認順
 --------------
 
@@ -61,7 +65,7 @@ Atlas はログローテーションを行わないため、systemd、logrotate�
 
 コマンドが見つからない場合:
 
-1. ``atlas scripts list --verbose`` でコマンドが検出されているか確認します。
+1. ``atlas scripts list --verbose`` でコマンドが manifest に宣言されているか確認します。
 2. ``atlas which <command>`` で実体パスを確認します。
 3. ``/opt/atlas/shims`` が ``PATH`` に入っているか確認します。
 4. コマンド名衝突の例外が出ていないか確認します。

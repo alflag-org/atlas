@@ -1,12 +1,12 @@
-Command-only script releases
-============================
+Command and job script releases
+===============================
 
 Required files
 --------------
 
 The manifest stage of Atlas requires ``VERSION`` and ``release.yml``. Command files, release-local
-modules, and dependency files remain ordinary release contents, but only commands declared in the
-manifest are public.
+modules, and dependency files remain ordinary release contents. Declared commands are public;
+declared jobs are reached only through ``atlas job``.
 
 .. code-block:: text
 
@@ -17,6 +17,8 @@ manifest are public.
        hello.py
        admin/
          restart.py
+     jobs/
+       inventory-refresh.py
      modules/
        sample_helpers/
          __init__.py
@@ -28,7 +30,7 @@ cannot contain symlinks.
 Manifest
 --------
 
-The command-only schema is ``atlas.release/v1``:
+The current schema is ``atlas.release/v1``:
 
 .. code-block:: yaml
 
@@ -41,11 +43,19 @@ The command-only schema is ``atlas.release/v1``:
      admin-restart:
        runtime: python
        entrypoint: commands/admin/restart.py
+   jobs:
+     inventory-refresh:
+       runtime: python
+       entrypoint: jobs/inventory-refresh.py
+       default_timeout_seconds: 300
 
 The YAML parser rejects duplicate keys. The manifest rejects unknown keys, unsupported schemas,
 unsupported runtimes, invalid names, missing entrypoints, absolute paths, parent traversal,
 symlinks, and non-Python command entrypoints. A Python file that is present below ``commands/``
 but absent from the manifest is not published.
+
+Command and job names cannot overlap within one release. Only commands receive shims. A job may
+set a positive ``default_timeout_seconds`` value; a job instance may override it.
 
 Release and command names use this grammar:
 
@@ -89,7 +99,7 @@ runtime after changing release dependencies.
 Stable runtime API
 ------------------
 
-Installed commands import ``atlas_core`` rather than modules below ``atlas``:
+Installed commands and jobs import ``atlas_core`` rather than modules below ``atlas``:
 
 .. code-block:: python
 
@@ -106,7 +116,9 @@ implementation detail of the host CLI.
 Run records
 -----------
 
-``atlas run`` appends one JSON object per execution to ``/var/lib/atlas/logs/runs.jsonl``. The
-current record includes timestamp, release, script, arguments, version, exit status, and duration.
+``atlas run`` and ``atlas job`` append one JSON object per execution to
+``/var/lib/atlas/logs/runs.jsonl``. The current record includes run, parent, and operation IDs,
+timestamp, release, artifact type and name, arguments, version, cwd, Git context, timeout, lock,
+exit status, and duration.
 Values passed through option names containing ``password``, ``token``, ``secret``, or ``key`` are
 redacted. The host's normal logging system remains responsible for rotation and collection.

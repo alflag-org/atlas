@@ -13,9 +13,8 @@ from ..catalog import ServiceRef
 from ..job_instances import load_job_instance
 
 
-_EXEC_START_RE = re.compile(r"^ExecStart=/\S*/bin/atlas (?:job|run)(?:\s+.*)?$")
 _INSTANCE_EXEC_START_RE = re.compile(
-    r"^ExecStart=/\S*/bin/atlas job instance run "
+    r"^ExecStart=/opt/atlas/bin/atlas job instance run "
     r"(?P<instance>[a-z][a-z0-9]*(?:-[a-z0-9]+)*)$"
 )
 
@@ -79,12 +78,13 @@ class SystemdAdapter:
                 if "[Service]" not in text:
                     raise ValueError(f"systemd service lacks [Service]: {source}")
                 exec_start = [line.strip() for line in text.splitlines() if line.strip().startswith("ExecStart=")]
-                if not exec_start or any(not _EXEC_START_RE.fullmatch(line) for line in exec_start):
+                if len(exec_start) != 1:
                     raise ValueError(
-                        "systemd service ExecStart must use the stable Atlas launcher: "
+                        "systemd service must have exactly one ExecStart using the stable "
+                        "Atlas launcher: "
                         f"{source}"
                     )
-                self._validate_job_instance(service, text, exec_start)
+                self._validate_exec_start(service, text, exec_start[0], source)
                 if "/releases/" in text:
                     raise ValueError(f"systemd service contains a versioned release path: {source}")
             else:
@@ -94,36 +94,67 @@ class SystemdAdapter:
                 if expected not in text.splitlines():
                     raise ValueError(f"systemd timer must reference {expected}: {source}")
 
+    def _validate_exec_start(
+        self,
+        service: ServiceRef,
+        text: str,
+        exec_start: str,
+        source: Path,
+    ) -> None:
+        if service.service.command is not None:
+            expected = (
+                f"ExecStart=/opt/atlas/bin/atlas run {service.service.command}"
+            )
+            if exec_start == expected or exec_start.startswith(expected + " "):
+                return
+            raise ValueError(
+                "systemd service ExecStart must use the stable Atlas launcher for "
+                f"declared command {service.service.command}: {source}"
+            )
+
+        expected = (
+            f"ExecStart=/opt/atlas/bin/atlas job run {service.release.name} "
+            f"{service.service.job}"
+        )
+        if exec_start == expected or exec_start == expected + " --" or exec_start.startswith(
+            expected + " -- "
+        ):
+            return
+
+        match = _INSTANCE_EXEC_START_RE.fullmatch(exec_start)
+        if match is None:
+            raise ValueError(
+                "systemd service ExecStart must use the stable Atlas launcher for "
+                f"declared job {service.release.name}/{service.service.job}: {source}"
+            )
+        self._validate_job_instance(service, text, match.group("instance"))
+
     def _validate_job_instance(
         self,
         service: ServiceRef,
         text: str,
-        exec_start: list[str],
+        instance_name: str,
     ) -> None:
         users = [
             line.strip().removeprefix("User=")
             for line in text.splitlines()
             if line.strip().startswith("User=")
         ]
-        for line in exec_start:
-            match = _INSTANCE_EXEC_START_RE.fullmatch(line)
-            if match is None:
-                continue
-            instance = load_job_instance(self.jobs_dir, match.group("instance"))
-            if (
-                service.service.job is None
-                or instance.release != service.release.name
-                or instance.job != service.service.job
-            ):
-                raise ValueError(
-                    "systemd job instance must reference the service release and job: "
-                    f"{instance.name}"
-                )
-            if users != [instance.user]:
-                raise ValueError(
-                    "systemd service User must match the job instance user: "
-                    f"{instance.user}"
-                )
+        instance = load_job_instance(self.jobs_dir, instance_name)
+        if (
+            service.service.job is None
+            or instance.release != service.release.name
+            or instance.job != service.service.job
+        ):
+            raise ValueError(
+                "systemd job instance must reference the service release and job: "
+                f"{instance.name}"
+            )
+        if users != [instance.user]:
+            raise ValueError(
+                "systemd service User must match the job instance user: "
+                f"{instance.user}"
+            )
 
     def diff(self, service: ServiceRef) -> str:
         """Return unified diffs for every source/destination pair."""

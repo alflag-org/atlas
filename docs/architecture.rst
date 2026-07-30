@@ -55,7 +55,8 @@ Systemd boundary
 
 Atlas validates, diffs, atomically installs, and removes only init artifacts declared by an Atlas
 release. Installed unit names are ``atlas-<release>-<service>.service`` and optionally ``.timer``.
-``ExecStart`` must call the stable Atlas launcher. Atlas runs ``systemctl daemon-reload`` after a
+Each service must have exactly one ``ExecStart`` through ``/opt/atlas/bin/atlas``. The referenced
+command or job must match the service declaration. Atlas runs ``systemctl daemon-reload`` after a
 change, but does not enable, start, stop, or restart a unit.
 
 Global Registry boundary

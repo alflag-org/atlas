@@ -72,4 +72,5 @@ Safety checks
 
 Atlas rejects unknown keys, unsupported runtimes, missing files, absolute or traversing
 entrypoints, symlinks anywhere in a release, malformed service references, invalid unit suffixes,
-and duplicate public command names across active releases.
+duplicate public command names across active releases, and systemd ``ExecStart`` values that do
+not use the stable Atlas launcher for the declared command or job.

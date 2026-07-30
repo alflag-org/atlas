@@ -159,8 +159,10 @@ lock: provisioning-inventory-refresh
 
 Atlas does not invoke `sudo`. A direct instance run fails when `user` differs from the caller. For a unit that runs
 a job instance, Atlas verifies that the native `User=` setting matches the instance user and that the instance
-references the service's release and job. Instance locks use non-blocking OS advisory locks under `/var/lib/atlas/locks`.
-Timeouts terminate the complete child process group, then kill it if graceful termination does not complete.
+references the service's release and job. Every managed service must have exactly one `ExecStart` through
+`/opt/atlas/bin/atlas`, and its command or job must match the manifest declaration. Instance locks use non-blocking
+OS advisory locks under `/var/lib/atlas/locks`. Timeouts terminate the complete child process group, then kill it if
+graceful termination does not complete.
 
 ## First-party configuration artifacts
 

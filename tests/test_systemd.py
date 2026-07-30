@@ -95,6 +95,31 @@ def test_systemd_diff_install_and_remove(
         ),
         (
             "refresh.service",
+            "[Unit]\n[Service]\nUser=ops\n"
+            "ExecStart=/tmp/untrusted/bin/atlas job instance run sample-instance\n",
+            "stable Atlas launcher",
+        ),
+        (
+            "refresh.service",
+            "[Unit]\n[Service]\nUser=ops\n"
+            "ExecStart=/opt/atlas/bin/atlas job run worker wrong-job\n",
+            "declared job worker/refresh",
+        ),
+        (
+            "refresh.service",
+            "[Unit]\n[Service]\nUser=ops\n"
+            "ExecStart=/opt/atlas/bin/atlas job run worker refresh unexpected\n",
+            "declared job worker/refresh",
+        ),
+        (
+            "refresh.service",
+            "[Unit]\n[Service]\nUser=ops\n"
+            "ExecStart=/opt/atlas/bin/atlas job run worker refresh\n"
+            "ExecStart=/opt/atlas/bin/atlas job run worker refresh\n",
+            "exactly one ExecStart",
+        ),
+        (
+            "refresh.service",
             "[Unit]\n[Service]\n"
             "ExecStart=/opt/atlas/bin/atlas job run worker refresh\n"
             "# /opt/atlas/releases/worker/1.0.0\n",
@@ -263,6 +288,69 @@ def test_systemd_service_without_timer(
     ).diff(service)
     assert "atlas-worker-refresh.service" in diff
     assert "atlas-worker-refresh.timer" not in diff
+
+
+def test_systemd_accepts_declared_direct_job_and_command(
+    atlas_paths,
+    release_factory,
+) -> None:
+    source, service = _service(atlas_paths, release_factory)
+    (source / "init/systemd/refresh.service").write_text(
+        "[Unit]\nDescription=Direct job\n"
+        "[Service]\nUser=ops\n"
+        "ExecStart=/opt/atlas/bin/atlas job run worker refresh -- --site default\n",
+        encoding="utf-8",
+    )
+    adapter = SystemdAdapter(
+        atlas_paths.var / "systemd",
+        jobs_dir=atlas_paths.jobs_dir,
+    )
+    adapter.validate(service)
+
+    command_source = release_factory(
+        name="reader",
+        commands=("status-show",),
+    )
+    unit_root = command_source / "init/systemd"
+    unit_root.mkdir(parents=True)
+    (unit_root / "status.service").write_text(
+        "[Unit]\nDescription=Status reader\n"
+        "[Service]\n"
+        "ExecStart=/opt/atlas/bin/atlas run status-show --verbose\n",
+        encoding="utf-8",
+    )
+    manifest = yaml.safe_load(
+        (command_source / "release.yml").read_text(encoding="utf-8")
+    )
+    manifest["services"]["status"] = {
+        "command": "status-show",
+        "init": {"systemd": {"service": "init/systemd/status.service"}},
+    }
+    (command_source / "release.yml").write_text(
+        yaml.safe_dump(manifest, sort_keys=False),
+        encoding="utf-8",
+    )
+    install_release(
+        command_source,
+        atlas_paths.releases_root,
+        atlas_paths.current_root,
+    )
+    command_service = resolve_service(
+        atlas_paths.current_root,
+        "reader",
+        "status",
+    )
+    adapter.validate(command_service)
+
+    installed_unit = command_service.service.systemd.service
+    installed_unit.write_text(
+        "[Unit]\nDescription=Wrong command\n"
+        "[Service]\n"
+        "ExecStart=/opt/atlas/bin/atlas run another-command\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="declared command status-show"):
+        adapter.validate(command_service)
 
 
 def test_systemd_reload_errors(

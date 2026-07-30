@@ -1,6 +1,6 @@
 runtime:
   python:
     version: "3.12.3"
-scripts:
-  source: /workspace/examples/basic-scripts-release
-  auto_update: false
+releases:
+  basic:
+    source: /workspace/examples/basic-release

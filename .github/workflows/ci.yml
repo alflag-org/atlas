@@ -25,7 +25,7 @@ jobs:
       - run: |
           python -m coverage run -m pytest -q
           python -m coverage report
-      - run: ruff check src tests
+      - run: ruff check src operations tests
       - run: python -m build
       - name: Smoke test vNext commands
         env:
@@ -33,7 +33,6 @@ jobs:
           ATLAS_ETC_DIR: ${{ github.workspace }}/.ci/etc/atlas
           ATLAS_VAR_DIR: ${{ github.workspace }}/.ci/var/lib/atlas
           ATLAS_RUNTIME_DIR: ${{ github.workspace }}/.ci/opt/atlas/runtime
-          ATLAS_SCRIPTS_DIR: ${{ github.workspace }}/.ci/opt/atlas/scripts/current
         run: |
           set -euxo pipefail
           mkdir -p "$ATLAS_ETC_DIR"
@@ -51,16 +50,17 @@ jobs:
           runtime:
             python:
               version: "3.11"
-          scripts:
-            source: "file://examples/basic-scripts-release"
-            auto_update: false
+          releases:
+            basic:
+              source: "file://examples/basic-release"
           C
-          atlas scripts install examples/basic-scripts-release
+          atlas release install examples/basic-release
           python -m venv "$ATLAS_RUNTIME_DIR/python/envs/scripts"
           "$ATLAS_RUNTIME_DIR/python/envs/scripts/bin/python" -m pip install --upgrade pip
           "$ATLAS_RUNTIME_DIR/python/envs/scripts/bin/python" -m pip install fire PyYAML
-          atlas scripts list
+          atlas release list
+          atlas command list
           atlas which sample
-          atlas which group-nested-sample
+          atlas which nested-sample
           atlas run sample hello --name=hoge
-          atlas run group-nested-sample show-context
+          atlas run nested-sample show-context

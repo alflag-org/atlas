@@ -82,7 +82,7 @@ waiting.
 Nested execution
 ----------------
 
-Atlas prepends ``/opt/atlas/shims`` and the scripts runtime ``bin`` directory to child ``PATH``.
+Atlas prepends ``/opt/atlas/shims`` and the artifact runtime ``bin`` directory to child ``PATH``.
 A command may therefore compose public primitive commands as child processes.
 
 Every execution creates ``run_id``. A root execution sets ``operation_id`` to that value and has

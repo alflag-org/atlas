@@ -1,150 +1,48 @@
-使い方
-======
+Usage
+=====
 
-基本コマンド
+Install a release
+-----------------
+
+.. code-block:: bash
+
+   atlas release install ./operations
+   atlas release list --verbose
+   atlas command list --verbose
+   atlas runtime install
+
+The release manifest supplies its name. There is no command-line name override.
+
+Update configured releases
+--------------------------
+
+.. code-block:: bash
+
+   atlas release update
+   atlas release update operations
+   atlas release shims
+   atlas status
+
+Atlas copies and validates every requested source before activation. Release directories, current
+links, the launcher, the artifact runner, and command shims are committed as one operation. A
+failure restores the prior active set, including when an existing version directory was replaced.
+
+Run commands
 ------------
 
-Atlas の CLI は ``atlas`` コマンドから操作します。
-
 .. code-block:: bash
 
-   atlas status
-   atlas runtime status
-   atlas runtime install
-   atlas scripts install examples/basic-scripts-release --name sample
-   atlas scripts update
-   atlas scripts list --verbose
-   atlas scripts shims
-   atlas which sample
-   atlas run sample hello --name=hoge
-   atlas job list
-   atlas job run operations inventory-refresh -- --site default
-   atlas init list
-   atlas init diff operations inventory-refresh
-
-状態確認
---------
-
-``atlas status`` は設定ファイル、ホストプロファイル、アクティブなリリース、manifest に宣言された command、job、service の数、shim などの配置を表示します。
-まずこのコマンドでホストの見え方を確認します。
-
-.. code-block:: bash
-
-   atlas status
-
-``atlas runtime status`` は pyenv の利用可否、設定された Python バージョン、scripts venv の有無を表示します。
-
-.. code-block:: bash
-
-   atlas runtime status
-
-ランタイム作成
---------------
-
-``atlas runtime install`` は ``/etc/atlas/config.yml`` の ``runtime.python.version`` を読み、pyenv の Python から scripts venv を作成します。
-pyenv 本体と Python build に必要な OS 依存は、事前にホストへ入れておく必要があります。
-
-.. code-block:: bash
-
-   atlas runtime install
-
-既にインストール済みリリースがある場合、リリース内の ``requirements.lock`` または ``requirements.txt`` も scripts venv に取り込まれます。
-
-リリースのインストール
-----------------------
-
-ローカルディレクトリをインストールする例です。リリース名 ``sample`` は ``release.yml`` が決めます。
-
-.. code-block:: bash
-
-   atlas scripts install examples/basic-scripts-release --name sample
-
-インストール時には以下が行われます。
-
-* リリース構造と ``VERSION`` の検証
-* strict YAML の ``release.yml`` と schema の検証
-* manifest に明示された Python command の entrypoint 検証
-* リリース内 symlink の拒否
-* ``/opt/atlas/scripts/releases/<name>/<version>`` への配置
-* ``/opt/atlas/scripts/current/<name>`` symlink の更新
-* ``atlas_core`` の同期
-* launcher と shim の生成
-
-``--name`` は manifest 名を上書きしません。自動処理で期待する名前を明示的に照合する場合だけ指定し、
-manifest の ``name`` と異なる値ならインストールを中止します。
-
-設定済みリリースの更新
-----------------------
-
-``config.yml`` の ``scripts.releases`` にある有効なリリースをすべて更新します。
-
-.. code-block:: bash
-
-   atlas scripts update
-
-特定のリリースだけを更新する場合はリリース名を指定します。
-
-.. code-block:: bash
-
-   atlas scripts update common
-
-更新中に失敗した場合、更新対象の ``current`` symlink は可能な限り元の状態へ戻されます。
-
-コマンド一覧と検索
-------------------
-
-コマンド名だけを一覧します。
-
-.. code-block:: bash
-
-   atlas scripts list
-
-詳細表示では、コマンド名、リリース名、リリースバージョン、実体のスクリプトパスを表示します。
-
-.. code-block:: bash
-
-   atlas scripts list --verbose
-
-特定コマンドの実体パスを確認します。
-
-.. code-block:: bash
-
-   atlas which sample
-
-実行
-----
-
-``atlas run`` は scripts venv の Python で対象スクリプトを実行します。
-引数はそのままスクリプトへ渡されます。
-
-.. code-block:: bash
-
-   atlas run sample hello --name=hoge
-
-実行時には ``ATLAS_SCRIPT_NAME``、``ATLAS_SCRIPT_RELEASE_NAME``、``ATLAS_SCRIPT_VERSION``、``ATLAS_SCRIPTS_DIR`` などの環境変数が設定されます。
-スクリプト側では直接環境変数を読むより、安定 API である ``atlas_core.get_context()`` を使うことを推奨します。
-
-shim 経由の実行
----------------
-
-``/opt/atlas/shims`` を ``PATH`` に追加すると、manifest に宣言されたコマンドを直接実行できます。
-
-.. code-block:: bash
+   atlas which config-diff
+   atlas run config-diff site web01
 
    export PATH="/opt/atlas/shims:$PATH"
-   sample --name=hoge
+   config-diff site web01
 
-shim は内部で ``atlas run <command-name>`` を呼び出します。
-shim を再生成する場合は次を実行します。
+The shim points to ``/opt/atlas/bin/artifact-runner``, which delegates to
+``atlas run <command>``.
 
-.. code-block:: bash
-
-   atlas scripts shims
-
-job の実行
-----------
-
-job は shim を持たない non-interactive artifact です。release 名と job 名を明示して実行します。
+Run jobs
+--------
 
 .. code-block:: bash
 
@@ -152,23 +50,39 @@ job は shim を持たない non-interactive artifact です。release 名と jo
    atlas job inspect operations inventory-refresh
    atlas job run operations inventory-refresh -- --site default
 
-host 固有の working directory、argument、environment file、timeout、lock は
-``/etc/atlas/jobs.d/<instance>.yml`` に置きます。schema と実行方法は :doc:`jobs` を参照してください。
+Direct jobs inherit the caller's working directory. Arguments after ``--`` are passed unchanged.
 
-systemd artifact の確認と配置
-------------------------------
-
-manifest に宣言された service を一覧し、systemd の配置先との差分を確認します。
+Run job instances
+-----------------
 
 .. code-block:: bash
 
-   atlas init list
+   atlas job instance list
+   atlas job instance inspect provisioning-inventory-refresh
+   atlas job instance run provisioning-inventory-refresh
+
+Instances load working directory, arguments, environment-file paths, timeout, and lock settings
+from ``/etc/atlas/jobs.d``.
+
+Manage Atlas systemd artifacts
+------------------------------
+
+.. code-block:: bash
+
    atlas init list operations
    atlas init diff operations inventory-refresh
+   sudo atlas init install operations inventory-refresh
+   sudo atlas init remove operations inventory-refresh
 
-``atlas init install`` は検証済み unit を
-``/etc/systemd/system/atlas-<release>-<service>.service`` と任意の ``.timer`` へ原子的に
-配置し、``systemctl daemon-reload`` だけを実行します。``atlas init remove`` は同じ固定名
-だけを削除して定義を再読み込みします。enable、start、stop、restart は systemd の native
-command で明示的に行います。実際の job instance と timer の導入手順は :doc:`operations`
-を参照してください。
+Every managed service must have exactly one ``ExecStart`` through ``/opt/atlas/bin/atlas`` and
+must invoke the command declared by its manifest or a matching job instance. Job-backed services
+must use ``atlas job instance run``; Atlas validates that ``User=`` matches the job-instance user
+and that the instance references the service's declared release and job.
+
+Use native commands for lifecycle actions:
+
+.. code-block:: bash
+
+   systemctl enable --now atlas-operations-inventory-refresh.timer
+   systemctl status atlas-operations-inventory-refresh.timer
+   journalctl -u atlas-operations-inventory-refresh.service

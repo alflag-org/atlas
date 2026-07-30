@@ -1,107 +1,95 @@
-Staged migration from Atlas 0.3 to Atlas 1.0
-============================================
+Migration from Atlas 0.3
+========================
 
-Current and final interfaces
-----------------------------
+Compatibility decision
+----------------------
 
-The table below records the Atlas 0.3 baseline and the final target. This checkout has completed
-the manifest, job, first-party operations, and systemd init stages: implicit command discovery is
-removed, jobs and job instances use the shared correlated executor, only commands receive shims,
-services bind declared artifacts to validated systemd files, and ``operations/`` is packaged
-separately from the Atlas core wheel. The scripts CLI, configuration environment, and filesystem
-paths remain current behavior.
+Atlas 1.0 does not read the former ``scripts`` configuration, ``ATLAS_SCRIPT_*`` variables, or
+``/opt/atlas/scripts`` layout. It does not provide ``atlas scripts`` or ``script-runner`` aliases.
+This is an intentional breaking migration. Atlas performs no in-place conversion and must not be
+started against a partially converted host.
 
-.. list-table::
-   :header-rows: 1
+Prepare the cutover
+-------------------
 
-   * - Concern
-     - Atlas 0.3
-     - Atlas 1.0 target
-   * - Release declaration
-     - ``commands/**/*.py`` discovery
-     - strict ``release.yml`` with ``atlas.release/v1``
-   * - Executable kinds
-     - every discovered file is a public command
-     - public commands and non-public jobs
-   * - Release storage
-     - ``/opt/atlas/scripts/releases``
-     - ``/opt/atlas/releases``
-   * - Active release links
-     - ``/opt/atlas/scripts/current``
-     - ``/opt/atlas/current``
-   * - Runner
-     - ``script-runner``
-     - ``artifact-runner``
-   * - Init files
-     - unmanaged by Atlas
-     - declared systemd artifacts managed through ``atlas init``
+1. Record every installed release source, active version, shim caller, job scheduler, and service.
+2. Choose a maintenance window and an observation period.
+3. Stop schedulers and services that invoke former shims.
+4. Back up the complete ``/etc/atlas`` and ``/opt/atlas`` trees plus required run logs.
+5. Record ownership, modes, package versions, service enablement, and checksums needed to restore
+   that snapshot.
+6. Keep the backup outside ``/opt/atlas`` so a clean installation cannot overwrite it.
 
-The migration is staged to keep every review and validation bounded. Staging does not create a
-compatibility promise: the final release does not read the old configuration, expose old CLI
-aliases, map old environment variables, or preserve old filesystem aliases.
+Do not delete ``/opt/atlas/scripts`` during preparation. It remains the rollback source until the
+new installation has completed its observation period.
 
-The independent ``alflag-org/provisioning`` repository has been bootstrapped from the Daedalus
-Ansible history. Real-host comparison, the observation period, Daedalus retirement, and Global
-Registry registration still require their external prerequisites. The init stage was completed
-without treating those production prerequisites as permission to skip or simulate them.
+Install the final layout
+------------------------
 
-Pull request sequence
----------------------
+With all callers stopped:
 
-1. Record the target architecture, terminology, artifact definitions, command naming rules,
-   repository ownership, migration order, and rollback rules without changing runtime behavior.
-2. Add strict ``release.yml`` parsing, command artifacts, explicit manifest discovery, collision
-   handling, migrated examples, and complete tests. Do not add jobs, init support, provisioning
-   content, or path renames.
-3. Add shared command and job execution, ``atlas job`` and job instances, nested run correlation,
-   Git context, timeout, process-group handling, and advisory locks. Commands alone receive shims.
-4. Add the first-party ``operations`` release with separate ``config-validate``, ``config-check``,
-   ``config-diff``, ``config-apply``, ``inventory-show``, and ``config-diff-many`` commands.
-   Composition invokes the primitive executable. Register the release only after Global Registry
-   exposes a documented software-release contract.
-5. Create ``alflag-org/provisioning`` from the Daedalus Ansible history. Make its repository root
-   the Ansible project root; do not copy wrappers, Atlas packaging, shims, or the Daedalus Python
-   package.
-6. Compare replacement operations against Daedalus on representative hosts. Remove its registry
-   entry and stale shim only after real-host smoke tests, then archive the repository.
-7. Add systemd validation and ``atlas init list|diff|install|remove``. Install unit files
-   atomically, run ``systemctl daemon-reload``, and leave enable/start/stop/restart to systemd.
-8. Replace scripts-specific storage, runner, environment, status, and CLI terminology with the
-   Atlas 1.0 paths and names. Remove the old surfaces instead of retaining compatibility aliases.
-9. Classify later Hermes and Ares content by responsibility. Move reusable primitives or
-   composition into the operations release and move desired state into the appropriate external
-   repository; do not merge whole repositories into Atlas.
+1. Install the Atlas 1.0 package.
+2. Replace ``config.yml`` with the strict ``runtime`` and ``releases`` schema.
+3. Add and validate ``release.yml`` for every release; do not rely on file discovery.
+4. Install each release into ``/opt/atlas/releases``.
+5. Rebuild the shared runtime.
+6. Regenerate final command shims.
+7. Reinstall declared systemd artifacts after reviewing their diffs.
 
-Production cutover
-------------------
+.. code-block:: bash
 
-Before changing a host, record installed release sources and active versions, stop schedulers and
-services that invoke old shims, and back up ``/etc/atlas``, ``/opt/atlas/scripts``, and required
-run logs. Prepare the independent provisioning repository and its dependencies explicitly.
+   atlas release install /srv/releases/operations
+   atlas runtime install
+   atlas release shims
+   atlas command list --verbose
+   atlas job list
+   atlas init list
+   atlas status
 
-Run new read-only validation and diff commands against representative targets and compare them
-with the old wrapper's output. Install the new release, rebuild the runtime and shims, inspect job
-instances and systemd diffs, and only then switch callers. Remove the old tree after the agreed
-observation period.
+``atlas status`` must report ``/opt/atlas/releases``, ``/opt/atlas/current``,
+``/opt/atlas/bin/artifact-runner``, and the runtime Python path. Update shell ``PATH`` settings,
+job-instance files, and native service references before starting callers. No final configuration
+or unit may refer to ``atlas scripts``, ``script-runner``, ``ATLAS_SCRIPT_*``, or
+``/opt/atlas/scripts``.
 
-Rollback by stage
------------------
+Verify and commit the cutover
+-----------------------------
 
-.. list-table::
-   :header-rows: 1
+Run read-only commands and diffs against representative infrastructure targets. Compare
+replacement operation output with the retired wrapper, run a command through its final shim, run
+each scheduled job instance manually, validate systemd units, and inspect correlated run records.
+Then start callers gradually and observe them for the agreed period.
 
-   * - Stage
-     - Rollback
-   * - Manifest and job support
-     - Revert the stage before its release; restore the previously active release directory and link.
-   * - Operations release
-     - Stop new callers and return them to the old wrapper retained during comparison.
-   * - Provisioning repository
-     - Keep the old Daedalus checkout read-only and restore its pinned revision.
-   * - Systemd artifacts
-     - Remove installed ``atlas-<release>-<service>`` unit files and run ``systemctl daemon-reload``.
-   * - Filesystem terminology
-     - Stop new callers, restore the backed-up Atlas 0.3 tree and configuration, and restore the old executable path.
+The cutover is committed only after:
 
-Rollback restores one complete version; it does not activate an in-process dual-read mode. Atlas
-1.0 must never be pointed at an Atlas 0.3 filesystem with the expectation of automatic conversion.
+- release and command lists match the intended active set;
+- every current link resolves below ``/opt/atlas/releases``;
+- runtime dependency checks succeed;
+- command, job, timeout, lock, and run-log behavior is confirmed;
+- systemd units use the stable Atlas launcher and expected user;
+- no process reads the former tree.
+
+After these checks, remove ``/opt/atlas/scripts`` and obsolete caller configuration. Removal is a
+separate, explicit step; Atlas never deletes the former tree automatically.
+
+Rollback
+--------
+
+If any pre-commit check fails, stop new callers and restore the complete snapshot: the Atlas 0.3
+package, ``/etc/atlas``, ``/opt/atlas``, ownership and modes, executable ``PATH``, and systemd
+state. Run ``systemctl daemon-reload`` after restoring native unit files.
+
+Do not retain a mixture of final configuration with former paths, or final binaries with former
+environment variables. Rollback restores one coherent host version; it does not activate a
+dual-read compatibility mode.
+
+External repository migration
+-----------------------------
+
+Move Ansible inventory, playbooks, roles, and collections to an independent provisioning
+repository whose root is the Ansible project root. Do not copy an old product wrapper, release
+packaging, or Atlas shim into that repository.
+
+Before retiring an old wrapper, compare its check and diff results against ``config-check`` and
+``config-diff`` on representative targets. Archive an old repository only after real-host smoke
+tests and the observation period succeed.

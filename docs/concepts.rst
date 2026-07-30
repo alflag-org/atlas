@@ -1,74 +1,55 @@
-設計と概念
-============
+Concepts
+========
 
-.. note::
+Atlas responsibilities
+----------------------
 
-   このページは command、job、service manifest と systemd init artifact を実装した段階の
-   scripts runtime を説明します。後続 PR で変更する Atlas 1.0 の filesystem terminology は
-   :doc:`architecture`、導入順序は :doc:`migration` を参照してください。
+Atlas owns release acquisition, strict artifact validation, atomic installation and activation,
+the shared Python runtime, public command shims, non-public job execution, correlated run logs,
+timeouts, advisory locks, and Atlas-owned systemd artifact management.
 
-Atlas の役割
-------------
+Atlas does not own environment desired state. Keep Ansible inventory, playbooks, roles, Chef
+policy, Terraform definitions, service-specific units, and provider configuration in independent
+infrastructure repositories. Atlas also does not clone, pull, or switch those repositories.
 
-Atlas は、ホストに配置されたスクリプトリリースを実行可能なコマンドとして公開します。
-アプリケーションサーバーやジョブスケジューラではなく、次の責務に範囲を絞っています。
+Artifact types
+--------------
 
-* スクリプト実行用 Python ランタイムの作成
-* スクリプトリリースの検証、インストール、更新
-* manifest に宣言された Python command と job の検証
-* manifest に宣言された service と systemd init artifact の検証、diff、配置、削除
-* ``/opt/atlas/shims`` への shim 生成
-* job instance の timeout、lock、working directory、environment file の解決
-* 実行時環境変数と ``atlas_core`` コンテキストの提供
-* command と job の相関付き JSONL ログ記録
+``command``
+   An operator-facing executable. Commands receive shims under ``/opt/atlas/shims``.
 
-Atlas は pyenv や OS パッケージのインストールまでは行いません。
-ホストの Python バージョン管理は pyenv に任せ、Atlas はその Python を使ってスクリプト用 venv を作ります。
+``job``
+   A non-interactive, one-shot executable. Jobs never receive shims and run through
+   ``atlas job``.
 
-主要ディレクトリ
-----------------
+``service``
+   A logical command or job reference with native init artifacts. A service is not itself an
+   executable.
 
-既定の配置は以下です。環境変数で一部を上書きできます。
+``init artifact``
+   A native service-manager definition. Atlas v1 implements systemd only.
 
-.. list-table::
-   :header-rows: 1
+``module``
+   A release-private Python library under ``modules/``.
 
-   * - パス
-     - 用途
-   * - ``/etc/atlas``
-     - ``config.yml`` と ``host.yml``
-   * - ``/opt/atlas``
-     - ランタイム、shim、launcher、インストール済みリリース
-   * - ``/var/lib/atlas``
-     - 実行ログ、キャッシュ、ランタイム状態
-   * - ``/opt/atlas/scripts/releases``
-     - リリース本体の保存先
-   * - ``/opt/atlas/scripts/current``
-     - アクティブリリースへの symlink 群
-   * - ``/opt/atlas/shims``
-     - ユーザーやサービスが ``PATH`` に追加するコマンド shim
+``asset``
+   A static file required by release code. Environment inventory and desired state are not assets.
 
-リリースとコマンド
-------------------
+UNIX command contract
+---------------------
 
-スクリプトリリースは ``VERSION`` と ``release.yml`` を持つディレクトリです。
-``release.yml`` の ``commands`` に command 名、``python`` runtime、release root からの entrypoint を明示します。
-``commands/`` に置いただけの Python file は公開されません。
+A primitive command handles one project, one target, one main operation, and one main child
+process. A composition command invokes public primitive executables as child processes. It does
+not import their internal implementation.
 
-release 名と command 名は ``[a-z][a-z0-9]*(?:-[a-z0-9]+)*`` に制限されます。
-``atlas``、``script-runner``、``artifact-runner`` は command の予約名です。
+Commands write results to stdout, diagnostics and progress to stderr, preserve child exit status,
+use argument lists with ``shell=False``, and make mutations explicit in their names.
 
-失敗時の基本方針
-----------------
+Failure policy
+--------------
 
-Atlas は曖昧な状態を許容せず、失敗を明示します。
-
-* コマンド名が複数リリースで衝突した場合は失敗
-* ``release.yml`` に unknown key、重複 YAML key、未対応 schema/runtime がある場合は失敗
-* リリース内に symlink が含まれる場合は失敗
-* service が存在しない command/job を参照する場合や systemd unit が安定した Atlas launcher を使わない場合は失敗
-* archive 展開時に path traversal や symlink がある場合は失敗
-* runtime Python が見つからない場合は失敗
-* ``host.yml`` や ``config.yml`` の型が不正な場合は失敗
-
-この方針により、更新途中の不完全な状態や意図しないコマンド上書きを避けます。
+Atlas fails closed when a manifest has unknown keys, a path leaves the release root, a release
+contains symlinks, a command name collides, a job reference is missing, or a systemd destination
+is a symlink. The jobs, locks, and logs directories cannot be symlinks; instance, lock, and run-log
+files must have the expected regular-file type. Atlas does not silently fall back to file
+discovery or legacy filesystem paths.

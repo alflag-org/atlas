@@ -1,63 +1,35 @@
-開発
-====
+Development
+===========
 
-ローカル環境
+Local checks
 ------------
-
-開発環境は mise を前提にしています。
 
 .. code-block:: bash
 
    mise install
    mise run setup
+   mise run lint
+   mise run test
+   mise run build
    mise run check
 
-利用できる主な task は以下です。
+Ruff checks ``src``, ``operations``, and ``tests``. Coverage includes the host package,
+``atlas_core``, first-party operation modules, and command entrypoints. Both line and branch
+coverage must remain at 100%.
 
-.. list-table::
-   :header-rows: 1
-
-   * - task
-     - 内容
-   * - ``mise run setup``
-     - ``pip install -e '.[dev]'`` で開発依存をインストール
-   * - ``mise run lint``
-     - ``ruff check src operations tests``
-   * - ``mise run test``
-     - ``python -m coverage run -m pytest -q`` と ``python -m coverage report``
-   * - ``mise run build``
-     - ``python -m build``
-   * - ``mise run docs``
-     - ``make html`` で Sphinx HTML を ``build/html`` に生成
-   * - ``mise run check``
-     - lint、test、build
-
-``mise run test`` は line coverage と branch coverage の両方で 100% を要求します。
-新しい分岐や失敗経路を追加した場合は、production で必要な挙動としてテストも追加してください。
-
-ドキュメント
-------------
-
-ドキュメントは Sphinx で生成します。
-
-.. code-block:: bash
-
-   mise run docs
-
-警告をエラーとして扱う確認は次を使います。
+Documentation
+-------------
 
 .. code-block:: bash
 
    make html SPHINXOPTS=-W
 
-公開サイトの本文は日本語で書きます。
-コード、コメント、docstring、commit message は英語で書きます。
-文体とページ構成の詳しい基準は :doc:`writing-guide` にまとめています。
+The generated site is written to ``build/html``. Keep README, CLI examples, Docker smoke tests,
+and Sphinx pages aligned whenever a public command, path, manifest field, or environment variable
+changes.
 
 Docker
 ------
-
-Docker では runtime 用 image と check 用 image を分けています。
 
 .. code-block:: bash
 
@@ -65,28 +37,16 @@ Docker では runtime 用 image と check 用 image を分けています。
    docker compose run --rm atlas
    docker compose run --rm check
 
-``docker compose run --rm check`` はコンテナ内 Atlas 環境で sample script を実行し、Ruff、pytest、package build を実行します。
+The runtime image installs ``examples/basic-release`` and builds the declared release
+dependencies into the shared Python environment.
 
-変更時の確認
-------------
+Change review
+-------------
 
-変更の種類に応じて、狭い確認から広い確認へ進めます。
+Run the narrowest relevant test first, then ``mise run check``. For release-contract changes,
+also validate ``operations``, both example releases, command-only shim generation, and a job
+instance. For init changes, test diff, atomic replacement, removal, mode/ownership, and
+``daemon-reload`` failure.
 
-* CLI や runtime の挙動変更: 関連する pytest を先に実行し、最後に ``mise run check``
-* docs 変更: ``make html SPHINXOPTS=-W``
-* packaging 変更: ``python -m build`` または ``mise run check``
-* script release 形式の変更: ``examples/basic-scripts-release`` と ``examples/companion-scripts-release`` を使った smoke test
-* first-party operations 変更: fake Ansible tests に加え、``tests/fixtures/provisioning`` で実際の ``ansible-playbook --syntax-check`` を実行
-
-release tag の workflow は Atlas core の wheel と source archive に加え、
-``operations/VERSION`` を名前に使った ``atlas-operations-<version>.tar.gz`` を生成します。
-operations release は Atlas core package に含めず、独立した release artifact として確認してください。
-
-公開 API の扱い
----------------
-
-``atlas_core`` はインストール済みスクリプトが使う安定 API です。
-互換性を壊す変更は慎重に扱い、``tests/test_core_public_api.py`` と ``tests/test_atlas_core_public.py`` を更新して意図を明示してください。
-
-``atlas`` パッケージはホスト側 CLI 実装です。
-ドキュメントでは maintainer 向けに参照を提供しますが、スクリプトから直接 import する前提にはしません。
+The ``atlas_core`` package is deliberately small. Do not add Ansible, inventory, Terraform,
+scheduler, subprocess, or logging-framework APIs to it.

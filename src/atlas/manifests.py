@@ -26,12 +26,31 @@ class ExecutableArtifact:
 
 
 @dataclass(frozen=True)
+class SystemdArtifacts:
+    """Systemd files supplied for one service."""
+
+    service: Path
+    timer: Path | None = None
+
+
+@dataclass(frozen=True)
+class ServiceArtifact:
+    """A logical service backed by one command or job."""
+
+    name: str
+    command: str | None
+    job: str | None
+    systemd: SystemdArtifacts
+
+
+@dataclass(frozen=True)
 class ReleaseManifest:
-    """Validated command and job declarations for one release."""
+    """Validated artifact declarations for one release."""
 
     name: str
     commands: dict[str, ExecutableArtifact]
     jobs: dict[str, ExecutableArtifact]
+    services: dict[str, ServiceArtifact]
 
 
 def validate_name(name: str, *, kind: str = "artifact") -> str:
@@ -62,7 +81,13 @@ def _required_string(raw: dict[str, Any], key: str, label: str) -> str:
     return value.strip()
 
 
-def _entrypoint(release_root: Path, value: str, label: str) -> Path:
+def _release_file(
+    release_root: Path,
+    value: str,
+    label: str,
+    *,
+    suffix: str,
+) -> Path:
     relative = Path(value)
     if relative.is_absolute() or ".." in relative.parts or "\\" in value:
         raise ValueError(f"{label} must be a relative path inside the release")
@@ -78,8 +103,8 @@ def _entrypoint(release_root: Path, value: str, label: str) -> Path:
         raise ValueError(f"{label} escapes the release root")
     if not path.is_file():
         raise ValueError(f"{label} not found: {value}")
-    if path.suffix != ".py":
-        raise ValueError(f"{label} must end with .py")
+    if path.suffix != suffix:
+        raise ValueError(f"{label} must end with {suffix}")
     return resolved
 
 
@@ -112,12 +137,73 @@ def _parse_executables(
         parsed[name] = ExecutableArtifact(
             name=name,
             runtime=runtime,
-            entrypoint=_entrypoint(
+            entrypoint=_release_file(
                 release_root,
                 _required_string(entry, "entrypoint", label),
                 f"{label}.entrypoint",
+                suffix=".py",
             ),
             default_timeout_seconds=timeout,
+        )
+    return parsed
+
+
+def _parse_services(
+    release_root: Path,
+    raw: Any,
+    commands: dict[str, ExecutableArtifact],
+    jobs: dict[str, ExecutableArtifact],
+) -> dict[str, ServiceArtifact]:
+    entries = _mapping(raw, "services")
+    parsed: dict[str, ServiceArtifact] = {}
+    for raw_name, raw_entry in entries.items():
+        if not isinstance(raw_name, str):
+            raise TypeError("service name must be a string")
+        name = validate_name(raw_name, kind="service")
+        label = f"services.{name}"
+        entry = _mapping(raw_entry, label)
+        _reject_unknown(entry, {"command", "job", "init"}, label)
+        command = entry.get("command")
+        job = entry.get("job")
+        if (command is None) == (job is None):
+            raise ValueError(f"{label} must reference exactly one command or job")
+        if command is not None and (
+            not isinstance(command, str) or command not in commands
+        ):
+            raise ValueError(f"{label}.command references an unknown command: {command}")
+        if job is not None and (not isinstance(job, str) or job not in jobs):
+            raise ValueError(f"{label}.job references an unknown job: {job}")
+
+        init = _mapping(entry.get("init"), f"{label}.init")
+        _reject_unknown(init, {"systemd"}, f"{label}.init")
+        systemd = _mapping(init.get("systemd"), f"{label}.init.systemd")
+        _reject_unknown(systemd, {"service", "timer"}, f"{label}.init.systemd")
+        service_path = _release_file(
+            release_root,
+            _required_string(systemd, "service", f"{label}.init.systemd"),
+            f"{label}.init.systemd.service",
+            suffix=".service",
+        )
+        timer_value = systemd.get("timer")
+        if timer_value is not None and (
+            not isinstance(timer_value, str) or not timer_value.strip()
+        ):
+            raise ValueError(f"{label}.init.systemd.timer must be a non-empty string")
+        timer_path = (
+            None
+            if timer_value is None
+            else _release_file(
+                release_root,
+                timer_value.strip(),
+                f"{label}.init.systemd.timer",
+                suffix=".timer",
+            )
+        )
+        parsed[name] = ServiceArtifact(
+            name=name,
+            command=command,
+            job=job,
+            systemd=SystemdArtifacts(service=service_path, timer=timer_path),
         )
     return parsed
 
@@ -125,7 +211,11 @@ def _parse_executables(
 def load_manifest(release_root: Path) -> ReleaseManifest:
     """Load and strictly validate ``release.yml`` from ``release_root``."""
     raw = _mapping(load_yaml_file(release_root / "release.yml"), "release.yml")
-    _reject_unknown(raw, {"schema", "name", "commands", "jobs"}, "release.yml")
+    _reject_unknown(
+        raw,
+        {"schema", "name", "commands", "jobs", "services"},
+        "release.yml",
+    )
     schema = _required_string(raw, "schema", "release.yml")
     if schema != SCHEMA:
         raise ValueError(f"unsupported release schema: {schema}")
@@ -135,4 +225,15 @@ def load_manifest(release_root: Path) -> ReleaseManifest:
     overlap = sorted(set(commands) & set(jobs))
     if overlap:
         raise ValueError(f"command and job names overlap: {overlap[0]}")
-    return ReleaseManifest(name=name, commands=commands, jobs=jobs)
+    services = _parse_services(
+        release_root,
+        raw.get("services", {}),
+        commands,
+        jobs,
+    )
+    return ReleaseManifest(
+        name=name,
+        commands=commands,
+        jobs=jobs,
+        services=services,
+    )

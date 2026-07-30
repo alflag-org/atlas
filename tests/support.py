@@ -34,6 +34,7 @@ def make_release(
     commands: tuple[str, ...] = ("sample-show",),
     jobs: tuple[str, ...] = (),
     timeout: int | None = None,
+    service: str | None = None,
 ) -> Path:
     root.mkdir(parents=True)
     (root / "VERSION").write_text(f"{version}\n", encoding="utf-8")
@@ -42,6 +43,7 @@ def make_release(
         "name": name,
         "commands": {},
         "jobs": {},
+        "services": {},
     }
     command_entries = manifest["commands"]
     assert isinstance(command_entries, dict)
@@ -79,6 +81,33 @@ def make_release(
         if timeout is not None:
             definition["default_timeout_seconds"] = timeout
         job_entries[job] = definition
+    if service is not None:
+        assert jobs
+        unit_root = root / "init/systemd"
+        unit_root.mkdir(parents=True)
+        (unit_root / f"{service}.service").write_text(
+            "[Unit]\nDescription=Sample\n"
+            "[Service]\nUser=ops\n"
+            "ExecStart=/opt/atlas/bin/atlas job instance run sample-instance\n",
+            encoding="utf-8",
+        )
+        (unit_root / f"{service}.timer").write_text(
+            "[Unit]\nDescription=Sample timer\n"
+            "[Timer]\nOnCalendar=hourly\n"
+            f"Unit=atlas-{name}-{service}.service\n",
+            encoding="utf-8",
+        )
+        service_entries = manifest["services"]
+        assert isinstance(service_entries, dict)
+        service_entries[service] = {
+            "job": jobs[0],
+            "init": {
+                "systemd": {
+                    "service": f"init/systemd/{service}.service",
+                    "timer": f"init/systemd/{service}.timer",
+                }
+            },
+        }
     (root / "release.yml").write_text(
         yaml.safe_dump(manifest, sort_keys=False),
         encoding="utf-8",

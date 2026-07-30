@@ -29,6 +29,16 @@ def playbook_path(project_root: Path, name: str) -> Path:
     return playbook
 
 
+def inventory_path(project_root: Path, site: str) -> Path:
+    """Resolve one safe site inventory under ``inventories``."""
+    if not PLAYBOOK_RE.fullmatch(site):
+        raise ValueError(f"invalid site name: {site}")
+    inventory = project_root / "inventories" / site / "hosts.yml"
+    if not inventory.is_file() or inventory.is_symlink():
+        raise ValueError(f"inventory not found: {inventory}")
+    return inventory
+
+
 def target_name(value: str) -> str:
     """Reject an empty Ansible target while preserving its pattern."""
     if not value.strip():

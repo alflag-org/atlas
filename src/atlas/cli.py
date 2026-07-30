@@ -10,11 +10,19 @@ import yaml
 
 from atlas_core.host import get_host
 
-from .catalog import active_releases, command_index, resolve_command, resolve_job
+from .catalog import (
+    active_releases,
+    command_index,
+    release_index,
+    resolve_command,
+    resolve_job,
+    resolve_service,
+)
 from .config import load_config
 from .errors import AtlasError
 from .execution import execute
 from .files import remove_path
+from .init import SystemdAdapter
 from .job_instances import list_job_instances, load_job_instance
 from .jobs import list_jobs, run_job, run_job_instance
 from .launchers import (
@@ -82,6 +90,7 @@ def cmd_status(_: argparse.Namespace) -> int:
         print(f"release: {release.name} {release.version} {release.root}")
     print(f"commands count: {len(commands)}")
     print(f"jobs count: {sum(len(release.manifest.jobs) for release in releases)}")
+    print(f"services count: {sum(len(release.manifest.services) for release in releases)}")
     print(f"python scripts path: {p.scripts_python}")
     print(f"shims path: {p.shims}")
     return 0
@@ -300,6 +309,57 @@ def cmd_job_instance_run(args: argparse.Namespace) -> int:
     return run_job_instance(get_paths(), args.instance)
 
 
+def cmd_init_list(args: argparse.Namespace) -> int:
+    """List Atlas-owned init artifacts."""
+    releases = release_index(get_paths().scripts_current_root)
+    if args.release is not None and args.release not in releases:
+        raise ValueError(f"unknown release: {args.release}")
+    for release in releases.values():
+        if args.release is not None and release.name != args.release:
+            continue
+        for service in release.manifest.services.values():
+            print(f"{release.name}\t{service.name}\tsystemd")
+    return 0
+
+
+def cmd_init_diff(args: argparse.Namespace) -> int:
+    """Print systemd unit differences."""
+    paths = get_paths()
+    service = resolve_service(
+        paths.scripts_current_root,
+        args.release,
+        args.service,
+    )
+    print(SystemdAdapter(jobs_dir=paths.jobs_dir).diff(service), end="")
+    return 0
+
+
+def cmd_init_install(args: argparse.Namespace) -> int:
+    """Install Atlas-owned systemd artifacts."""
+    paths = get_paths()
+    service = resolve_service(
+        paths.scripts_current_root,
+        args.release,
+        args.service,
+    )
+    for path in SystemdAdapter(jobs_dir=paths.jobs_dir).install(service):
+        print(path)
+    return 0
+
+
+def cmd_init_remove(args: argparse.Namespace) -> int:
+    """Remove Atlas-owned systemd artifacts."""
+    paths = get_paths()
+    service = resolve_service(
+        paths.scripts_current_root,
+        args.release,
+        args.service,
+    )
+    for path in SystemdAdapter(jobs_dir=paths.jobs_dir).remove(service):
+        print(path)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the Atlas argument parser."""
     parser = argparse.ArgumentParser(prog="atlas")
@@ -363,6 +423,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_instance_run = instance_sub.add_parser("run")
     p_instance_run.add_argument("instance")
     p_instance_run.set_defaults(func=cmd_job_instance_run)
+
+    p_init = sub.add_parser("init")
+    init_sub = p_init.add_subparsers(dest="init_cmd", required=True)
+    p_init_list = init_sub.add_parser("list")
+    p_init_list.add_argument("release", nargs="?")
+    p_init_list.set_defaults(func=cmd_init_list)
+    for action, function in (
+        ("diff", cmd_init_diff),
+        ("install", cmd_init_install),
+        ("remove", cmd_init_remove),
+    ):
+        action_parser = init_sub.add_parser(action)
+        action_parser.add_argument("release")
+        action_parser.add_argument("service")
+        action_parser.set_defaults(func=function)
 
     return parser
 

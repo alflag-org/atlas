@@ -3,8 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
-from atlas.catalog import active_releases, command_index
+from atlas.catalog import active_releases, command_index, resolve_service
 from atlas.manifests import (
     ExecutableArtifact,
     ReleaseManifest,
@@ -78,6 +79,7 @@ def test_load_manifest_declares_commands_explicitly(tmp_path: Path) -> None:
             ),
         },
         jobs={},
+        services={},
     )
     assert "not-declared" not in manifest.commands
 
@@ -116,6 +118,207 @@ def test_load_manifest_declares_non_public_jobs(tmp_path: Path) -> None:
         entrypoint=(release / "jobs/inventory-refresh.py").resolve(),
         default_timeout_seconds=300,
     )
+
+
+def _read_manifest(root: Path) -> dict:
+    raw = yaml.safe_load((root / "release.yml").read_text(encoding="utf-8"))
+    assert isinstance(raw, dict)
+    return raw
+
+
+def _write_manifest(root: Path, raw: dict) -> None:
+    (root / "release.yml").write_text(
+        yaml.safe_dump(raw, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
+def test_load_manifest_declares_job_service_and_catalog_resolves_it(
+    release_factory,
+    tmp_path: Path,
+) -> None:
+    root = release_factory(
+        name="operations",
+        commands=("config-show",),
+        jobs=("state-collect",),
+        timeout=30,
+        service="state-collect",
+    )
+
+    manifest = load_manifest(root)
+
+    service = manifest.services["state-collect"]
+    assert service.name == "state-collect"
+    assert service.job == "state-collect"
+    assert service.command is None
+    assert service.systemd.service == (
+        root / "init/systemd/state-collect.service"
+    ).resolve()
+    assert service.systemd.timer == (
+        root / "init/systemd/state-collect.timer"
+    ).resolve()
+
+    current = tmp_path / "current"
+    current.mkdir()
+    (current / "operations").symlink_to(root, target_is_directory=True)
+    assert resolve_service(
+        current,
+        "operations",
+        "state-collect",
+    ).service == service
+    with pytest.raises(ValueError, match="unknown service"):
+        resolve_service(current, "operations", "missing")
+    with pytest.raises(ValueError, match="unknown release"):
+        resolve_service(current, "missing", "state-collect")
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_exception", "message"),
+    [
+        (
+            lambda raw: raw.update(services=[]),
+            TypeError,
+            "services must be a mapping",
+        ),
+        (
+            lambda raw: raw["services"].update({1: {}}),
+            TypeError,
+            "service name must be a string",
+        ),
+        (
+            lambda raw: raw["services"].update({"Bad": {}}),
+            ValueError,
+            "invalid service name",
+        ),
+        (
+            lambda raw: raw["services"].update({"refresh": []}),
+            TypeError,
+            "services.refresh must be a mapping",
+        ),
+        (
+            lambda raw: raw["services"]["refresh"].update(extra=True),
+            ValueError,
+            "has unknown key",
+        ),
+        (
+            lambda raw: raw["services"]["refresh"].update(command="sample-show"),
+            ValueError,
+            "exactly one command or job",
+        ),
+        (
+            lambda raw: raw["services"]["refresh"].pop("job"),
+            ValueError,
+            "exactly one command or job",
+        ),
+        (
+            lambda raw: (
+                raw["services"]["refresh"].pop("job"),
+                raw["services"]["refresh"].update(command=1),
+            ),
+            ValueError,
+            "references an unknown command",
+        ),
+        (
+            lambda raw: (
+                raw["services"]["refresh"].pop("job"),
+                raw["services"]["refresh"].update(command="missing"),
+            ),
+            ValueError,
+            "references an unknown command",
+        ),
+        (
+            lambda raw: raw["services"]["refresh"].update(job=1),
+            ValueError,
+            "references an unknown job",
+        ),
+        (
+            lambda raw: raw["services"]["refresh"].update(job="missing"),
+            ValueError,
+            "references an unknown job",
+        ),
+        (
+            lambda raw: raw["services"]["refresh"].update(init=[]),
+            TypeError,
+            "init must be a mapping",
+        ),
+        (
+            lambda raw: raw["services"]["refresh"]["init"].update(openrc={}),
+            ValueError,
+            "init has unknown key",
+        ),
+        (
+            lambda raw: raw["services"]["refresh"]["init"].update(systemd=[]),
+            TypeError,
+            "systemd must be a mapping",
+        ),
+        (
+            lambda raw: raw["services"]["refresh"]["init"]["systemd"].update(
+                extra=True
+            ),
+            ValueError,
+            "systemd has unknown key",
+        ),
+        (
+            lambda raw: raw["services"]["refresh"]["init"]["systemd"].pop(
+                "service"
+            ),
+            ValueError,
+            "service is required",
+        ),
+        (
+            lambda raw: raw["services"]["refresh"]["init"]["systemd"].update(
+                timer=1
+            ),
+            ValueError,
+            "timer must be a non-empty string",
+        ),
+        (
+            lambda raw: raw["services"]["refresh"]["init"]["systemd"].update(
+                timer=" "
+            ),
+            ValueError,
+            "timer must be a non-empty string",
+        ),
+    ],
+)
+def test_load_manifest_rejects_invalid_services(
+    release_factory,
+    mutate,
+    expected_exception: type[Exception],
+    message: str,
+) -> None:
+    root = release_factory(
+        jobs=("collect",),
+        service="refresh",
+    )
+    raw = _read_manifest(root)
+    mutate(raw)
+    _write_manifest(root, raw)
+
+    with pytest.raises(expected_exception, match=message):
+        load_manifest(root)
+
+
+def test_manifest_supports_command_service_without_timer(
+    release_factory,
+) -> None:
+    root = release_factory(
+        commands=("sample-show",),
+        jobs=("collect",),
+        service="refresh",
+    )
+    raw = _read_manifest(root)
+    service = raw["services"]["refresh"]
+    service.pop("job")
+    service["command"] = "sample-show"
+    service["init"]["systemd"].pop("timer")
+    _write_manifest(root, raw)
+
+    parsed = load_manifest(root).services["refresh"]
+
+    assert parsed.command == "sample-show"
+    assert parsed.job is None
+    assert parsed.systemd.timer is None
 
 
 @pytest.mark.parametrize(

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from atlas_operations.config_project import (
+    inventory_path,
     playbook_path,
     project_config,
     report_error,
@@ -29,15 +30,25 @@ def _load_command(name: str):
     return namespace["main"]
 
 
+def _load_job(name: str):
+    namespace = runpy.run_path(str(OPERATIONS / "jobs" / f"{name}.py"))
+    return namespace["main"]
+
+
 def _project(tmp_path: Path) -> Path:
     project = tmp_path / "provisioning"
     (project / "playbooks").mkdir(parents=True)
+    (project / "inventories/default").mkdir(parents=True)
     (project / "ansible.cfg").write_text(
         "[defaults]\ninventory=inventory.yml\n",
         encoding="utf-8",
     )
     (project / "playbooks/site.yml").write_text(
         "---\n- hosts: all\n",
+        encoding="utf-8",
+    )
+    (project / "inventories/default/hosts.yml").write_text(
+        "all:\n  hosts:\n    fixture:\n",
         encoding="utf-8",
     )
     return project
@@ -55,7 +66,13 @@ def test_operations_release_manifest_is_valid() -> None:
         "inventory-show",
         "config-diff-many",
     ]
-    assert manifest.jobs == {}
+    assert list(manifest.jobs) == ["inventory-refresh"]
+    assert manifest.jobs["inventory-refresh"].default_timeout_seconds == 300
+    service = manifest.services["inventory-refresh"]
+    assert service.job == "inventory-refresh"
+    assert service.systemd.service.name == "inventory-refresh.service"
+    assert service.systemd.timer is not None
+    assert service.systemd.timer.name == "inventory-refresh.timer"
     assert (OPERATIONS / "VERSION").read_text(encoding="utf-8") == "1.0.0\n"
     assert (OPERATIONS / "requirements.txt").read_text(encoding="utf-8").startswith(
         "ansible-core"
@@ -147,6 +164,10 @@ def test_project_validation_rejects_missing_and_symlinked_files(tmp_path: Path) 
         playbook_path(project, "../site")
     with pytest.raises(ValueError, match="playbook not found"):
         playbook_path(project, "site")
+    with pytest.raises(ValueError, match="invalid site name"):
+        inventory_path(project, "../default")
+    with pytest.raises(ValueError, match="inventory not found"):
+        inventory_path(project, "default")
 
     (project / "playbooks").mkdir()
     external_playbook = tmp_path / "site.yml"
@@ -157,6 +178,21 @@ def test_project_validation_rejects_missing_and_symlinked_files(tmp_path: Path) 
     (project / "playbooks/site.yml").unlink()
     (project / "playbooks/site.yml").write_text("---\n", encoding="utf-8")
     assert playbook_path(project, "site") == project / "playbooks/site.yml"
+
+    (project / "inventories/default").mkdir(parents=True)
+    external_inventory = tmp_path / "hosts.yml"
+    external_inventory.write_text("all:\n", encoding="utf-8")
+    (project / "inventories/default/hosts.yml").symlink_to(external_inventory)
+    with pytest.raises(ValueError, match="inventory not found"):
+        inventory_path(project, "default")
+    (project / "inventories/default/hosts.yml").unlink()
+    (project / "inventories/default/hosts.yml").write_text(
+        "all:\n",
+        encoding="utf-8",
+    )
+    assert inventory_path(project, "default") == (
+        project / "inventories/default/hosts.yml"
+    )
 
     with pytest.raises(ValueError, match="target must not be empty"):
         target_name(" ")
@@ -371,6 +407,48 @@ def test_config_diff_many_runs_through_shims_with_nested_correlation(
     assert all(child["cwd"] == str(PROVISIONING_FIXTURE) for child in children)
 
 
+def test_inventory_refresh_job_delegates_exact_argv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _project(tmp_path)
+    monkeypatch.chdir(project)
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    class Process:
+        returncode = 0
+
+    monkeypatch.setattr(
+        "atlas_operations.config_project.subprocess.run",
+        lambda command, **kwargs: calls.append((command, kwargs)) or Process(),
+    )
+
+    assert _load_job("inventory-refresh")(["--site", "default"]) == 0
+    command, kwargs = calls[0]
+    assert command == [
+        "ansible-inventory",
+        "-i",
+        "inventories/default/hosts.yml",
+        "--graph",
+        "--flush-cache",
+    ]
+    assert kwargs["cwd"] == project
+    assert kwargs["check"] is False
+    assert kwargs["shell"] is False
+
+
+def test_inventory_refresh_job_reports_invalid_site(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = _project(tmp_path)
+    monkeypatch.chdir(project)
+
+    assert _load_job("inventory-refresh")(["--site", "missing"]) == 2
+    assert "inventory not found" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     "command_name",
     [
@@ -390,6 +468,18 @@ def test_operation_script_entrypoints_show_help(
     with pytest.raises(SystemExit) as error:
         runpy.run_path(
             str(OPERATIONS / "commands" / f"{command_name}.py"),
+            run_name="__main__",
+        )
+    assert error.value.code == 0
+
+
+def test_operation_job_entrypoint_shows_help(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["inventory-refresh", "--help"])
+    with pytest.raises(SystemExit) as error:
+        runpy.run_path(
+            str(OPERATIONS / "jobs/inventory-refresh.py"),
             run_name="__main__",
         )
     assert error.value.code == 0

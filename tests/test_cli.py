@@ -79,6 +79,7 @@ scripts:
     assert "active releases count: 2" in status
     assert "release: sample 2026.05.10-001" in status
     assert "release: sample2 0.2.0" in status
+    assert "services count: 0" in status
 
 
 def test_install_from_registry_alias(monkeypatch, tmp_path: Path, capsys) -> None:

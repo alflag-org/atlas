@@ -20,3 +20,17 @@ commands:
   config-diff-many:
     runtime: python
     entrypoint: commands/config-diff-many.py
+
+jobs:
+  inventory-refresh:
+    runtime: python
+    entrypoint: jobs/inventory-refresh.py
+    default_timeout_seconds: 300
+
+services:
+  inventory-refresh:
+    job: inventory-refresh
+    init:
+      systemd:
+        service: init/systemd/inventory-refresh.service
+        timer: init/systemd/inventory-refresh.timer

@@ -5,7 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .manifests import ExecutableArtifact, ReleaseManifest, load_manifest, validate_name
+from .manifests import (
+    ExecutableArtifact,
+    ReleaseManifest,
+    ServiceArtifact,
+    load_manifest,
+    validate_name,
+)
 from .releases import read_version
 
 
@@ -26,6 +32,14 @@ class ExecutableRef:
     release: ActiveRelease
     artifact_type: str
     artifact: ExecutableArtifact
+
+
+@dataclass(frozen=True)
+class ServiceRef:
+    """A service artifact with active release metadata."""
+
+    release: ActiveRelease
+    service: ServiceArtifact
 
 
 def active_releases(current_root: Path) -> list[ActiveRelease]:
@@ -97,3 +111,18 @@ def resolve_job(current_root: Path, release_name: str, job_name: str) -> Executa
     if job is None:
         raise ValueError(f"unknown job: {release_name}/{job_name}")
     return ExecutableRef(release=release, artifact_type="job", artifact=job)
+
+
+def resolve_service(
+    current_root: Path,
+    release_name: str,
+    service_name: str,
+) -> ServiceRef:
+    """Resolve one service definition."""
+    release = release_index(current_root).get(release_name)
+    if release is None:
+        raise ValueError(f"unknown release: {release_name}")
+    service = release.manifest.services.get(service_name)
+    if service is None:
+        raise ValueError(f"unknown service: {release_name}/{service_name}")
+    return ServiceRef(release=release, service=service)

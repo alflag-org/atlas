@@ -1,0 +1,11 @@
+schema: atlas.release/v1
+name: basic
+commands:
+  sample:
+    runtime: python
+    entrypoint: commands/sample.py
+  nested-sample:
+    runtime: python
+    entrypoint: commands/nested-sample.py
+jobs: {}
+services: {}

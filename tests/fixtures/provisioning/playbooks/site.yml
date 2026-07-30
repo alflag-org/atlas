@@ -1,0 +1,5 @@
+---
+- name: Fixture play
+  hosts: all
+  gather_facts: false
+  tasks: []

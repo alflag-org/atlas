@@ -4,441 +4,339 @@ import os
 from pathlib import Path
 import stat
 import subprocess
-import sys
 
 import pytest
 
-from atlas.runtime import install_runtime, runtime_status
+from atlas.runtime import (
+    _executable_shebang,
+    _normalize_roots,
+    _runtime_requirements,
+    _validate_console_script_shebangs,
+    install_runtime,
+    python_bin,
+    runtime_status,
+)
 
 
-def test_runtime_install_requires_pyenv(monkeypatch, tmp_path: Path) -> None:
+def _fake_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> tuple[list[list[str]], Path]:
+    calls: list[list[str]] = []
+    pyenv_root = tmp_path / "pyenv/versions/3.12.3"
+    pyenv_python = pyenv_root / "bin/python"
+    pyenv_python.parent.mkdir(parents=True)
+    pyenv_python.write_text("", encoding="utf-8")
+    monkeypatch.setattr("atlas.runtime.shutil.which", lambda _: "/usr/bin/pyenv")
+
+    def fake_run(
+        command: list[str],
+        check: bool,
+        capture_output: bool = False,
+        text: bool = False,
+        env: dict[str, str] | None = None,
+    ):
+        assert check is True
+        calls.append(command)
+        if capture_output:
+            class Process:
+                stdout = f"{pyenv_root}\n"
+
+            return Process()
+        if command[:3] == [str(pyenv_python), "-m", "venv"]:
+            runtime_python = Path(command[3]) / "bin/python"
+            runtime_python.parent.mkdir(parents=True)
+            runtime_python.write_text("", encoding="utf-8")
+        return None
+
+    monkeypatch.setattr("atlas.runtime.subprocess.run", fake_run)
+    return calls, pyenv_python
+
+
+def test_runtime_install_builds_final_environment_and_requirements(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls, pyenv_python = _fake_runtime(monkeypatch, tmp_path)
+    runtime = tmp_path / "runtime"
+    old = runtime / "python/envs/scripts"
+    old.mkdir(parents=True)
+    (old / "stale").write_text("old", encoding="utf-8")
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "requirements.lock").write_text("one\n", encoding="utf-8")
+    (first / "requirements.txt").write_text("ignored\n", encoding="utf-8")
+    (second / "requirements.txt").write_text("two\n", encoding="utf-8")
+
+    result = install_runtime(runtime, "3.12.3", [first, second])
+
+    assert result == runtime / "python/envs/scripts/bin/python"
+    assert not (result.parent.parent / "stale").exists()
+    assert calls[:3] == [
+        ["pyenv", "install", "-s", "3.12.3"],
+        ["pyenv", "prefix", "3.12.3"],
+        [str(pyenv_python), "-m", "venv", str(runtime / f"python/envs/scripts.tmp.{os.getpid()}")],
+    ]
+    assert calls[3][1:] == ["-m", "pip", "install", "--upgrade", "pip"]
+    assert calls[4][1:] == [
+        "-m",
+        "pip",
+        "install",
+        "PyYAML",
+        "-r",
+        str(first / "requirements.lock"),
+        "-r",
+        str(second / "requirements.txt"),
+    ]
+    assert calls[5][1:] == ["-m", "pip", "check"]
+    assert not list((runtime / "python/envs").glob("scripts.bak.*"))
+
+
+def test_runtime_install_sets_default_and_explicit_temp_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    envs: list[dict[str, str]] = []
+    calls, _ = _fake_runtime(monkeypatch, tmp_path)
+    original = subprocess.run
+
+    def capture(
+        command,
+        check,
+        capture_output=False,
+        text=False,
+        env=None,
+    ):
+        assert env is not None
+        envs.append(env)
+        return original(command, check=check, capture_output=capture_output, text=text, env=env)
+
+    fake_run = __import__("atlas.runtime").runtime.subprocess.run
+
+    def wrapped(command, check, capture_output=False, text=False, env=None):
+        assert env is not None
+        envs.append(env)
+        return fake_run(
+            command,
+            check=check,
+            capture_output=capture_output,
+            text=text,
+            env=env,
+        )
+
+    monkeypatch.setattr("atlas.runtime.subprocess.run", wrapped)
+    monkeypatch.delenv("TMPDIR", raising=False)
+    monkeypatch.delenv("PYTHON_BUILD_CACHE_PATH", raising=False)
+    runtime = tmp_path / "opt/atlas/runtime"
+    tmp_dir = tmp_path / "opt/atlas/tmp"
+    cache = tmp_path / "var/cache/python-build"
+    install_runtime(runtime, "3.12.3", tmp_dir=tmp_dir, python_build_cache_path=cache)
+    assert envs and all(env["TMPDIR"] == str(tmp_dir) for env in envs)
+    assert all(env["PYTHON_BUILD_CACHE_PATH"] == str(cache) for env in envs)
+    assert tmp_dir.is_dir() and cache.is_dir()
+    assert calls
+
+    explicit = tmp_path / "explicit"
+    monkeypatch.setenv("TMPDIR", str(explicit))
+    install_runtime(tmp_path / "second-runtime", "3.12.3", tmp_dir=tmp_path / "unused")
+    assert explicit.is_dir()
+    assert not (tmp_path / "unused").exists()
+
+
+def test_runtime_install_requires_pyenv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr("atlas.runtime.shutil.which", lambda _: None)
-
     with pytest.raises(ValueError, match="pyenv command is required"):
         install_runtime(tmp_path / "runtime", "3.12.3")
 
 
-def test_runtime_install_recreates_venv_and_installs_base_packages(monkeypatch, tmp_path: Path) -> None:
-    calls: list[list[str]] = []
-    runtime = tmp_path / "runtime"
-    scripts_venv = runtime / "python/envs/scripts"
-    pyenv_root = tmp_path / "pyenv/versions/3.12.3"
-    pyenv_python = pyenv_root / "bin/python"
-    pyenv_python.parent.mkdir(parents=True)
-    pyenv_python.write_text("", encoding="utf-8")
-    scripts_venv.mkdir(parents=True)
-    marker = scripts_venv / "stale.txt"
-    marker.write_text("stale", encoding="utf-8")
-
+def test_runtime_subprocess_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr("atlas.runtime.shutil.which", lambda _: "/usr/bin/pyenv")
 
-    def fake_run(
-        cmd: list[str],
-        check: bool,
-        capture_output: bool = False,
-        text: bool = False,
-        env: dict[str, str] | None = None,
-    ):
-        assert check is True
-        calls.append(cmd)
-        if capture_output:
-            class Proc:
-                stdout = f"{pyenv_root}\n"
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("missing")
 
-            return Proc()
-        if cmd[:3] == [str(pyenv_python), "-m", "venv"]:
-            target = Path(cmd[3])
-            target.mkdir(parents=True, exist_ok=True)
-            (target / "bin").mkdir(parents=True, exist_ok=True)
-            (target / "bin/python").write_text("", encoding="utf-8")
-        return None
+    monkeypatch.setattr("atlas.runtime.subprocess.run", missing)
+    with pytest.raises(ValueError, match="pyenv command is required"):
+        install_runtime(tmp_path / "runtime", "3.12.3")
 
-    monkeypatch.setattr("atlas.runtime.subprocess.run", fake_run)
+    def failed(command, **kwargs):
+        raise subprocess.CalledProcessError(1, command)
 
-    scripts_python = install_runtime(runtime, "3.12.3")
-
-    assert scripts_python == scripts_venv / "bin/python"
-    assert not marker.exists()
-    assert calls[0:2] == [
-        ["pyenv", "install", "-s", "3.12.3"],
-        ["pyenv", "prefix", "3.12.3"],
-    ]
-    assert calls[2][:3] == [str(pyenv_python), "-m", "venv"]
-    assert calls[3][0].endswith("/bin/python")
-    assert calls[3][1:] == ["-m", "pip", "install", "--upgrade", "pip"]
-    assert calls[4][0].endswith("/bin/python")
-    assert calls[4][1:] == ["-m", "pip", "install", "fire", "PyYAML"]
-    assert calls[5][0].endswith("/bin/python")
-    assert calls[5][1:] == ["-m", "pip", "check"]
+    monkeypatch.setattr("atlas.runtime.subprocess.run", failed)
+    with pytest.raises(ValueError, match="pyenv command failed"):
+        install_runtime(tmp_path / "runtime", "3.12.3")
 
 
-def test_runtime_install_sets_default_temp_environment(monkeypatch, tmp_path: Path) -> None:
-    envs: list[dict[str, str]] = []
-    runtime = tmp_path / "opt/atlas/runtime"
-    atlas_tmp = tmp_path / "opt/atlas/tmp"
-    build_cache = tmp_path / "var/lib/atlas/cache/python-build"
-    pyenv_root = tmp_path / "pyenv/versions/3.12.3"
-    pyenv_python = pyenv_root / "bin/python"
-    pyenv_python.parent.mkdir(parents=True)
-    pyenv_python.write_text("", encoding="utf-8")
-    monkeypatch.delenv("TMPDIR", raising=False)
-    monkeypatch.delenv("PYTHON_BUILD_CACHE_PATH", raising=False)
-    monkeypatch.setattr("atlas.runtime.shutil.which", lambda _: "/usr/bin/pyenv")
-
-    def fake_run(
-        cmd: list[str],
-        check: bool,
-        capture_output: bool = False,
-        text: bool = False,
-        env: dict[str, str] | None = None,
-    ):
-        assert env is not None
-        envs.append(env)
-        if capture_output:
-            class Proc:
-                stdout = f"{pyenv_root}\n"
-
-            return Proc()
-        if cmd[:3] == [str(pyenv_python), "-m", "venv"]:
-            scripts_python = Path(cmd[3]) / "bin/python"
-            scripts_python.parent.mkdir(parents=True, exist_ok=True)
-            scripts_python.write_text("", encoding="utf-8")
-        return None
-
-    monkeypatch.setattr("atlas.runtime.subprocess.run", fake_run)
-
-    install_runtime(runtime, "3.12.3", tmp_dir=atlas_tmp, python_build_cache_path=build_cache)
-
-    assert envs
-    assert all(env["TMPDIR"] == str(atlas_tmp) for env in envs)
-    assert all(env["PYTHON_BUILD_CACHE_PATH"] == str(build_cache) for env in envs)
-    assert atlas_tmp.is_dir()
-    assert build_cache.is_dir()
-
-
-def test_runtime_install_respects_explicit_tmpdir(monkeypatch, tmp_path: Path) -> None:
-    envs: list[dict[str, str]] = []
-    runtime = tmp_path / "opt/atlas/runtime"
-    explicit_tmp = tmp_path / "explicit-tmp"
-    atlas_tmp = tmp_path / "opt/atlas/tmp"
-    build_cache = tmp_path / "var/lib/atlas/cache/python-build"
-    pyenv_root = tmp_path / "pyenv/versions/3.12.3"
-    pyenv_python = pyenv_root / "bin/python"
-    pyenv_python.parent.mkdir(parents=True)
-    pyenv_python.write_text("", encoding="utf-8")
-    monkeypatch.setenv("TMPDIR", str(explicit_tmp))
-    monkeypatch.delenv("PYTHON_BUILD_CACHE_PATH", raising=False)
-    monkeypatch.setattr("atlas.runtime.shutil.which", lambda _: "/usr/bin/pyenv")
-
-    def fake_run(
-        cmd: list[str],
-        check: bool,
-        capture_output: bool = False,
-        text: bool = False,
-        env: dict[str, str] | None = None,
-    ):
-        assert env is not None
-        envs.append(env)
-        if capture_output:
-            class Proc:
-                stdout = f"{pyenv_root}\n"
-
-            return Proc()
-        if cmd[:3] == [str(pyenv_python), "-m", "venv"]:
-            scripts_python = Path(cmd[3]) / "bin/python"
-            scripts_python.parent.mkdir(parents=True, exist_ok=True)
-            scripts_python.write_text("", encoding="utf-8")
-        return None
-
-    monkeypatch.setattr("atlas.runtime.subprocess.run", fake_run)
-
-    install_runtime(runtime, "3.12.3", tmp_dir=atlas_tmp, python_build_cache_path=build_cache)
-
-    assert envs
-    assert all(env["TMPDIR"] == str(explicit_tmp) for env in envs)
-    assert explicit_tmp.is_dir()
-    assert not atlas_tmp.exists()
-
-
-def test_runtime_install_keeps_console_scripts_relocatable_and_executable(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_runtime_rejects_empty_prefix_and_missing_python(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    original_run = subprocess.run
-    runtime = tmp_path / "runtime"
-    scripts_venv = runtime / "python/envs/scripts"
-    pyenv_root = tmp_path / "pyenv/versions/3.12.3"
-    pyenv_python = pyenv_root / "bin/python"
-    pyenv_python.parent.mkdir(parents=True)
-    pyenv_python.write_text("", encoding="utf-8")
     monkeypatch.setattr("atlas.runtime.shutil.which", lambda _: "/usr/bin/pyenv")
 
-    def fake_run(
-        cmd: list[str],
-        check: bool,
-        capture_output: bool = False,
-        text: bool = False,
-        env: dict[str, str] | None = None,
-    ):
-        if capture_output:
-            class Proc:
-                stdout = f"{pyenv_root}\n"
+    def empty(command, **kwargs):
+        class Process:
+            stdout = "\n"
 
-            return Proc()
-        if cmd[:3] == [str(pyenv_python), "-m", "venv"]:
-            scripts_python = Path(cmd[3]) / "bin/python"
-            scripts_python.parent.mkdir(parents=True, exist_ok=True)
-            scripts_python.symlink_to(sys.executable)
-        if cmd[1:] == ["-m", "pip", "install", "fire", "PyYAML"]:
-            console_script = Path(cmd[0]).parent / "atlas-sample"
-            console_script.write_text(f"#!{cmd[0]}\nprint('console ok')\n", encoding="utf-8")
-            console_script.chmod(console_script.stat().st_mode | stat.S_IXUSR)
-        return None
+        return Process()
 
-    monkeypatch.setattr("atlas.runtime.subprocess.run", fake_run)
+    monkeypatch.setattr("atlas.runtime.subprocess.run", empty)
+    with pytest.raises(ValueError, match="did not return an install prefix"):
+        install_runtime(tmp_path / "runtime", "3.12.3")
 
-    install_runtime(runtime, "3.12.3")
+    def missing_python(command, **kwargs):
+        class Process:
+            stdout = str(tmp_path / "missing-prefix")
 
-    console_script = scripts_venv / "bin/atlas-sample"
-    shebang = console_script.read_text(encoding="utf-8").splitlines()[0]
-    assert shebang == f"#!{scripts_venv / 'bin/python'}"
-    assert "scripts.tmp." not in shebang
-    proc = original_run([str(console_script)], check=True, capture_output=True, text=True)
-    assert proc.stdout == "console ok\n"
+        return Process()
+
+    monkeypatch.setattr("atlas.runtime.subprocess.run", missing_python)
+    with pytest.raises(ValueError, match="Python executable not found"):
+        install_runtime(tmp_path / "runtime", "3.12.3")
 
 
-def test_runtime_install_rejects_stale_temp_shebang(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_runtime_install_rolls_back_after_pip_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls, _ = _fake_runtime(monkeypatch, tmp_path)
+    fake_run = __import__("atlas.runtime").runtime.subprocess.run
+
+    def fail_pip(command, **kwargs):
+        if command[1:] == ["-m", "pip", "install", "--upgrade", "pip"]:
+            raise subprocess.CalledProcessError(1, command)
+        return fake_run(command, **kwargs)
+
+    monkeypatch.setattr("atlas.runtime.subprocess.run", fail_pip)
     runtime = tmp_path / "runtime"
-    pyenv_root = tmp_path / "pyenv/versions/3.12.3"
-    pyenv_python = pyenv_root / "bin/python"
-    pyenv_python.parent.mkdir(parents=True)
-    pyenv_python.write_text("", encoding="utf-8")
-    monkeypatch.setattr("atlas.runtime.shutil.which", lambda _: "/usr/bin/pyenv")
-
-    def fake_run(
-        cmd: list[str],
-        check: bool,
-        capture_output: bool = False,
-        text: bool = False,
-        env: dict[str, str] | None = None,
-    ):
-        if capture_output:
-            class Proc:
-                stdout = f"{pyenv_root}\n"
-
-            return Proc()
-        if cmd[:3] == [str(pyenv_python), "-m", "venv"]:
-            scripts_python = Path(cmd[3]) / "bin/python"
-            scripts_python.parent.mkdir(parents=True, exist_ok=True)
-            scripts_python.write_text("", encoding="utf-8")
-        if cmd[1:] == ["-m", "pip", "install", "fire", "PyYAML"]:
-            stale_python = runtime / "python/envs" / f"scripts.tmp.{os.getpid()}" / "bin/python"
-            console_script = Path(cmd[0]).parent / "atlas-stale"
-            console_script.write_text(f"#!{stale_python}\nprint('stale')\n", encoding="utf-8")
-            console_script.chmod(console_script.stat().st_mode | stat.S_IXUSR)
-        return None
-
-    monkeypatch.setattr("atlas.runtime.subprocess.run", fake_run)
-
-    with pytest.raises(ValueError, match="console script shebang must point to"):
+    old = runtime / "python/envs/scripts"
+    old.mkdir(parents=True)
+    (old / "old").write_text("old", encoding="utf-8")
+    with pytest.raises(ValueError, match="command failed"):
         install_runtime(runtime, "3.12.3")
-
-    assert not (runtime / "python/envs/scripts").exists()
-
-
-def test_runtime_install_prefers_requirements_lock(monkeypatch, tmp_path: Path) -> None:
-    calls: list[list[str]] = []
-    runtime = tmp_path / "runtime"
-    scripts_root = tmp_path / "scripts/current"
-    scripts_root.mkdir(parents=True)
-    (scripts_root / "requirements.lock").write_text("requests==2.32.3\n", encoding="utf-8")
-    (scripts_root / "requirements.txt").write_text("click==8.1.7\n", encoding="utf-8")
-    pyenv_root = tmp_path / "pyenv/versions/3.12.3"
-    pyenv_python = pyenv_root / "bin/python"
-    pyenv_python.parent.mkdir(parents=True)
-    pyenv_python.write_text("", encoding="utf-8")
-
-    monkeypatch.setattr("atlas.runtime.shutil.which", lambda _: "/usr/bin/pyenv")
-
-    def fake_run(
-        cmd: list[str],
-        check: bool,
-        capture_output: bool = False,
-        text: bool = False,
-        env: dict[str, str] | None = None,
-    ):
-        assert check is True
-        calls.append(cmd)
-        if capture_output:
-            class Proc:
-                stdout = f"{pyenv_root}\n"
-
-            return Proc()
-        if cmd[:3] == [str(pyenv_python), "-m", "venv"]:
-            scripts_python = Path(cmd[3]) / "bin/python"
-            scripts_python.parent.mkdir(parents=True, exist_ok=True)
-            scripts_python.write_text("", encoding="utf-8")
-        return None
-
-    monkeypatch.setattr("atlas.runtime.subprocess.run", fake_run)
-
-    install_runtime(runtime, "3.12.3", scripts_root)
-
-    assert calls[-2][0].endswith("/bin/python")
-    assert calls[-2][1:] == [
-        "-m",
-        "pip",
-        "install",
-        "fire",
-        "PyYAML",
-        "-r",
-        str(scripts_root / "requirements.lock"),
-    ]
+    assert (old / "old").exists()
+    assert calls
 
 
-def test_runtime_install_falls_back_to_requirements_txt(monkeypatch, tmp_path: Path) -> None:
-    calls: list[list[str]] = []
-    runtime = tmp_path / "runtime"
-    scripts_root = tmp_path / "scripts/current"
-    scripts_root.mkdir(parents=True)
-    (scripts_root / "requirements.txt").write_text("click==8.1.7\n", encoding="utf-8")
-    pyenv_root = tmp_path / "pyenv/versions/3.12.3"
-    pyenv_python = pyenv_root / "bin/python"
-    pyenv_python.parent.mkdir(parents=True)
-    pyenv_python.write_text("", encoding="utf-8")
-
-    monkeypatch.setattr("atlas.runtime.shutil.which", lambda _: "/usr/bin/pyenv")
-
-    def fake_run(
-        cmd: list[str],
-        check: bool,
-        capture_output: bool = False,
-        text: bool = False,
-        env: dict[str, str] | None = None,
-    ):
-        assert check is True
-        calls.append(cmd)
-        if capture_output:
-            class Proc:
-                stdout = f"{pyenv_root}\n"
-
-            return Proc()
-        if cmd[:3] == [str(pyenv_python), "-m", "venv"]:
-            scripts_python = Path(cmd[3]) / "bin/python"
-            scripts_python.parent.mkdir(parents=True, exist_ok=True)
-            scripts_python.write_text("", encoding="utf-8")
-        return None
-
-    monkeypatch.setattr("atlas.runtime.subprocess.run", fake_run)
-
-    install_runtime(runtime, "3.12.3", scripts_root)
-
-    assert calls[-2][0].endswith("/bin/python")
-    assert calls[-2][1:] == [
-        "-m",
-        "pip",
-        "install",
-        "fire",
-        "PyYAML",
-        "-r",
-        str(scripts_root / "requirements.txt"),
-    ]
-
-
-def test_runtime_install_includes_requirements_from_all_active_releases(monkeypatch, tmp_path: Path) -> None:
-    calls: list[list[str]] = []
-    runtime = tmp_path / "runtime"
-    common = tmp_path / "scripts/releases/common/0.1.0"
-    kitsunebi = tmp_path / "scripts/releases/kitsunebi/0.2.0"
-    common.mkdir(parents=True)
-    kitsunebi.mkdir(parents=True)
-    (common / "requirements.lock").write_text("requests==2.32.3\n", encoding="utf-8")
-    (kitsunebi / "requirements.txt").write_text("click==8.1.7\n", encoding="utf-8")
-    pyenv_root = tmp_path / "pyenv/versions/3.12.3"
-    pyenv_python = pyenv_root / "bin/python"
-    pyenv_python.parent.mkdir(parents=True)
-    pyenv_python.write_text("", encoding="utf-8")
-
-    monkeypatch.setattr("atlas.runtime.shutil.which", lambda _: "/usr/bin/pyenv")
-
-    def fake_run(
-        cmd: list[str],
-        check: bool,
-        capture_output: bool = False,
-        text: bool = False,
-        env: dict[str, str] | None = None,
-    ):
-        assert check is True
-        calls.append(cmd)
-        if capture_output:
-            class Proc:
-                stdout = f"{pyenv_root}\n"
-
-            return Proc()
-        if cmd[:3] == [str(pyenv_python), "-m", "venv"]:
-            scripts_python = Path(cmd[3]) / "bin/python"
-            scripts_python.parent.mkdir(parents=True, exist_ok=True)
-            scripts_python.write_text("", encoding="utf-8")
-        return None
-
-    monkeypatch.setattr("atlas.runtime.subprocess.run", fake_run)
-
-    install_runtime(runtime, "3.12.3", [common, kitsunebi])
-
-    assert calls[-2][0].endswith("/bin/python")
-    assert calls[-2][1:] == [
-        "-m",
-        "pip",
-        "install",
-        "fire",
-        "PyYAML",
-        "-r",
-        str(common / "requirements.lock"),
-        "-r",
-        str(kitsunebi / "requirements.txt"),
-    ]
-
-
-def test_runtime_status_includes_pyenv_provider(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("atlas.runtime.shutil.which", lambda _: "/usr/bin/pyenv")
-    monkeypatch.setattr("atlas.runtime._run_stdout", lambda cmd, env=None: str(tmp_path / "pyenv/versions/3.12.3"))
-    scripts_python = tmp_path / "runtime/python/envs/scripts/bin/python"
-    scripts_python.parent.mkdir(parents=True, exist_ok=True)
-    scripts_python.write_text("", encoding="utf-8")
-
-    status = runtime_status(tmp_path / "runtime", "3.12.3")
-
-    assert status.configured_version == "3.12.3"
-    assert status.provider == "pyenv"
-    assert status.provider_available is True
-    assert status.pyenv_python == tmp_path / "pyenv/versions/3.12.3/bin/python"
-    assert status.scripts_venv == tmp_path / "runtime/python/envs/scripts"
-    assert status.scripts_python == scripts_python
-    assert status.scripts_python_exists is True
-
-
-def test_runtime_status_does_not_fail_without_pyenv(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("atlas.runtime.shutil.which", lambda _: None)
-
-    status = runtime_status(tmp_path / "runtime", "3.12.3")
-
-    assert status.configured_version == "3.12.3"
-    assert status.provider == "pyenv"
-    assert status.provider_available is False
-    assert status.pyenv_python is None
-
-
-def test_runtime_status_does_not_fail_when_configured_pyenv_python_is_missing(
-    monkeypatch, tmp_path: Path
+@pytest.mark.parametrize("has_existing", [False, True])
+def test_runtime_install_handles_final_rename_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    has_existing: bool,
 ) -> None:
+    _fake_runtime(monkeypatch, tmp_path)
+    runtime = tmp_path / "runtime"
+    environment = runtime / "python/envs/scripts"
+    if has_existing:
+        environment.mkdir(parents=True)
+        (environment / "old").write_text("old", encoding="utf-8")
+    original = Path.rename
+
+    def fail_temporary(self: Path, target: Path):
+        if self.name.startswith("scripts.tmp."):
+            raise RuntimeError("rename failed")
+        return original(self, target)
+
+    monkeypatch.setattr(Path, "rename", fail_temporary)
+    with pytest.raises(RuntimeError, match="rename failed"):
+        install_runtime(runtime, "3.12.3")
+    assert environment.exists() is has_existing
+    if has_existing:
+        assert (environment / "old").exists()
+
+
+def test_console_script_shebang_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls, pyenv_python = _fake_runtime(monkeypatch, tmp_path)
+    fake_run = __import__("atlas.runtime").runtime.subprocess.run
+
+    def add_stale_script(command, **kwargs):
+        result = fake_run(command, **kwargs)
+        if command[:3] == [str(pyenv_python), "-m", "venv"]:
+            script = Path(command[3]) / "bin/tool"
+            script.write_text(f"#!{command[3]}/bin/python\n", encoding="utf-8")
+            script.chmod(script.stat().st_mode | stat.S_IXUSR)
+        return result
+
+    monkeypatch.setattr("atlas.runtime.subprocess.run", add_stale_script)
+    with pytest.raises(ValueError, match="shebang must point"):
+        install_runtime(tmp_path / "runtime", "3.12.3")
+    assert calls
+
+
+def test_console_script_rejects_other_runtime_environment(tmp_path: Path) -> None:
+    environment = tmp_path / "envs/scripts"
+    bin_dir = environment / "bin"
+    bin_dir.mkdir(parents=True)
+    tool = bin_dir / "tool"
+    tool.write_text(f"#!{tmp_path / 'envs/other/bin/python'}\n", encoding="utf-8")
+    tool.chmod(0o755)
+    with pytest.raises(ValueError, match="shebang must point"):
+        _validate_console_script_shebangs(environment, tmp_path / "unrelated")
+
+    tool.write_text(f"#!{environment / 'bin/python'}\n", encoding="utf-8")
+    _validate_console_script_shebangs(environment, tmp_path / "unrelated")
+
+
+def test_executable_shebang_helper(tmp_path: Path) -> None:
+    assert _executable_shebang(tmp_path / "missing") is None
+    plain = tmp_path / "plain"
+    plain.write_text("#!/bin/sh\n", encoding="utf-8")
+    assert _executable_shebang(plain) is None
+    plain.chmod(0o755)
+    plain.write_text("echo x\n", encoding="utf-8")
+    assert _executable_shebang(plain) is None
+    plain.write_text("#!/bin/sh\r\n", encoding="utf-8")
+    assert _executable_shebang(plain) == "#!/bin/sh"
+
+
+def test_runtime_status_variants(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    monkeypatch.setattr("atlas.runtime.shutil.which", lambda _: None)
+    unavailable = runtime_status(runtime, "3.12.3")
+    assert unavailable.provider_available is False
+    assert unavailable.pyenv_python is None
+    assert unavailable.runtime_python_exists is False
+
+    prefix = tmp_path / "pyenv/versions/3.12.3"
+
+    def success(command, **kwargs):
+        class Process:
+            stdout = f"{prefix}\n"
+
+        return Process()
+
     monkeypatch.setattr("atlas.runtime.shutil.which", lambda _: "/usr/bin/pyenv")
+    monkeypatch.setattr("atlas.runtime.subprocess.run", success)
+    available = runtime_status(runtime, "3.12.3")
+    assert available.pyenv_python == prefix / "bin/python"
+    assert available.artifacts_venv == runtime / "python/envs/scripts"
 
-    def fake_run_stdout(cmd: list[str], env: dict[str, str] | None = None) -> str:
-        raise ValueError(f"{cmd[0]} command failed: {' '.join(cmd)}")
+    def failure(command, **kwargs):
+        raise subprocess.CalledProcessError(1, command)
 
-    monkeypatch.setattr("atlas.runtime._run_stdout", fake_run_stdout)
+    monkeypatch.setattr("atlas.runtime.subprocess.run", failure)
+    failed = runtime_status(runtime, "3.12.3")
+    assert "pyenv command failed" in str(failed.pyenv_python_error)
 
-    status = runtime_status(tmp_path / "runtime", "3.12.3")
+    def missing(command, **kwargs):
+        raise FileNotFoundError("missing")
 
-    assert status.provider_available is True
-    assert status.pyenv_python is None
-    assert status.pyenv_python_error == "pyenv command failed: pyenv prefix 3.12.3"
+    monkeypatch.setattr("atlas.runtime.subprocess.run", missing)
+    missing_status = runtime_status(runtime, "3.12.3")
+    assert "command is required" in str(missing_status.pyenv_python_error)
+    assert runtime_status(runtime).configured_version is None
+
+
+def test_runtime_small_helpers(tmp_path: Path) -> None:
+    root = tmp_path / "venv"
+    assert python_bin(root) == root / "bin/python"
+    assert _normalize_roots(None) is None
+    assert _normalize_roots(root) == [root]
+    assert _normalize_roots((root,)) == [root]
+    assert _runtime_requirements(None) == ["PyYAML"]
+    root.mkdir()
+    assert _runtime_requirements([root]) == ["PyYAML"]

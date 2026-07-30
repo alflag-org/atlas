@@ -1,0 +1,7 @@
+[Unit]
+Description=Refresh the provisioning inventory cache
+
+[Service]
+Type=oneshot
+User=ops
+ExecStart=/opt/atlas/bin/atlas job instance run provisioning-inventory-refresh

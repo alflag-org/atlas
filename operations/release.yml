@@ -1,0 +1,36 @@
+schema: atlas.release/v1
+name: operations
+
+commands:
+  config-validate:
+    runtime: python
+    entrypoint: commands/config-validate.py
+  config-check:
+    runtime: python
+    entrypoint: commands/config-check.py
+  config-diff:
+    runtime: python
+    entrypoint: commands/config-diff.py
+  config-apply:
+    runtime: python
+    entrypoint: commands/config-apply.py
+  inventory-show:
+    runtime: python
+    entrypoint: commands/inventory-show.py
+  config-diff-many:
+    runtime: python
+    entrypoint: commands/config-diff-many.py
+
+jobs:
+  inventory-refresh:
+    runtime: python
+    entrypoint: jobs/inventory-refresh.py
+    default_timeout_seconds: 300
+
+services:
+  inventory-refresh:
+    job: inventory-refresh
+    init:
+      systemd:
+        service: init/systemd/inventory-refresh.service
+        timer: init/systemd/inventory-refresh.timer

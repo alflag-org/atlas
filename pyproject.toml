@@ -4,22 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "atlas"
-version = "0.3.0"
+version = "1.0.0"
 requires-python = ">=3.11"
 dependencies = [
   "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
-scripts = [
-  "fire>=0.7",
-]
 dev = [
   "build>=1.2",
   "coverage[toml]>=7.0",
   "pytest>=8",
   "ruff>=0.6",
-  "fire>=0.7",
   "shibuya>=2026.5.19",
   "sphinx>=8.1",
 ]
@@ -37,13 +33,16 @@ include = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = [
+  "src",
+  "operations/modules",
+]
 
 [tool.coverage.run]
 branch = true
 source = [
-  "atlas",
-  "atlas_core",
+  "src",
+  "operations",
 ]
 
 [tool.coverage.report]

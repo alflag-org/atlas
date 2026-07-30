@@ -1,0 +1,8 @@
+schema: atlas.release/v1
+name: companion
+commands:
+  sample-show:
+    runtime: python
+    entrypoint: commands/sample-show.py
+jobs: {}
+services: {}

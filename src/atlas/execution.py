@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -192,8 +193,22 @@ def _normalize_exit_code(return_code: int) -> int:
 
 
 def _append_run_log(paths: AtlasPaths, record: dict[str, object]) -> None:
+    if paths.logs.is_symlink() or (paths.logs.exists() and not paths.logs.is_dir()):
+        raise ValueError(f"logs path must be a directory: {paths.logs}")
     paths.logs.mkdir(parents=True, exist_ok=True)
-    with (paths.logs / "runs.jsonl").open("a", encoding="utf-8") as handle:
+    path = paths.logs / "runs.jsonl"
+    try:
+        descriptor = os.open(
+            path,
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+        )
+    except OSError as exc:
+        raise ValueError(f"run log must be a regular file: {path}") from exc
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise ValueError(f"run log must be a regular file: {path}")
+    with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 

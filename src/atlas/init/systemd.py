@@ -112,20 +112,12 @@ class SystemdAdapter:
                 f"declared command {service.service.command}: {source}"
             )
 
-        expected = (
-            f"ExecStart=/opt/atlas/bin/atlas job run {service.release.name} "
-            f"{service.service.job}"
-        )
-        if exec_start == expected or exec_start == expected + " --" or exec_start.startswith(
-            expected + " -- "
-        ):
-            return
-
         match = _INSTANCE_EXEC_START_RE.fullmatch(exec_start)
         if match is None:
             raise ValueError(
-                "systemd service ExecStart must use the stable Atlas launcher for "
-                f"declared job {service.release.name}/{service.service.job}: {source}"
+                "systemd job service ExecStart must use the stable Atlas launcher "
+                "through a matching job instance for "
+                f"{service.release.name}/{service.service.job}: {source}"
             )
         self._validate_job_instance(service, text, match.group("instance"))
 

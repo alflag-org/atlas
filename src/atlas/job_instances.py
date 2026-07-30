@@ -44,9 +44,11 @@ def _string(raw: dict[str, Any], key: str, label: str) -> str:
 def load_job_instance(jobs_dir: Path, name: str) -> JobInstance:
     """Load one instance by its lowercase-hyphen name."""
     validate_name(name, kind="job instance")
+    if jobs_dir.is_symlink() or (jobs_dir.exists() and not jobs_dir.is_dir()):
+        raise ValueError(f"jobs directory must be a directory: {jobs_dir}")
     path = jobs_dir / f"{name}.yml"
-    if path.is_symlink():
-        raise ValueError(f"job instance must not be a symlink: {path}")
+    if not path.is_file() or path.is_symlink():
+        raise ValueError(f"job instance file not found: {path}")
     raw = _mapping(load_yaml_file(path), f"job instance {name}")
     allowed = {
         "schema",
@@ -104,8 +106,10 @@ def load_job_instance(jobs_dir: Path, name: str) -> JobInstance:
 
 def list_job_instances(jobs_dir: Path) -> list[JobInstance]:
     """Load all ``*.yml`` job instances in name order."""
+    if jobs_dir.is_symlink():
+        raise ValueError(f"jobs directory must be a directory: {jobs_dir}")
     if not jobs_dir.exists():
         return []
-    if not jobs_dir.is_dir() or jobs_dir.is_symlink():
+    if not jobs_dir.is_dir():
         raise ValueError(f"jobs directory must be a directory: {jobs_dir}")
     return [load_job_instance(jobs_dir, path.stem) for path in sorted(jobs_dir.glob("*.yml"))]

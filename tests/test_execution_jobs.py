@@ -13,6 +13,7 @@ import pytest
 from atlas.catalog import resolve_command, resolve_job
 from atlas.errors import LockUnavailableError
 from atlas.execution import (
+    _append_run_log,
     _forward_termination_signal,
     _terminate_process_group,
     execute,
@@ -191,6 +192,44 @@ def test_execute_reads_environment_files_and_runs_job_instance(
     assert record["lock"] == "worker-collect"
 
 
+def test_run_log_rejects_symlinks_and_non_files(
+    atlas_paths,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    atlas_paths.logs.parent.mkdir(parents=True, exist_ok=True)
+    real_logs = tmp_path / "real-logs"
+    real_logs.mkdir()
+    atlas_paths.logs.symlink_to(real_logs, target_is_directory=True)
+    with pytest.raises(ValueError, match="logs path must be a directory"):
+        _append_run_log(atlas_paths, {"run_id": "sample"})
+
+    atlas_paths.logs.unlink()
+    atlas_paths.logs.write_text("bad", encoding="utf-8")
+    with pytest.raises(ValueError, match="logs path must be a directory"):
+        _append_run_log(atlas_paths, {"run_id": "sample"})
+
+    atlas_paths.logs.unlink()
+    atlas_paths.logs.mkdir()
+    target = tmp_path / "target"
+    target.write_text("do not append", encoding="utf-8")
+    (atlas_paths.logs / "runs.jsonl").symlink_to(target)
+    with pytest.raises(ValueError, match="run log must be a regular file"):
+        _append_run_log(atlas_paths, {"run_id": "sample"})
+
+    (atlas_paths.logs / "runs.jsonl").unlink()
+    read_descriptor, write_descriptor = os.pipe()
+    monkeypatch.setattr(
+        "atlas.execution.os.open",
+        lambda *args, **kwargs: write_descriptor,
+    )
+    try:
+        with pytest.raises(ValueError, match="run log must be a regular file"):
+            _append_run_log(atlas_paths, {"run_id": "sample"})
+    finally:
+        os.close(read_descriptor)
+
+
 def test_direct_job_inherits_cwd_and_passthrough(
     atlas_paths,
     release_factory,
@@ -330,16 +369,29 @@ def test_job_instance_directory_and_symlink_fail_closed(atlas_paths, tmp_path: P
     target = tmp_path / "target.yml"
     target.write_text("{}\n", encoding="utf-8")
     (atlas_paths.jobs_dir / "linked.yml").symlink_to(target)
-    with pytest.raises(ValueError, match="must not be a symlink"):
+    with pytest.raises(ValueError, match="job instance file not found"):
         load_job_instance(atlas_paths.jobs_dir, "linked")
 
     (atlas_paths.jobs_dir / "linked.yml").unlink()
+    (atlas_paths.jobs_dir / "directory.yml").mkdir()
+    with pytest.raises(ValueError, match="job instance file not found"):
+        load_job_instance(atlas_paths.jobs_dir, "directory")
+    (atlas_paths.jobs_dir / "directory.yml").rmdir()
     atlas_paths.jobs_dir.rmdir()
     real = tmp_path / "real-jobs"
     real.mkdir()
     atlas_paths.jobs_dir.symlink_to(real, target_is_directory=True)
     with pytest.raises(ValueError, match="jobs directory must be a directory"):
         list_job_instances(atlas_paths.jobs_dir)
+    with pytest.raises(ValueError, match="jobs directory must be a directory"):
+        load_job_instance(atlas_paths.jobs_dir, "sample")
+
+    atlas_paths.jobs_dir.unlink()
+    atlas_paths.jobs_dir.symlink_to(tmp_path / "missing", target_is_directory=True)
+    with pytest.raises(ValueError, match="jobs directory must be a directory"):
+        list_job_instances(atlas_paths.jobs_dir)
+    with pytest.raises(ValueError, match="jobs directory must be a directory"):
+        load_job_instance(atlas_paths.jobs_dir, "sample")
 
 
 def test_environment_file_validation(atlas_paths, release_factory, tmp_path: Path) -> None:
@@ -364,6 +416,43 @@ def test_advisory_lock_conflict(atlas_paths) -> None:
                 pass
     with pytest.raises(ValueError, match="invalid lock name"):
         with acquire_lock(atlas_paths.locks, "Bad"):
+            pass
+
+
+def test_advisory_lock_rejects_symlinks_and_non_files(atlas_paths, tmp_path: Path) -> None:
+    atlas_paths.locks.parent.mkdir(parents=True, exist_ok=True)
+    real_locks = tmp_path / "real-locks"
+    real_locks.mkdir()
+    atlas_paths.locks.symlink_to(real_locks, target_is_directory=True)
+    with pytest.raises(ValueError, match="locks path must be a directory"):
+        with acquire_lock(atlas_paths.locks, "sample"):
+            pass
+
+    atlas_paths.locks.unlink()
+    atlas_paths.locks.write_text("bad", encoding="utf-8")
+    with pytest.raises(ValueError, match="locks path must be a directory"):
+        with acquire_lock(atlas_paths.locks, "sample"):
+            pass
+
+    atlas_paths.locks.unlink()
+    atlas_paths.locks.mkdir()
+    target = tmp_path / "target"
+    target.write_text("do not open", encoding="utf-8")
+    (atlas_paths.locks / "sample.lock").symlink_to(target)
+    with pytest.raises(ValueError, match="lock file must be a regular file"):
+        with acquire_lock(atlas_paths.locks, "sample"):
+            pass
+
+    (atlas_paths.locks / "sample.lock").unlink()
+    (atlas_paths.locks / "sample.lock").mkdir()
+    with pytest.raises(ValueError, match="lock file must be a regular file"):
+        with acquire_lock(atlas_paths.locks, "sample"):
+            pass
+
+    (atlas_paths.locks / "sample.lock").rmdir()
+    os.mkfifo(atlas_paths.locks / "sample.lock")
+    with pytest.raises(ValueError, match="lock file must be a regular file"):
+        with acquire_lock(atlas_paths.locks, "sample"):
             pass
 
 

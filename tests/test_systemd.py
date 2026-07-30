@@ -103,13 +103,13 @@ def test_systemd_diff_install_and_remove(
             "refresh.service",
             "[Unit]\n[Service]\nUser=ops\n"
             "ExecStart=/opt/atlas/bin/atlas job run worker wrong-job\n",
-            "declared job worker/refresh",
+            "matching job instance for worker/refresh",
         ),
         (
             "refresh.service",
             "[Unit]\n[Service]\nUser=ops\n"
-            "ExecStart=/opt/atlas/bin/atlas job run worker refresh unexpected\n",
-            "declared job worker/refresh",
+            "ExecStart=/opt/atlas/bin/atlas job run worker refresh\n",
+            "matching job instance for worker/refresh",
         ),
         (
             "refresh.service",
@@ -120,8 +120,8 @@ def test_systemd_diff_install_and_remove(
         ),
         (
             "refresh.service",
-            "[Unit]\n[Service]\n"
-            "ExecStart=/opt/atlas/bin/atlas job run worker refresh\n"
+            "[Unit]\n[Service]\nUser=ops\n"
+            "ExecStart=/opt/atlas/bin/atlas job instance run sample-instance\n"
             "# /opt/atlas/releases/worker/1.0.0\n",
             "versioned release path",
         ),
@@ -290,23 +290,14 @@ def test_systemd_service_without_timer(
     assert "atlas-worker-refresh.timer" not in diff
 
 
-def test_systemd_accepts_declared_direct_job_and_command(
+def test_systemd_accepts_declared_command(
     atlas_paths,
     release_factory,
 ) -> None:
-    source, service = _service(atlas_paths, release_factory)
-    (source / "init/systemd/refresh.service").write_text(
-        "[Unit]\nDescription=Direct job\n"
-        "[Service]\nUser=ops\n"
-        "ExecStart=/opt/atlas/bin/atlas job run worker refresh -- --site default\n",
-        encoding="utf-8",
-    )
     adapter = SystemdAdapter(
         atlas_paths.var / "systemd",
         jobs_dir=atlas_paths.jobs_dir,
     )
-    adapter.validate(service)
-
     command_source = release_factory(
         name="reader",
         commands=("status-show",),

@@ -1,13 +1,12 @@
 # Atlas
 
-Atlas is a host-side runtime for versioned infrastructure operation releases. A release declares
-its public commands, non-public jobs, and systemd files in `release.yml`. Atlas installs the
-release, builds a shared Python runtime, generates command shims, executes artifacts, and records
-each run.
+Atlas runs versioned infrastructure operations on a host. Each release declares its commands,
+jobs, and systemd files in `release.yml`. Atlas installs the release, builds a shared Python
+runtime, creates shims for its commands, and records each execution.
 
-Infrastructure repositories remain independent. Atlas uses the caller's working directory and
-records its Git state, but it does not change repository state, desired state, inventory,
-playbooks, provider configuration, or secrets.
+Infrastructure repositories remain separate. Atlas uses the caller's working directory and
+records its Git state, but does not change repository state, desired state, inventory, playbooks,
+provider configuration, or secrets.
 
 ## Configure the host
 

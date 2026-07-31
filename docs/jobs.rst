@@ -23,9 +23,9 @@ current working directory. The manifest may provide ``default_timeout_seconds``.
 Job instances
 -------------
 
-A job instance binds one release job to the host-specific user, working directory, arguments,
-environment files, timeout, and advisory lock needed by a scheduler or service manager. Instance
-files live below ``/etc/atlas/jobs.d``:
+A job instance binds a release job to the host settings needed by a scheduler or service manager:
+user, working directory, arguments, environment files, timeout, and advisory lock. Instance files
+live below ``/etc/atlas/jobs.d``:
 
 .. code-block:: yaml
 
@@ -85,9 +85,9 @@ Nested execution
 Atlas prepends ``/opt/atlas/shims`` and the artifact runtime ``bin`` directory to child ``PATH``.
 A command may therefore compose public primitive commands as child processes.
 
-Every execution creates ``run_id``. A root execution sets ``operation_id`` to that value and has
-no parent. A nested Atlas process reads ``ATLAS_RUN_ID`` and ``ATLAS_OPERATION_ID``, records the
-caller as ``parent_run_id``, and retains the operation ID. This relationship is written to
+Every execution has a ``run_id``. A root execution sets ``operation_id`` to that value and has no
+parent. A nested Atlas process reads ``ATLAS_RUN_ID`` and ``ATLAS_OPERATION_ID``, records the
+caller as ``parent_run_id``, and retains the operation ID. Atlas writes this relationship to
 ``/var/lib/atlas/logs/runs.jsonl`` together with cwd and read-only Git context.
 
 Systemd service artifacts

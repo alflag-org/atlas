@@ -4,10 +4,9 @@ Runtime behavior
 Installed packages
 ------------------
 
-The host CLI is installed as the ``atlas`` package. Release code imports the smaller
-``atlas_core`` package for host paths, host profile values, artifact identity, and run
-correlation identifiers. The first-party ``operations`` directory is packaged as a separate
-Atlas release.
+The host CLI is installed as the ``atlas`` package. Release code uses ``atlas_core`` for host
+paths, host profile values, artifact identity, and run correlation identifiers. The repository's
+``operations`` directory is packaged as a separate release.
 
 Filesystem
 ----------
@@ -41,10 +40,10 @@ directory but does not discover infrastructure repositories or modify their Git 
 Artifact execution
 ------------------
 
-Commands and jobs use the same executor. Atlas creates ``run_id``, ``parent_run_id``, and
-``operation_id`` values, records read-only Git context for the working directory, prepends the
-shim and runtime directories to ``PATH``, and starts the artifact in a new process group.
-Arguments are passed as a list with ``shell=False``.
+Commands and jobs use the same executor. For each run, Atlas creates ``run_id``,
+``parent_run_id``, and ``operation_id`` values. It records read-only Git context for the working
+directory, prepends the shim and runtime directories to ``PATH``, and starts the artifact in a
+new process group. Arguments are passed as a list with ``shell=False``.
 
 Timeout handling sends SIGTERM to the process group and then SIGKILL after five seconds. A timeout
 returns exit code 124. Job-instance locks use non-blocking ``flock`` locks below
@@ -53,8 +52,8 @@ returns exit code 124. Job-instance locks use non-blocking ``flock`` locks below
 Systemd files
 -------------
 
-Atlas validates, diffs, installs, and removes systemd files declared by a release. Installed names
-are ``atlas-<release>-<service>.service`` and optionally
+Atlas validates, diffs, installs, and removes systemd files declared by a release. Installed unit
+names are ``atlas-<release>-<service>.service`` and optionally
 ``atlas-<release>-<service>.timer``. Each service has exactly one ``ExecStart`` through
 ``/opt/atlas/bin/atlas``.
 

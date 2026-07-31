@@ -4,8 +4,8 @@ Development
 Local environment
 -----------------
 
-Atlas supports Python 3.11 through 3.14. ``mise.toml`` selects Python 3.14.6 for local
-development.
+Atlas supports Python 3.11 through 3.14. Local development uses Python 3.14.6 from
+``mise.toml``.
 
 .. code-block:: bash
 
@@ -13,9 +13,8 @@ development.
    mise run setup
    mise run check
 
-``mise run check`` runs Ruff against ``src``, ``operations``, and ``tests``; runs
-the test suite with 100% line and branch coverage enforcement; and builds the source and wheel
-distributions.
+``mise run check`` runs Ruff against ``src``, ``operations``, and ``tests`` and enforces 100%
+line and branch coverage in the test suite. It builds the source and wheel distributions.
 
 Documentation
 -------------

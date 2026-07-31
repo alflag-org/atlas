@@ -1,17 +1,17 @@
 Proxmox operations
 ==================
 
-The first-party ``operations`` release exposes separate plan, apply, verify,
-and rollback commands for Proxmox changes. Commands read explicit provider,
-input, plan, or evidence files. JSON artifacts are written to stdout; progress
-and diagnostics are written to stderr.
+The ``operations`` release provides separate plan, apply, verify, and rollback
+commands for Proxmox changes. Commands take explicit provider, input, plan, or
+evidence files. JSON artifacts go to stdout; progress and diagnostics go to
+stderr.
 
 Files passed to plan commands
 -----------------------------
 
 Every plan command requires a provider definition and an operation input. The
-provider definition selects one live Proxmox API and contains only explicit
-secret references:
+provider selects one live Proxmox API and contains secret references, not
+secret values:
 
 .. code-block:: yaml
 
@@ -30,8 +30,8 @@ secret references:
      poll_interval_seconds: 3
 
 ``env:NAME`` and ``file:/absolute/path`` are the only secret-reference forms.
-Secret files must be regular, non-symlink files. Plaintext values under
-secret-looking keys are rejected before schema validation.
+Secret files must be regular, non-symlink files. Atlas rejects plaintext values
+under secret-looking keys before schema validation.
 
 A VM input supplies the site-specific values:
 
@@ -117,13 +117,12 @@ A template input supplies the template creation values:
    tags:
      - os-ubuntu
 
-The image URL must use HTTPS. Use one absolute ``shared_path``, or use both
-absolute ``runner_path`` and ``node_path`` when the runner and Proxmox node see
-the same shared storage under different paths. A missing image is downloaded
-to a temporary sibling, checked against the declared SHA-256 digest, and
-atomically renamed. Atlas never deletes an existing file whose checksum does
-not match. Template creation requires both the qemu guest agent and serial
-console settings.
+The image URL must use HTTPS. Use one absolute ``shared_path``, or use
+``runner_path`` and ``node_path`` together when the runner and Proxmox node see
+the same shared storage under different paths. Atlas downloads a missing image
+to a temporary sibling, checks its declared SHA-256 digest, and renames it
+atomically. It does not delete an existing file with a different checksum.
+Template creation requires both the qemu guest agent and serial console settings.
 
 Commands and their exact input
 ------------------------------
@@ -219,6 +218,6 @@ Exit status and persistence
      - The live provider could not perform the requested operation.
 
 Redirect stdout to persist a plan or evidence file. Atlas does not choose an
-output path and does not write an implicit operation-state directory. Protect
-artifacts as operational records because they contain target topology and
-step results, although they never contain resolved secret values.
+output path or write an implicit operation-state directory. Artifacts contain
+target topology and step results, but no resolved secret values. Protect them
+as operational records.

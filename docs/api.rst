@@ -4,8 +4,8 @@ Python API
 Release API
 -----------
 
-Release code may import ``atlas_core``. It exposes the host profile, final Atlas paths, current
-artifact identity, and run correlation identifiers.
+Release code can import ``atlas_core`` for the host profile, resolved Atlas paths, artifact
+identity, and run correlation identifiers.
 
 .. automodule:: atlas_core
    :members:

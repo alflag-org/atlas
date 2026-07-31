@@ -1,4 +1,4 @@
-FROM python:3.12-slim-bookworm AS base
+FROM python:3.14.6-slim-bookworm@sha256:86f975aca15cf04a40b399eebede9aea7c82eae084d1f1a0a6ef6bcaae871a30 AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -14,7 +14,8 @@ WORKDIR /workspace
 
 FROM base AS build-deps
 
-ARG ATLAS_RUNTIME_PYTHON_VERSION=3.12.3
+ARG ATLAS_RUNTIME_PYTHON_VERSION=3.14.6
+ARG PYENV_VERSION=v2.8.1
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -33,7 +34,8 @@ RUN apt-get update \
         xz-utils \
         zlib1g-dev \
     && rm -rf /var/lib/apt/lists/* \
-    && git clone --depth 1 https://github.com/pyenv/pyenv.git "$PYENV_ROOT" \
+    && git clone --branch "$PYENV_VERSION" --depth 1 \
+        https://github.com/pyenv/pyenv.git "$PYENV_ROOT" \
     && pyenv install -s "$ATLAS_RUNTIME_PYTHON_VERSION"
 
 
@@ -41,7 +43,7 @@ FROM build-deps AS dev
 
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN python -m pip install --upgrade pip \
+RUN python -m pip install --upgrade pip==26.2 \
     && python -m pip install -e '.[dev]'
 
 COPY . .
@@ -83,7 +85,8 @@ COPY --from=dev /opt/pyenv /opt/pyenv
 COPY --from=dev /opt/atlas /opt/atlas
 COPY --from=dev /etc/atlas /etc/atlas
 COPY --from=wheel /workspace/dist/*.whl /tmp/
-RUN python -m pip install --no-cache-dir /tmp/*.whl \
+RUN python -m pip install --upgrade pip==26.2 \
+    && python -m pip install --no-cache-dir /tmp/*.whl \
     && rm -f /tmp/*.whl \
     && chown -R atlas:atlas "$ATLAS_HOME" "$ATLAS_ETC_DIR" "$ATLAS_VAR_DIR" "$PYENV_ROOT" /workspace
 

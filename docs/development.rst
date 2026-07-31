@@ -4,6 +4,10 @@ Development
 Local checks
 ------------
 
+Atlas supports Python 3.11 through 3.14. The checked-in mise and Docker development
+environments use Python 3.14.6. Documentation dependencies require Python 3.12 or
+newer, so documentation is built in CI with Python 3.14.
+
 .. code-block:: bash
 
    mise install
@@ -16,6 +20,11 @@ Local checks
 Ruff checks ``src``, ``operations``, and ``tests``. Coverage includes the host package,
 ``atlas_core``, first-party operation modules, and command entrypoints. Both line and branch
 coverage must remain at 100%.
+
+Direct Python development dependencies and workflow actions are pinned to versions
+validated by CI. Dependabot checks Python, GitHub Actions, and Docker dependencies
+weekly; an update is merged only after the same test, lint, build, documentation,
+Ansible syntax, and smoke checks pass.
 
 Documentation
 -------------

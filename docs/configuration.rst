@@ -10,7 +10,7 @@ Atlas reads ``/etc/atlas/config.yml``. The schema is strict and rejects unknown 
 
    runtime:
      python:
-       version: "3.12.3"
+       version: "3.14.6"
 
    releases:
      operations:

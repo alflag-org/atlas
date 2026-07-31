@@ -3,30 +3,48 @@ name: CI
 on:
   push:
     branches:
-      - "**"
+      - master
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test-and-validate:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: |
           set -euxo pipefail
-          python -m pip install --upgrade pip
-          pip install -e '.[dev]'
+          python -m pip install --upgrade pip==26.2
+          python -m pip install \
+            -e '.[dev]' \
+            -r operations/requirements.txt \
+            -r examples/basic-release/requirements.txt \
+            -r examples/companion-release/requirements.txt
+          python -m pip check
+      - name: Validate Ansible fixture
+        working-directory: tests/fixtures/provisioning
+        run: ansible-playbook --syntax-check playbooks/site.yml
       - run: |
           python -m coverage run -m pytest -q
           python -m coverage report
       - run: ruff check src operations tests
       - run: python -m build
+      - if: matrix.python-version == '3.14'
+        run: make clean-docs html SPHINXOPTS=-W
       - name: Smoke test final release commands
         env:
           ATLAS_HOME: ${{ github.workspace }}/.ci/opt/atlas
@@ -49,19 +67,28 @@ jobs:
           cat > "$ATLAS_ETC_DIR/config.yml" <<'C'
           runtime:
             python:
-              version: "3.11"
+              version: "${{ matrix.python-version }}"
           releases:
             sample:
               source: "file://examples/basic-release"
           C
           atlas release install examples/basic-release
           python -m venv "$ATLAS_RUNTIME_DIR/python/envs/scripts"
-          "$ATLAS_RUNTIME_DIR/python/envs/scripts/bin/python" -m pip install --upgrade pip
+          "$ATLAS_RUNTIME_DIR/python/envs/scripts/bin/python" -m pip install --upgrade pip==26.2
           "$ATLAS_RUNTIME_DIR/python/envs/scripts/bin/python" -m pip install \
-            PyYAML -r examples/basic-release/requirements.txt
+            PyYAML==6.0.3 -r examples/basic-release/requirements.txt
           atlas release list
           atlas command list
           atlas which sample
           atlas which group-nested-sample
           atlas run sample hello --name=hoge
           atlas run group-nested-sample show-context
+
+  container:
+    needs: test-and-validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: docker build --target runtime --tag atlas-runtime-ci .
+      - run: docker run --rm atlas-runtime-ci

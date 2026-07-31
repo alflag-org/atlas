@@ -63,7 +63,7 @@ docker compose run --rm atlas atlas release list
 ```yaml
 runtime:
   python:
-    version: "3.12.3"
+    version: "3.14.6"
 
 releases:
   operations:

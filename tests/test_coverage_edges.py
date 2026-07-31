@@ -8,6 +8,7 @@ import tarfile
 import warnings
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -649,8 +650,7 @@ def test_sources_tar_extract_falls_back_without_data_filter(
     archive = tmp_path / "release.tar"
     with tarfile.open(archive, "w") as tf:
         tf.add(release, arcname="release")
-    if hasattr(tarfile, "data_filter"):
-        monkeypatch.delattr(tarfile, "data_filter")
+    monkeypatch.setattr("atlas.sources.tarfile", SimpleNamespace(open=tarfile.open))
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)

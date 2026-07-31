@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools==83.0.0", "wheel==0.47.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,19 +7,19 @@ name = "atlas"
 version = "1.0.0"
 requires-python = ">=3.11"
 dependencies = [
-  "PyYAML>=6.0",
+  "PyYAML==6.0.3",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "build>=1.2",
-  "coverage[toml]>=7.0",
-  "pytest>=8",
-  "pydantic>=2.11,<3",
+  "build==1.5.0",
+  "coverage[toml]==7.15.2",
+  "pytest==9.1.1",
+  "pydantic==2.13.4",
   "ruff==0.16.1",
-  "fire>=0.7",
-  "shibuya>=2026.5.19",
-  "sphinx>=8.1",
+  "fire==0.7.1",
+  "shibuya==2026.7.12; python_version >= '3.12'",
+  "sphinx==9.1.0; python_version >= '3.12'",
 ]
 
 [project.scripts]

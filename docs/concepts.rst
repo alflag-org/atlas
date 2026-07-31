@@ -1,65 +1,55 @@
-設計と概念
-============
+Concepts
+========
 
-Atlas の役割
-------------
+Atlas responsibilities
+----------------------
 
-Atlas は、ホストに配置されたスクリプトリリースを実行可能なコマンドとして公開します。
-アプリケーションサーバーやジョブスケジューラではなく、次の責務に範囲を絞っています。
+Atlas owns release acquisition, strict artifact validation, atomic installation and activation,
+the shared Python runtime, public command shims, non-public job execution, correlated run logs,
+timeouts, advisory locks, and Atlas-owned systemd artifact management.
 
-* スクリプト実行用 Python ランタイムの作成
-* スクリプトリリースの検証、インストール、更新
-* リリース内の Python コマンド検出
-* ``/opt/atlas/shims`` への shim 生成
-* 実行時環境変数と ``atlas_core`` コンテキストの提供
-* 実行結果の JSONL ログ記録
+Atlas does not own environment desired state. Keep Ansible inventory, playbooks, roles, Chef
+policy, Terraform definitions, service-specific units, and provider configuration in independent
+infrastructure repositories. Atlas also does not clone, pull, or switch those repositories.
 
-Atlas は pyenv や OS パッケージのインストールまでは行いません。
-ホストの Python バージョン管理は pyenv に任せ、Atlas はその Python を使ってスクリプト用 venv を作ります。
+Artifact types
+--------------
 
-主要ディレクトリ
-----------------
+``command``
+   An operator-facing executable. Commands receive shims under ``/opt/atlas/shims``.
 
-既定の配置は以下です。環境変数で一部を上書きできます。
+``job``
+   A non-interactive, one-shot executable. Jobs never receive shims and run through
+   ``atlas job``.
 
-.. list-table::
-   :header-rows: 1
+``service``
+   A logical command or job reference with native init artifacts. A service is not itself an
+   executable.
 
-   * - パス
-     - 用途
-   * - ``/etc/atlas``
-     - ``config.yml`` と ``host.yml``
-   * - ``/opt/atlas``
-     - ランタイム、shim、launcher、インストール済みリリース
-   * - ``/var/lib/atlas``
-     - 実行ログ、キャッシュ、ランタイム状態
-   * - ``/opt/atlas/scripts/releases``
-     - リリース本体の保存先
-   * - ``/opt/atlas/scripts/current``
-     - アクティブリリースへの symlink 群
-   * - ``/opt/atlas/shims``
-     - ユーザーやサービスが ``PATH`` に追加するコマンド shim
+``init artifact``
+   A native service-manager definition. Atlas v1 implements systemd only.
 
-リリースとコマンド
-------------------
+``module``
+   A release-private Python library under ``modules/``.
 
-スクリプトリリースは ``VERSION`` と ``commands/`` を持つディレクトリです。
-``commands/`` 配下の ``.py`` ファイルは、相対パスからコマンド名へ変換されます。
-たとえば ``commands/admin/restart.py`` は ``admin-restart`` になります。
+``asset``
+   A static file required by release code. Environment inventory and desired state are not assets.
 
-コマンド名は小文字英数字と ``-`` を使う形に制限されます。
-``atlas`` と ``script-runner`` は予約名です。
-リリース名は小文字英数字、``_``、``-`` を使えますが、``current``、``releases``、``tmp`` などの管理名は使えません。
+UNIX command contract
+---------------------
 
-失敗時の基本方針
-----------------
+A primitive command handles one project, one target, one main operation, and one main child
+process. A composition command invokes public primitive executables as child processes. It does
+not import their internal implementation.
 
-Atlas は曖昧な状態を許容せず、失敗を明示します。
+Commands write results to stdout, diagnostics and progress to stderr, preserve child exit status,
+use argument lists with ``shell=False``, and make mutations explicit in their names.
 
-* コマンド名が複数リリースで衝突した場合は失敗
-* リリース内に symlink が含まれる場合は失敗
-* archive 展開時に path traversal や symlink がある場合は失敗
-* runtime Python が見つからない場合は失敗
-* ``host.yml`` や ``config.yml`` の型が不正な場合は失敗
+Failure policy
+--------------
 
-この方針により、更新途中の不完全な状態や意図しないコマンド上書きを避けます。
+Atlas fails closed when a manifest has unknown keys, a path leaves the release root, a release
+contains symlinks, a command name collides, a job reference is missing, or a systemd destination
+is a symlink. The jobs, locks, and logs directories cannot be symlinks; instance, lock, and run-log
+files must have the expected regular-file type. Atlas does not silently fall back to file
+discovery or legacy filesystem paths.

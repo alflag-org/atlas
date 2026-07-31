@@ -1,9 +1,9 @@
-"""Host profile loading for scripts executed by Atlas."""
+"""Host profile loading for release artifacts executed by Atlas."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -11,7 +11,7 @@ import yaml
 
 @dataclass(frozen=True)
 class HostProfile:
-    """Host metadata exposed to Atlas scripts."""
+    """Host metadata exposed to Atlas release artifacts."""
 
     name: str
     site: str = ""
@@ -43,7 +43,7 @@ def _require_optional_string(raw: dict[str, object], key: str) -> str:
         return ""
     value = raw[key]
     if not isinstance(value, str):
-        raise ValueError(f"host.yml {key} must be a string")
+        raise TypeError(f"host.yml {key} must be a string")
     return value
 
 
@@ -56,7 +56,8 @@ def get_host(path: str | Path | None = None) -> HostProfile:
 
     Raises:
         FileNotFoundError: If the host profile file is missing.
-        ValueError: If the YAML structure or field types are invalid.
+        TypeError: If the YAML structure or an optional field type is invalid.
+        ValueError: If the required host name or tags are invalid.
     """
     resolved = Path(path) if path is not None else Path(os.environ.get("ATLAS_HOST_FILE", "/etc/atlas/host.yml"))
     if not resolved.exists():
@@ -64,7 +65,7 @@ def get_host(path: str | Path | None = None) -> HostProfile:
     with resolved.open("r", encoding="utf-8") as fh:
         raw = yaml.safe_load(fh)
     if not isinstance(raw, dict):
-        raise ValueError("host.yml must be a mapping")
+        raise TypeError("host.yml must be a mapping")
 
     name = raw.get("name")
     if not isinstance(name, str) or not name.strip():

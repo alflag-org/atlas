@@ -1,136 +1,116 @@
-設定
-====
+Configuration
+=============
 
-設定ファイル
-------------
-
-Atlas は既定で ``/etc/atlas/config.yml`` を読みます。
-このファイルには runtime と scripts の設定が必要です。
-
-最小構成は以下です。
-
-.. code-block:: yaml
-
-   runtime:
-     python:
-       version: "3.12.3"
-
-   scripts:
-     source: sample-release
-
-``scripts.source`` は互換性のために残っている単一リリース形式です。
-内部的には ``scripts.releases.default`` として扱われます。
-新規設定では複数リリース形式を推奨します。
-
-複数リリース設定
-----------------
-
-.. code-block:: yaml
-
-   runtime:
-     python:
-       version: "3.12.3"
-
-   scripts:
-     releases:
-       common:
-         source: common
-       maintenance:
-         source: maintenance
-         enabled: true
-
-     registries:
-       common:
-         source: "git+https://github.com/example/common-scripts.git#v0.1.0"
-       maintenance:
-         source: "git+https://github.com/example/maintenance-scripts.git#v0.1.0"
-
-``atlas scripts update`` は ``enabled`` が true のリリースを対象にします。
-``enabled`` を省略した場合は true です。
-
-registry alias
---------------
-
-``scripts.registries`` は名前から実際の source へのローカルな対応表です。
-Atlas に組み込みの公開 registry はありません。
-同じ alias を複数ホストで使うことで、ホストごとの設定から取得元を制御できます。
-
-source の形式
--------------
-
-``atlas scripts install <source>`` と ``scripts.releases.<name>.source`` は以下を受け付けます。
-
-.. list-table::
-   :header-rows: 1
-
-   * - 形式
-     - 例
-     - 備考
-   * - ローカルディレクトリ
-     - ``examples/basic-scripts-release``
-     - その場のディレクトリを検証してインストール
-   * - ローカル archive
-     - ``release.tar.gz`` / ``release.zip``
-     - cache に展開して検証
-   * - HTTP(S) archive
-     - ``https://example.com/release.tar.gz``
-     - 30 秒 timeout でダウンロード
-   * - git repository
-     - ``git+https://github.com/example/repo.git#v1.0.0``
-     - ``#ref`` は branch/tag/commit を指定
-   * - registry alias
-     - ``common``
-     - ``scripts.registries`` で解決
-
-ホストプロファイル
+Host configuration
 ------------------
 
-``/etc/atlas/host.yml`` はスクリプトに渡すホストメタデータです。
-``name`` は必須で、空でない文字列でなければなりません。
+Atlas reads ``/etc/atlas/config.yml``. The schema is strict and rejects unknown keys.
 
 .. code-block:: yaml
 
-   name: worker-01
-   site: nrt
-   zone: nrt-a
-   role: batch
-   environment: production
-   runtime_kind: baremetal
-   tags:
-     - trusted
-     - nightly
+   runtime:
+     python:
+       version: "3.14.6"
 
-``site``、``zone``、``role``、``environment``、``runtime_kind`` は任意ですが、存在する場合は文字列である必要があります。
-``tags`` は省略、null、または文字列の配列を指定できます。
+   releases:
+     operations:
+       source: "/srv/releases/operations"
+       enabled: true
 
-環境変数
---------
+     maintenance:
+       source: "https://example.test/maintenance-1.2.0.tar.gz"
+       enabled: false
 
-Atlas の配置は以下の環境変数で上書きできます。
+``atlas release update`` updates enabled entries. An explicit
+``atlas release update maintenance`` updates that entry even when disabled.
+
+Release sources
+---------------
+
+Supported source forms are:
 
 .. list-table::
    :header-rows: 1
 
-   * - 変数
-     - 既定値
-     - 用途
-   * - ``ATLAS_HOME``
-     - ``/opt/atlas``
-     - runtime、scripts、shim、launcher の基点
-   * - ``ATLAS_ETC_DIR``
-     - ``/etc/atlas``
-     - 設定ファイルとホストプロファイル
-   * - ``ATLAS_VAR_DIR``
-     - ``/var/lib/atlas``
-     - logs と cache
-   * - ``ATLAS_RUNTIME_DIR``
-     - ``$ATLAS_HOME/runtime``
-     - scripts venv の配置
-   * - ``ATLAS_SCRIPTS_CURRENT_DIR``
-     - ``$ATLAS_HOME/scripts/current``
-     - アクティブリリース symlink の配置
-   * - ``ATLAS_HOST_FILE``
-     - ``$ATLAS_ETC_DIR/host.yml``
-     - ``atlas_core.get_host()`` が読む host profile
+   * - Form
+     - Example
+   * - Local directory
+     - ``/srv/releases/operations``
+   * - File URL
+     - ``file:///srv/releases/operations``
+   * - Local archive
+     - ``operations-1.0.0.tar.gz``
+   * - HTTP(S) archive
+     - ``https://example.test/operations-1.0.0.tar.gz``
+   * - Git release source
+     - ``git+https://github.com/example/operations.git#v1.0.0``
 
-スクリプト実行時には Atlas が追加で ``ATLAS_SCRIPT_NAME``、``ATLAS_SCRIPT_RELEASE_NAME``、``ATLAS_SCRIPT_VERSION``、``ATLAS_SCRIPTS_DIR`` を設定します。
+Git source handling applies only to Atlas release acquisition. Atlas never changes Git state in
+the infrastructure repository used as an artifact working directory.
+
+Host profile
+------------
+
+``/etc/atlas/host.yml`` must contain a non-empty ``name``. Optional string fields are ``site``,
+``zone``, ``role``, ``environment``, and ``runtime_kind``. ``tags`` is a list of strings.
+
+.. code-block:: yaml
+
+   name: control-01
+   site: kng01
+   zone: management
+   role: control
+   environment: production
+   runtime_kind: vm
+   tags:
+     - trusted
+
+Host-side path variables
+------------------------
+
+``ATLAS_HOME``
+   Defaults to ``/opt/atlas``.
+
+``ATLAS_ETC_DIR``
+   Defaults to ``/etc/atlas``.
+
+``ATLAS_VAR_DIR``
+   Defaults to ``/var/lib/atlas``.
+
+``ATLAS_RUNTIME_DIR``
+   Defaults to ``$ATLAS_HOME/runtime``.
+
+``ATLAS_TMP_DIR``
+   Defaults to ``$ATLAS_HOME/tmp``.
+
+The release and current roots are fixed relative to ``ATLAS_HOME``. Former
+``ATLAS_SCRIPTS_*`` variables are not read.
+
+Artifact execution variables
+----------------------------
+
+Atlas supplies the following values to each command or job:
+
+``ATLAS_RELEASE_NAME``
+   Canonical manifest release name.
+
+``ATLAS_RELEASE_VERSION``
+   Value read from the release ``VERSION`` file.
+
+``ATLAS_ARTIFACT_TYPE``
+   ``command`` or ``job``.
+
+``ATLAS_ARTIFACT_NAME``
+   Manifest artifact identifier.
+
+``ATLAS_RELEASE_ROOT``
+   Installed release directory used by this execution.
+
+``ATLAS_HOST_FILE``
+   Resolved host profile path.
+
+``ATLAS_RUN_ID``, ``ATLAS_PARENT_RUN_ID``, ``ATLAS_OPERATION_ID``
+   Correlation identifiers for nested execution.
+
+These variables are generated for child execution. Do not set ``ATLAS_RELEASE_ROOT`` as a
+host-side path override.

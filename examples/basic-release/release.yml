@@ -1,0 +1,9 @@
+schema: atlas.release/v1
+name: sample
+commands:
+  group-nested-sample:
+    runtime: python
+    entrypoint: commands/group/nested-sample.py
+  sample:
+    runtime: python
+    entrypoint: commands/sample.py

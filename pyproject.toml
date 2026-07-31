@@ -1,27 +1,25 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools==83.0.0", "wheel==0.47.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "atlas"
-version = "0.3.0"
+version = "1.0.0"
 requires-python = ">=3.11"
 dependencies = [
-  "PyYAML>=6.0",
+  "PyYAML==6.0.3",
 ]
 
 [project.optional-dependencies]
-scripts = [
-  "fire>=0.7",
-]
 dev = [
-  "build>=1.2",
-  "coverage[toml]>=7.0",
-  "pytest>=8",
-  "ruff>=0.6",
-  "fire>=0.7",
-  "shibuya>=2026.5.19",
-  "sphinx>=8.1",
+  "build==1.5.0",
+  "coverage[toml]==7.15.2",
+  "pytest==9.1.1",
+  "pydantic==2.13.4",
+  "ruff==0.16.1",
+  "fire==0.7.1",
+  "shibuya==2026.7.12; python_version >= '3.12'",
+  "sphinx==9.1.0; python_version >= '3.12'",
 ]
 
 [project.scripts]
@@ -37,13 +35,48 @@ include = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = [
+  "src",
+  "operations/modules",
+]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+  # Syntax, imports, and undefined names.
+  "E4",
+  "E7",
+  "E9",
+  "F",
+  # Common bug patterns and deterministic imports.
+  "B",
+  "I",
+  # The package supports Python 3.11 and newer only.
+  "UP",
+  # High-signal Ruff correctness checks.
+  "RUF",
+  # Unsafe execution and silently discarded exceptions.
+  "S102",
+  "S110",
+  "S112",
+  # Archive and YAML loading require reviewed, local suppressions.
+  "S202",
+  "S506",
+  # Subprocess callers must choose exit-code behavior explicitly.
+  "PLW1510",
+  # Input types, parametrized cases, and context-manager return types.
+  "TRY004",
+  "PT014",
+  "PYI034",
+]
 
 [tool.coverage.run]
 branch = true
 source = [
-  "atlas",
-  "atlas_core",
+  "src",
+  "operations",
 ]
 
 [tool.coverage.report]

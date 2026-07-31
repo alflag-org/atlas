@@ -1,0 +1,6 @@
+schema: atlas.release/v1
+name: sample2
+commands:
+  sample2:
+    runtime: python
+    entrypoint: commands/sample2.py

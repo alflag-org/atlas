@@ -1,86 +1,118 @@
-運用
-====
+Host operations
+===============
 
-初期セットアップ
-----------------
+Initial installation
+--------------------
 
-本番ホストでは、Atlas を実行するユーザーが以下のディレクトリへ必要な権限を持つようにします。
-
-* ``/etc/atlas``
-* ``/opt/atlas``
-* ``/var/lib/atlas``
-
-pyenv と Python build に必要な OS パッケージは Atlas の外で準備します。
-その後、設定ファイルとホストプロファイルを配置して runtime を作成します。
+Install the Atlas package and pyenv outside the artifact runtime. Create ``/etc/atlas``,
+``/opt/atlas``, and ``/var/lib/atlas`` with ownership appropriate for the Atlas operator. Place
+``config.yml`` and ``host.yml``, then install releases and the runtime.
 
 .. code-block:: bash
 
-   atlas runtime status
+   atlas release install /srv/releases/operations
    atlas runtime install
-
-リリース更新手順
-----------------
-
-標準的な更新手順は以下です。
-
-.. code-block:: bash
-
-   atlas scripts update
-   atlas runtime install
-   atlas scripts shims
+   atlas release shims
    atlas status
 
-``atlas scripts update`` は各リリースの ``current`` symlink を更新します。
-``atlas runtime install`` は scripts venv を一時ディレクトリに作ってから差し替えるため、既存 venv を直接上書きしません。
-
-PATH 設定
----------
-
-ユーザーや service からリリースコマンドを直接呼びたい場合、``/opt/atlas/shims`` を ``PATH`` に追加します。
+Infrastructure repository setup is separate:
 
 .. code-block:: bash
 
-   export PATH="/opt/atlas/shims:$PATH"
+   git clone <provisioning-repository> /home/ops/repos/provisioning
+   cd /home/ops/repos/provisioning
+   mise install
+   mise run setup
+   config-validate site
 
-shim はコマンドごとに symlink として生成され、共通の ``script-runner`` を経由して ``atlas run`` を呼びます。
+Atlas commands never perform those Git or dependency-setup steps.
 
-ログ管理
---------
+Reviewed Proxmox changes use separate plan, apply, verify, and rollback
+commands. Their explicit provider and input schemas, source binding, evidence,
+and deletion checks are documented in :doc:`reviewed-operations`.
 
-実行ログは ``/var/lib/atlas/logs/runs.jsonl`` に追記されます。
-Atlas はログローテーションを行わないため、systemd、logrotate、外部 log collector などホスト側の標準機構で管理してください。
+Scheduled inventory refresh
+---------------------------
 
-障害時の確認順
+Install the operations release and create a host job instance as described in :doc:`jobs`.
+Validate the generated native artifacts before installation:
+
+.. code-block:: bash
+
+   atlas job instance inspect provisioning-inventory-refresh
+   atlas init diff operations inventory-refresh
+   sudo atlas init install operations inventory-refresh
+   systemd-analyze verify \
+     /etc/systemd/system/atlas-operations-inventory-refresh.service \
+     /etc/systemd/system/atlas-operations-inventory-refresh.timer
+
+Atlas installs mode ``0644``, owner ``root:root`` unit files using atomic replacement and runs
+``systemctl daemon-reload``. It does not enable, start, stop, or restart them. Use native commands
+only after reviewing the diff:
+
+.. code-block:: bash
+
+   sudo systemctl enable --now atlas-operations-inventory-refresh.timer
+   systemctl status atlas-operations-inventory-refresh.timer
+   journalctl -u atlas-operations-inventory-refresh.service
+
+Before removal, disable and stop the timer through systemd, then run
+``sudo atlas init remove operations inventory-refresh``.
+
+Release update
 --------------
 
-``atlas runtime install`` が失敗する場合:
+.. code-block:: bash
 
-1. ``atlas runtime status`` で pyenv の可視性と Python version を確認します。
-2. ``runtime.python.version`` が pyenv で install 可能な値か確認します。
-3. OS の Python build 依存が揃っているか確認します。
+   atlas release update
+   atlas runtime install
+   atlas release shims
+   atlas status
 
-コマンドが見つからない場合:
+The runtime is rebuilt in a temporary virtual environment and moved into its final path before
+release requirements are installed. Existing runtime state is restored when installation fails.
 
-1. ``atlas scripts list --verbose`` でコマンドが検出されているか確認します。
-2. ``atlas which <command>`` で実体パスを確認します。
-3. ``/opt/atlas/shims`` が ``PATH`` に入っているか確認します。
-4. コマンド名衝突の例外が出ていないか確認します。
+Atlas validates every configured release source before changing active releases. During install
+and multi-release update, previous version directories and active links remain recoverable until
+launcher and shim refresh succeeds. A failure restores the previous directories, links, and
+command shims, including a replacement of an existing version.
 
-スクリプト内で host 情報が読めない場合:
+Run logs
+--------
 
-1. ``/etc/atlas/host.yml`` が存在するか確認します。
-2. ``host.yml`` が mapping で、``name`` が空でない文字列か確認します。
-3. ``ATLAS_HOST_FILE`` を上書きしている場合、そのパスを確認します。
+``/var/lib/atlas/logs/runs.jsonl`` is append-only from Atlas's perspective. Rotate and collect it
+with the host's standard logging tools. Never put secret values directly in job-instance YAML.
+Environment-file paths may be logged, but their contents are not.
 
-バックアップと復旧
-------------------
+Each record includes correlation identifiers, artifact identity, redacted arguments, working
+directory, Git context, exit code, duration, timeout state, and lock name. The execution
+diagnostic written to stderr uses the same redacted arguments.
 
-Atlas の状態復旧に重要なのは以下です。
+Troubleshooting
+---------------
 
-* ``/etc/atlas/config.yml``
-* ``/etc/atlas/host.yml``
-* ``/opt/atlas/scripts/releases``
-* ``/opt/atlas/scripts/current``
-* 必要に応じて ``/var/lib/atlas/logs``
+Runtime installation failure
+   Run ``atlas runtime status``. Verify pyenv visibility, the configured Python version, OS build
+   dependencies, ``/opt/atlas/tmp`` capacity, and ``/var/lib/atlas/cache/python-build``.
 
-``scripts/current`` は symlink 群なので、復旧時はリンク先が ``scripts/releases`` 内の実体へ向いていることを確認してください。
+Unknown command
+   Run ``atlas command list --verbose`` and ``atlas which <command>``. Then verify
+   ``/opt/atlas/shims`` is in ``PATH`` and that no cross-release collision stopped shim refresh.
+
+Job lock conflict
+   A lock conflict returns exit code 75 without waiting. Confirm the active process before
+   retrying; do not delete a lock file as a substitute for checking the OS advisory lock.
+
+Timed-out job
+   Atlas returns 124, marks ``timed_out`` in the run log, and terminates the process group.
+
+Systemd installation failure
+   Verify root permission, unit validation, destination symlinks, and
+   ``systemctl daemon-reload``. Atlas intentionally does not enable or start the unit.
+
+Backup scope
+------------
+
+Back up ``/etc/atlas``, release source references, and any required run logs. Installed releases
+under ``/opt/atlas/releases`` can be recreated from source. ``/opt/atlas/current`` contains
+symlinks and must only point to installed version directories.

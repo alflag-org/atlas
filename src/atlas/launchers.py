@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import shutil
 import sys
+from pathlib import Path
 
 from .files import remove_path
 from .scriptsets import build_command_index

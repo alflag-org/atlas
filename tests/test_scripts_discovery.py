@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import io
 import os
-from pathlib import Path
 import subprocess
 import tarfile
 import zipfile
+from pathlib import Path
 
 import pytest
 

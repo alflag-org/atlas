@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from pathlib import Path
 
 from .paths import AtlasPaths
 from .scriptsets import ReleaseCommand, active_releases, build_command_index
-
 
 _REDACT_FLAG_TOKENS = ("password", "token", "secret", "key")
 
@@ -25,7 +24,7 @@ def _redact_args(args: list[str]) -> list[str]:
             mask_next = False
             continue
         if arg.startswith("--"):
-            key, sep, value = arg.partition("=")
+            key, sep, _ = arg.partition("=")
             normalized = key[2:].replace("-", "_").lower()
             sensitive = normalized.endswith("_token") or any(token in normalized for token in _REDACT_FLAG_TOKENS)
             if sensitive and sep:
@@ -93,7 +92,7 @@ def _append_run_log(
 ) -> None:
     paths.logs.mkdir(parents=True, exist_ok=True)
     record = {
-        "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "timestamp": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "release": command.release_name,
         "script": command.name,
         "args": _redact_args(args),
@@ -128,6 +127,7 @@ def run_command(paths: AtlasPaths, command_name: str, args: list[str]) -> int:
         raise ValueError(f"scripts python executable not found: {python_exe}")
     proc = subprocess.run(
         [str(python_exe), str(command.script_path), *args],
+        check=False,
         env=env,
         text=True,
     )

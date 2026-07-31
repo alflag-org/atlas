@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import os
-import shutil
 import re
+import shutil
 import time
+from pathlib import Path
 
 from .commands import discover_commands
 from .files import remove_path
-
 
 RELEASE_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 RESERVED_RELEASE_NAMES = {"", ".", "..", "current", "releases", "tmp"}

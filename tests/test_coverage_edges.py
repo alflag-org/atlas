@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import io
 import runpy
-from pathlib import Path
 import subprocess
 import sys
 import tarfile
 import warnings
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -15,11 +15,21 @@ from atlas import cli
 from atlas.commands import command_name_from_relative_path, discover_commands
 from atlas.config import AtlasConfig, RuntimeConfig, ScriptsConfig
 from atlas.launchers import regenerate_shims
-from atlas.releases import install_named_release, install_release, read_version, validate_release
+from atlas.releases import (
+    install_named_release,
+    install_release,
+    read_version,
+    validate_release,
+)
 from atlas.runner import resolve_command_path
 from atlas.runtime import RuntimeStatus, install_runtime
 from atlas.scriptsets import active_releases, validate_release_name
-from atlas.sources import clone_git_source, download_archive, extract_archive, resolve_source
+from atlas.sources import (
+    clone_git_source,
+    download_archive,
+    extract_archive,
+    resolve_source,
+)
 from atlas.yamlutil import dump_yaml_file, load_yaml_file
 
 

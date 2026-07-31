@@ -88,13 +88,14 @@ scripts:
 
 
 @pytest.mark.parametrize(
-    ("body", "message"),
+    ("body", "expected_exception", "message"),
     [
-        ("[]\n", "config.yml must be a mapping"),
+        ("[]\n", TypeError, "config.yml must be a mapping"),
         (
             """scripts:
   source: "/opt/releases/current"
 """,
+            TypeError,
             "runtime section is required",
         ),
         (
@@ -102,6 +103,7 @@ scripts:
 scripts:
   source: "/opt/releases/current"
 """,
+            TypeError,
             "runtime.python section is required",
         ),
         (
@@ -111,6 +113,7 @@ scripts:
 scripts:
   source: "/opt/releases/current"
 """,
+            ValueError,
             "runtime.python.version is required",
         ),
         (
@@ -118,6 +121,7 @@ scripts:
   python:
     version: "3.12"
 """,
+            TypeError,
             "scripts section is required",
         ),
         (
@@ -127,6 +131,7 @@ scripts:
 scripts:
   source: ""
 """,
+            ValueError,
             "scripts.source is required",
         ),
         (
@@ -137,6 +142,7 @@ scripts:
   source: "/opt/releases/current"
   releases: []
 """,
+            TypeError,
             "scripts.releases must be a mapping",
         ),
         (
@@ -147,6 +153,7 @@ scripts:
   releases:
     current: sample
 """,
+            ValueError,
             "invalid release name: current",
         ),
         (
@@ -157,6 +164,7 @@ scripts:
   releases:
     common: []
 """,
+            TypeError,
             "scripts.releases.common must be a mapping or string",
         ),
         (
@@ -168,6 +176,7 @@ scripts:
     common:
       source: ""
 """,
+            ValueError,
             "scripts.releases.common.source is required",
         ),
         (
@@ -178,6 +187,7 @@ scripts:
   source: "/opt/releases/current"
   registries: []
 """,
+            TypeError,
             "scripts.registries must be a mapping",
         ),
         (
@@ -189,6 +199,7 @@ scripts:
   registries:
     "": "/opt/releases/current"
 """,
+            ValueError,
             "scripts.registries alias must not be empty",
         ),
         (
@@ -200,6 +211,7 @@ scripts:
   registries:
     broken: []
 """,
+            TypeError,
             "scripts.registries.broken must be a mapping or string",
         ),
         (
@@ -212,12 +224,18 @@ scripts:
     broken:
       source: ""
 """,
+            ValueError,
             "scripts.registries.broken.source is required",
         ),
     ],
 )
-def test_load_config_rejects_invalid_config(tmp_path: Path, body: str, message: str) -> None:
+def test_load_config_rejects_invalid_config(
+    tmp_path: Path,
+    body: str,
+    expected_exception: type[Exception],
+    message: str,
+) -> None:
     path = _write_config(tmp_path / "config.yml", body)
 
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(expected_exception, match=message):
         load_config(path)

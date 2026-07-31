@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
-import re
-
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 RESERVED = {"atlas", "script-runner"}

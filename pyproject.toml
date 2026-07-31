@@ -18,7 +18,7 @@ dev = [
   "build>=1.2",
   "coverage[toml]>=7.0",
   "pytest>=8",
-  "ruff>=0.6",
+  "ruff==0.16.1",
   "fire>=0.7",
   "shibuya>=2026.5.19",
   "sphinx>=8.1",
@@ -38,6 +38,38 @@ include = [
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+  # Syntax, imports, and undefined names.
+  "E4",
+  "E7",
+  "E9",
+  "F",
+  # Common bug patterns and deterministic imports.
+  "B",
+  "I",
+  # The package supports Python 3.11 and newer only.
+  "UP",
+  # High-signal Ruff correctness checks.
+  "RUF",
+  # Unsafe execution and silently discarded exceptions.
+  "S102",
+  "S110",
+  "S112",
+  # Archive and YAML loading require reviewed, local suppressions.
+  "S202",
+  "S506",
+  # Subprocess callers must choose exit-code behavior explicitly.
+  "PLW1510",
+  # Input types, parametrized cases, and context-manager return types.
+  "TRY004",
+  "PT014",
+  "PYI034",
+]
 
 [tool.coverage.run]
 branch = true

@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import os
 import shutil
 import stat
 import subprocess
 import tarfile
+import zipfile
+from pathlib import Path
 from urllib.parse import urldefrag, urlparse
 from urllib.request import urlopen
-import zipfile
 
 from .config import AtlasConfig
 from .files import remove_path
-
 
 ARCHIVE_SUFFIXES = (".tar", ".tar.gz", ".tgz", ".zip")
 HTTP_TIMEOUT_SECONDS = 30
@@ -76,7 +75,8 @@ def extract_archive(archive_path: Path, cache_dir: Path) -> Path:
         with zipfile.ZipFile(archive_path) as zf:
             for member in zf.infolist():
                 _validate_zip_member(tmp, member)
-            zf.extractall(tmp)
+            # Every member was validated for traversal and links above.
+            zf.extractall(tmp)  # noqa: S202
     elif is_archive_name(name):
         with tarfile.open(archive_path) as tf:
             for member in tf.getmembers():
@@ -84,7 +84,8 @@ def extract_archive(archive_path: Path, cache_dir: Path) -> Path:
             if hasattr(tarfile, "data_filter"):
                 tf.extractall(tmp, filter="data")
             else:
-                tf.extractall(tmp)
+                # Every member was validated for traversal and links above.
+                tf.extractall(tmp)  # noqa: S202
     else:
         raise ValueError(f"unsupported archive source: {archive_path}")
     return _find_release_root(tmp)

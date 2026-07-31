@@ -54,19 +54,19 @@ def load_config(path: Path) -> AtlasConfig:
     """Load and validate an Atlas ``config.yml`` file."""
     raw = load_yaml_file(path)
     if not isinstance(raw, dict):
-        raise ValueError("config.yml must be a mapping")
+        raise TypeError("config.yml must be a mapping")
     runtime_raw = raw.get("runtime")
     if not isinstance(runtime_raw, dict):
-        raise ValueError("runtime section is required")
+        raise TypeError("runtime section is required")
     py_raw = runtime_raw.get("python")
     if not isinstance(py_raw, dict):
-        raise ValueError("runtime.python section is required")
+        raise TypeError("runtime.python section is required")
     py_ver = str(py_raw.get("version", "")).strip()
     if not py_ver:
         raise ValueError("runtime.python.version is required")
     scripts_raw = raw.get("scripts")
     if not isinstance(scripts_raw, dict):
-        raise ValueError("scripts section is required")
+        raise TypeError("scripts section is required")
     source_raw = scripts_raw.get("source")
     source = None if source_raw is None else str(source_raw).strip() or None
     auto_update = bool(scripts_raw.get("auto_update", False))
@@ -74,7 +74,7 @@ def load_config(path: Path) -> AtlasConfig:
     if registries_raw is None:
         registries_raw = {}
     if not isinstance(registries_raw, dict):
-        raise ValueError("scripts.registries must be a mapping")
+        raise TypeError("scripts.registries must be a mapping")
     registries: dict[str, RegistryEntry] = {}
     for alias, entry_raw in registries_raw.items():
         alias_name = str(alias).strip()
@@ -85,7 +85,7 @@ def load_config(path: Path) -> AtlasConfig:
         elif isinstance(entry_raw, dict):
             entry_source = str(entry_raw.get("source", "")).strip()
         else:
-            raise ValueError(f"scripts.registries.{alias_name} must be a mapping or string")
+            raise TypeError(f"scripts.registries.{alias_name} must be a mapping or string")
         if not entry_source:
             raise ValueError(f"scripts.registries.{alias_name}.source is required")
         registries[alias_name] = RegistryEntry(source=entry_source)
@@ -94,7 +94,7 @@ def load_config(path: Path) -> AtlasConfig:
     releases: dict[str, ScriptReleaseConfig] = {}
     if releases_raw is not None:
         if not isinstance(releases_raw, dict):
-            raise ValueError("scripts.releases must be a mapping")
+            raise TypeError("scripts.releases must be a mapping")
         for release_name, release_raw in releases_raw.items():
             name = validate_release_name(str(release_name).strip())
             if isinstance(release_raw, str):
@@ -104,7 +104,7 @@ def load_config(path: Path) -> AtlasConfig:
                 release_source = str(release_raw.get("source", "")).strip()
                 enabled = bool(release_raw.get("enabled", True))
             else:
-                raise ValueError(f"scripts.releases.{name} must be a mapping or string")
+                raise TypeError(f"scripts.releases.{name} must be a mapping or string")
             if not release_source:
                 raise ValueError(f"scripts.releases.{name}.source is required")
             releases[name] = ScriptReleaseConfig(source=release_source, enabled=enabled)

@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import atlas_core
-from atlas_core import AtlasContext, AtlasPaths, HostProfile, ScriptInfo
-from atlas_core import get_context, get_host, get_paths
+from atlas_core import (
+    AtlasContext,
+    AtlasPaths,
+    HostProfile,
+    ScriptInfo,
+    get_context,
+    get_host,
+    get_paths,
+)
 
 
 def test_public_imports() -> None:

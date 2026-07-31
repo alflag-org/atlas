@@ -63,7 +63,7 @@ def test_non_string_name_fails(tmp_path: Path) -> None:
 def test_non_mapping_yaml_fails(tmp_path: Path) -> None:
     path = _write_host(tmp_path / "host.yml", "[]\n")
 
-    with pytest.raises(ValueError, match="mapping"):
+    with pytest.raises(TypeError, match="mapping"):
         get_host(path)
 
 
@@ -71,7 +71,7 @@ def test_non_mapping_yaml_fails(tmp_path: Path) -> None:
 def test_optional_scalar_fields_must_be_strings_if_present(tmp_path: Path, field: str) -> None:
     path = _write_host(tmp_path / "host.yml", f"name: n1\n{field}: 1\n")
 
-    with pytest.raises(ValueError, match=field):
+    with pytest.raises(TypeError, match=field):
         get_host(path)
 
 

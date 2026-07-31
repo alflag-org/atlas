@@ -9,12 +9,22 @@ from atlas_core.host import get_host
 
 from .config import load_config
 from .files import remove_path
-from .launchers import ensure_atlas_launcher, ensure_script_runner, regenerate_shims, sync_atlas_core
+from .launchers import (
+    ensure_atlas_launcher,
+    ensure_script_runner,
+    regenerate_shims,
+    sync_atlas_core,
+)
 from .paths import ensure_dirs, get_paths
-from .runner import resolve_command_path, run_command
 from .releases import install_named_release
+from .runner import resolve_command_path, run_command
 from .runtime import install_runtime, runtime_status
-from .scriptsets import active_releases, build_command_index, discover_release_commands, validate_release_name
+from .scriptsets import (
+    active_releases,
+    build_command_index,
+    discover_release_commands,
+    validate_release_name,
+)
 from .sources import resolve_source
 
 
@@ -59,7 +69,7 @@ def cmd_status(_: argparse.Namespace) -> int:
     if host_path.exists():
         try:
             host_name = get_host(str(host_path)).name
-        except (FileNotFoundError, ValueError):
+        except (FileNotFoundError, TypeError, ValueError):
             host_name = "unknown"
     print(f"config file path: {config_path}")
     print(f"host file path: {host_path}")

@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
-import re
 
 from .commands import discover_commands
 from .releases import read_version
-
 
 RELEASE_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 RESERVED_RELEASE_NAMES = {"", ".", "..", "current", "releases", "tmp"}

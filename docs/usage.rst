@@ -24,8 +24,8 @@ Update configured releases
    atlas status
 
 Atlas copies and validates every requested source before activation. Release directories, current
-links, the launcher, the artifact runner, and command shims are committed as one operation. A
-failure restores the prior active set, including when an existing version directory was replaced.
+links, the launcher, the artifact runner, and command shims are committed as one operation. If a
+step fails, Atlas restores the prior active set, even when replacing an existing version directory.
 
 Run commands
 ------------
@@ -74,10 +74,10 @@ Manage Atlas systemd artifacts
    sudo atlas init install operations inventory-refresh
    sudo atlas init remove operations inventory-refresh
 
-Every managed service must have exactly one ``ExecStart`` through ``/opt/atlas/bin/atlas`` and
-must invoke the command declared by its manifest or a matching job instance. Job-backed services
-must use ``atlas job instance run``; Atlas validates that ``User=`` matches the job-instance user
-and that the instance references the service's declared release and job.
+Every managed service must have exactly one ``ExecStart`` through ``/opt/atlas/bin/atlas``. It
+must invoke either the command declared by its manifest or a matching job instance. Job-backed
+services must use ``atlas job instance run``. Atlas checks that ``User=`` matches the job-instance
+user and that the instance references the service's declared release and job.
 
 Use native commands for lifecycle actions:
 

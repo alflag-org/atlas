@@ -27,9 +27,9 @@ Infrastructure repository setup is separate:
 
 Atlas commands never perform those Git or dependency-setup steps.
 
-Reviewed Proxmox changes use separate plan, apply, verify, and rollback
-commands. Their explicit provider and input schemas, source binding, evidence,
-and deletion checks are documented in :doc:`reviewed-operations`.
+Proxmox changes use separate plan, apply, verify, and rollback commands. Their
+provider and input schemas, source binding, evidence, and deletion checks are
+documented in :doc:`proxmox`.
 
 Scheduled inventory refresh
 ---------------------------
@@ -46,9 +46,9 @@ Validate the generated native artifacts before installation:
      /etc/systemd/system/atlas-operations-inventory-refresh.service \
      /etc/systemd/system/atlas-operations-inventory-refresh.timer
 
-Atlas installs mode ``0644``, owner ``root:root`` unit files using atomic replacement and runs
-``systemctl daemon-reload``. It does not enable, start, stop, or restart them. Use native commands
-only after reviewing the diff:
+Atlas writes unit files atomically with mode ``0644`` and owner ``root:root``, then runs
+``systemctl daemon-reload``. It does not enable, start, stop, or restart them. Use native systemd
+commands after reviewing the diff:
 
 .. code-block:: bash
 
@@ -69,13 +69,14 @@ Release update
    atlas release shims
    atlas status
 
-The runtime is rebuilt in a temporary virtual environment and moved into its final path before
-release requirements are installed. Existing runtime state is restored when installation fails.
+Atlas rebuilds the runtime in a temporary virtual environment and moves it into its final path
+before installing release requirements. If installation fails, Atlas restores the existing
+runtime.
 
 Atlas validates every configured release source before changing active releases. During install
-and multi-release update, previous version directories and active links remain recoverable until
-launcher and shim refresh succeeds. A failure restores the previous directories, links, and
-command shims, including a replacement of an existing version.
+and multi-release update, it keeps previous version directories and active links until launcher
+and shim refresh succeeds. On failure, Atlas restores the previous directories, links, and command
+shims, even when replacing an existing version.
 
 Run logs
 --------

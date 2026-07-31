@@ -77,7 +77,7 @@ class SystemdAdapter:
             )
 
     def validate(self, service: ServiceRef) -> None:
-        """Perform structural checks and enforce a stable Atlas ExecStart."""
+        """Perform structural checks and enforce an Atlas host ExecStart."""
         for source, destination in self._artifacts(service):
             if not source.is_file() or source.is_symlink():
                 raise ValueError(f"systemd source artifact not found: {source}")

@@ -1,18 +1,17 @@
-Reviewed Proxmox operations
-===========================
+Proxmox operations
+==================
 
-The first-party ``operations`` release separates every high-impact Proxmox
-change into plan, apply, verify, and rollback commands. It has no umbrella
-command, implicit configuration lookup, plan directory, or evidence directory.
-JSON artifacts are written to stdout; progress and diagnostics are written to
+The ``operations`` release provides separate plan, apply, verify, and rollback
+commands for Proxmox changes. Commands take explicit provider, input, plan, or
+evidence files. JSON artifacts go to stdout; progress and diagnostics go to
 stderr.
 
 Files passed to plan commands
 -----------------------------
 
 Every plan command requires a provider definition and an operation input. The
-provider definition selects one live Proxmox API and contains only explicit
-secret references:
+provider selects one live Proxmox API and contains secret references, not
+secret values:
 
 .. code-block:: yaml
 
@@ -31,11 +30,10 @@ secret references:
      poll_interval_seconds: 3
 
 ``env:NAME`` and ``file:/absolute/path`` are the only secret-reference forms.
-Secret files must be regular, non-symlink files. Plaintext values under
-secret-looking keys are rejected before schema validation.
+Secret files must be regular, non-symlink files. Atlas rejects plaintext values
+under secret-looking keys before schema validation.
 
-A VM input owns the site-specific values that Atlas must not discover from
-inventory:
+A VM input supplies the site-specific values:
 
 .. code-block:: yaml
 
@@ -82,10 +80,10 @@ inventory:
      - role-web
 
 The VM name must be a lowercase DNS label and must equal ``target``. Atlas adds
-``managed-atlas`` and ``platform-vm`` tags. The reviewed VM workflow requires
-the qemu guest agent; ``qemu_agent`` cannot be disabled.
+``managed-atlas`` and ``platform-vm`` tags. VM creation requires the qemu guest agent;
+``qemu_agent`` cannot be disabled.
 
-A template input replaces the former template catalog:
+A template input supplies the template creation values:
 
 .. code-block:: yaml
 
@@ -119,13 +117,12 @@ A template input replaces the former template catalog:
    tags:
      - os-ubuntu
 
-The image URL must use HTTPS. Use one absolute ``shared_path``, or use both
-absolute ``runner_path`` and ``node_path`` when the runner and Proxmox node see
-the same shared storage under different paths. A missing image is downloaded
-to a temporary sibling, checked against the declared SHA-256 digest, and
-atomically renamed. Atlas never deletes an existing file whose checksum does
-not match. Template creation requires both the qemu guest agent and serial
-console settings.
+The image URL must use HTTPS. Use one absolute ``shared_path``, or use
+``runner_path`` and ``node_path`` together when the runner and Proxmox node see
+the same shared storage under different paths. Atlas downloads a missing image
+to a temporary sibling, checks its declared SHA-256 digest, and renames it
+atomically. It does not delete an existing file with a different checksum.
+Template creation requires both the qemu guest agent and serial console settings.
 
 Commands and their exact input
 ------------------------------
@@ -153,7 +150,7 @@ The four ``vm-template-create-*`` commands use the same argument and artifact
 rules for template creation. ``operation-artifact-validate [ARTIFACT]`` checks
 one plan or evidence artifact without live access.
 ``operation-artifact-inspect [ARTIFACT]`` validates the artifact and prints
-stable operator-readable facts. For commands with an optional artifact,
+operator-readable facts. For commands with an optional artifact,
 ``-`` and omission both mean stdin.
 
 .. code-block:: bash
@@ -199,8 +196,7 @@ match. Atlas writes these Proxmox description lines:
 
 A written marker must match before deletion. An unmarked partial clone or
 temporary template can be removed only when evidence records that the same
-plan created it and the live VMID and name still match. No Ares or Daedalus
-marker is accepted.
+plan created it and the live VMID and name still match.
 
 Exit status and persistence
 ---------------------------
@@ -222,21 +218,6 @@ Exit status and persistence
      - The live provider could not perform the requested operation.
 
 Redirect stdout to persist a plan or evidence file. Atlas does not choose an
-output path and does not write an implicit operation-state directory. Protect
-artifacts as operational records because they contain target topology and
-step results, although they never contain resolved secret values.
-
-Replacing Ares commands
------------------------
-
-Convert provider and operation values to the two explicit schemas above.
-Replace each old invocation with the corresponding standalone command and
-review the emitted plan before apply. There is no ``ares`` executable, old
-schema reader, default configuration path, inventory adapter, product-name
-import alias, or marker compatibility.
-
-Keep the old repository read-only until replacement commands pass authorized
-real-host plan, apply, verify, and rollback smoke tests and the agreed
-observation period. If a replacement fails before retirement, stop its
-callers and resume the old deployment as one coherent version. Do not mix old
-configuration or markers with the Atlas commands.
+output path or write an implicit operation-state directory. Artifacts contain
+target topology and step results, but no resolved secret values. Protect them
+as operational records.

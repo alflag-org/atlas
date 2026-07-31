@@ -1,11 +1,11 @@
 Python API
 ==========
 
-Stable release API
-------------------
+Release API
+-----------
 
-Release code may import ``atlas_core``. It exposes the host profile, final Atlas paths, current
-artifact identity, and run correlation identifiers.
+Release code can import ``atlas_core`` for the host profile, resolved Atlas paths, artifact
+identity, and run correlation identifiers.
 
 .. automodule:: atlas_core
    :members:
@@ -32,31 +32,3 @@ artifact identity, and run correlation identifiers.
    print(context.artifact.name)
    print(context.artifact.artifact_type)
    print(context.artifact.operation_id)
-
-Host-side implementation
-------------------------
-
-Modules under ``atlas`` are implementation details and must not be imported by release code.
-
-.. currentmodule:: atlas
-
-.. autosummary::
-   :toctree: generated
-   :recursive:
-
-   catalog
-   cli
-   config
-   errors
-   execution
-   files
-   job_instances
-   jobs
-   launchers
-   locks
-   manifests
-   paths
-   releases
-   runtime
-   sources
-   yamlutil

@@ -1,4 +1,4 @@
-"""Stable runtime API for release artifacts executed by Atlas.
+"""Runtime API for release artifacts executed by Atlas.
 
 Artifacts installed into Atlas should import from this package instead of
 using host-side implementation modules under :mod:`atlas`.

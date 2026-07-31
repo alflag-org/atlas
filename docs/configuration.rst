@@ -45,8 +45,8 @@ Supported source forms are:
    * - Git release source
      - ``git+https://github.com/example/operations.git#v1.0.0``
 
-Git source handling applies only to Atlas release acquisition. Atlas never changes Git state in
-the infrastructure repository used as an artifact working directory.
+Atlas uses Git sources only to acquire releases. It does not change Git state in the
+infrastructure repository used as an artifact working directory.
 
 Host profile
 ------------
@@ -83,8 +83,7 @@ Host-side path variables
 ``ATLAS_TMP_DIR``
    Defaults to ``$ATLAS_HOME/tmp``.
 
-The release and current roots are fixed relative to ``ATLAS_HOME``. Former
-``ATLAS_SCRIPTS_*`` variables are not read.
+The release and current roots are fixed relative to ``ATLAS_HOME``.
 
 Artifact execution variables
 ----------------------------

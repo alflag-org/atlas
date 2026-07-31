@@ -47,7 +47,7 @@ def _only(raw: dict[str, Any], allowed: set[str], label: str) -> None:
 
 
 def load_config(path: Path) -> AtlasConfig:
-    """Load the final, non-legacy Atlas host configuration."""
+    """Load and validate Atlas host configuration."""
     raw = _mapping(load_yaml_file(path), "config.yml")
     _only(raw, {"runtime", "releases"}, "config.yml")
     runtime = _mapping(raw.get("runtime"), "runtime")

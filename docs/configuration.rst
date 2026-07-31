@@ -83,8 +83,7 @@ Host-side path variables
 ``ATLAS_TMP_DIR``
    Defaults to ``$ATLAS_HOME/tmp``.
 
-The release and current roots are fixed relative to ``ATLAS_HOME``. Former
-``ATLAS_SCRIPTS_*`` variables are not read.
+The release and current roots are fixed relative to ``ATLAS_HOME``.
 
 Artifact execution variables
 ----------------------------

@@ -27,9 +27,9 @@ Infrastructure repository setup is separate:
 
 Atlas commands never perform those Git or dependency-setup steps.
 
-Reviewed Proxmox changes use separate plan, apply, verify, and rollback
-commands. Their explicit provider and input schemas, source binding, evidence,
-and deletion checks are documented in :doc:`reviewed-operations`.
+Proxmox changes use separate plan, apply, verify, and rollback commands. Their
+provider and input schemas, source binding, evidence, and deletion checks are
+documented in :doc:`proxmox`.
 
 Scheduled inventory refresh
 ---------------------------

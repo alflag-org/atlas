@@ -94,6 +94,6 @@ Systemd service artifacts
 -------------------------
 
 Use ``atlas init list`` and ``atlas init diff`` to inspect manifest-declared services. Installation
-writes only stable ``atlas-<release>-<service>.service`` and optional ``.timer`` names, then runs
+writes ``atlas-<release>-<service>.service`` and optional ``.timer`` names, then runs
 ``systemctl daemon-reload``. Atlas does not enable, start, stop, or restart a unit. The complete
 ``operations/inventory-refresh`` example is documented in :doc:`operations`.

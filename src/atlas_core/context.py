@@ -1,4 +1,4 @@
-"""Stable runtime context for release artifacts."""
+"""Runtime context for release artifacts."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ def _require_env(read_env: Mapping[str, str], key: str) -> str:
 
 
 def get_context(env: Mapping[str, str] | None = None) -> AtlasContext:
-    """Build the stable context from the execution environment."""
+    """Build the context from the execution environment."""
     read_env = os.environ if env is None else env
     paths = get_paths(env=read_env)
     parent_run_id = read_env.get("ATLAS_PARENT_RUN_ID") or None

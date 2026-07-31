@@ -1,4 +1,4 @@
-"""Atlas domain errors with stable CLI exit semantics."""
+"""Atlas domain errors and CLI exit semantics."""
 
 
 class AtlasError(ValueError):

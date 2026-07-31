@@ -11,7 +11,7 @@ from .files import remove_path
 
 
 def sync_atlas_core(home: Path) -> None:
-    """Copy the stable ``atlas_core`` package into the Atlas home."""
+    """Copy the ``atlas_core`` package into the Atlas home."""
     src = Path(__file__).resolve().parents[1] / "atlas_core"
     dst = home / "lib/python/atlas_core"
     dst.parent.mkdir(parents=True, exist_ok=True)

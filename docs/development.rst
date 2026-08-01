@@ -13,8 +13,9 @@ Atlas supports Python 3.11 through 3.14. Local development uses Python 3.14.6 fr
    mise run setup
    mise run check
 
-``mise run check`` runs Ruff against ``src``, ``operations``, and ``tests`` and enforces 100%
-line and branch coverage in the test suite. It builds the source and wheel distributions.
+``mise run check`` runs Ruff against ``src``, both first-party release directories, and ``tests``.
+The test suite enforces 100% line and branch coverage, then builds the source and wheel
+distributions.
 
 Documentation
 -------------
@@ -36,6 +37,6 @@ Docker
    docker compose run --rm atlas
    docker compose run --rm check
 
-The runtime image contains the installed Atlas package, the basic example release, its generated
-shim, and its release dependencies. The check image runs the CLI smoke test, Ruff, pytest, and the
-package build.
+The runtime image contains the Atlas package, the basic example release, both first-party
+operation releases, generated shims, and their dependencies. The check image runs the CLI smoke
+test, Ruff, pytest, and the package build.

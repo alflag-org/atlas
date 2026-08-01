@@ -5,8 +5,8 @@ Installed packages
 ------------------
 
 The host CLI is installed as the ``atlas`` package. Release code uses ``atlas_core`` for host
-paths, host profile values, artifact identity, and run correlation identifiers. The repository's
-``operations`` directory is packaged as a separate release.
+paths, host profile values, artifact identity, and run correlation identifiers. First-party
+operations are packaged as ``configuration-operations`` and ``infrastructure-operations``.
 
 Filesystem
 ----------

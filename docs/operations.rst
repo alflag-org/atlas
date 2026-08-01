@@ -10,7 +10,8 @@ Install the Atlas package and pyenv outside the artifact runtime. Create ``/etc/
 
 .. code-block:: bash
 
-   atlas release install /srv/releases/operations
+   atlas release install /srv/releases/configuration-operations
+   atlas release install /srv/releases/infrastructure-operations
    atlas runtime install
    atlas release shims
    atlas status
@@ -23,28 +24,27 @@ Infrastructure repository setup is separate:
    cd /home/ops/repos/provisioning
    mise install
    mise run setup
-   config-validate site
+   configctl validate site
 
 Atlas commands never perform those Git or dependency-setup steps.
 
-Proxmox changes use separate plan, apply, verify, and rollback commands. Their
-provider and input schemas, source binding, evidence, and deletion checks are
-documented in :doc:`proxmox`.
+Use ``hostctl`` for managed hosts and ``imagectl`` for machine images. Provider and input schemas,
+source binding, evidence, and deletion checks are documented in :doc:`proxmox`.
 
 Scheduled inventory refresh
 ---------------------------
 
-Install the operations release and create a host job instance as described in :doc:`jobs`.
+Install ``configuration-operations`` and create a host job instance as described in :doc:`jobs`.
 Validate the generated native artifacts before installation:
 
 .. code-block:: bash
 
    atlas job instance inspect provisioning-inventory-refresh
-   atlas init diff operations inventory-refresh
-   sudo atlas init install operations inventory-refresh
+   atlas init diff configuration-operations inventory-refresh
+   sudo atlas init install configuration-operations inventory-refresh
    systemd-analyze verify \
-     /etc/systemd/system/atlas-operations-inventory-refresh.service \
-     /etc/systemd/system/atlas-operations-inventory-refresh.timer
+     /etc/systemd/system/atlas-configuration-operations-inventory-refresh.service \
+     /etc/systemd/system/atlas-configuration-operations-inventory-refresh.timer
 
 Atlas writes unit files atomically with mode ``0644`` and owner ``root:root``, then runs
 ``systemctl daemon-reload``. It does not enable, start, stop, or restart them. Use native systemd
@@ -52,12 +52,12 @@ commands after reviewing the diff:
 
 .. code-block:: bash
 
-   sudo systemctl enable --now atlas-operations-inventory-refresh.timer
-   systemctl status atlas-operations-inventory-refresh.timer
-   journalctl -u atlas-operations-inventory-refresh.service
+   sudo systemctl enable --now atlas-configuration-operations-inventory-refresh.timer
+   systemctl status atlas-configuration-operations-inventory-refresh.timer
+   journalctl -u atlas-configuration-operations-inventory-refresh.service
 
 Before removal, disable and stop the timer through systemd, then run
-``sudo atlas init remove operations inventory-refresh``.
+``sudo atlas init remove configuration-operations inventory-refresh``.
 
 Release update
 --------------

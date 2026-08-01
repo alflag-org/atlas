@@ -6,7 +6,8 @@ Install a release
 
 .. code-block:: bash
 
-   atlas release install ./operations
+   atlas release install ./configuration-operations
+   atlas release install ./infrastructure-operations
    atlas release list --verbose
    atlas command list --verbose
    atlas runtime install
@@ -19,7 +20,7 @@ Update configured releases
 .. code-block:: bash
 
    atlas release update
-   atlas release update operations
+   atlas release update configuration-operations
    atlas release shims
    atlas status
 
@@ -32,11 +33,11 @@ Run commands
 
 .. code-block:: bash
 
-   atlas which config-diff
-   atlas run config-diff site web01
+   atlas which configctl
+   atlas run configctl diff site web01
 
    export PATH="/opt/atlas/shims:$PATH"
-   config-diff site web01
+   configctl diff site web01
 
 The shim points to ``/opt/atlas/bin/artifact-runner``, which delegates to
 ``atlas run <command>``.
@@ -47,8 +48,8 @@ Run jobs
 .. code-block:: bash
 
    atlas job list
-   atlas job inspect operations inventory-refresh
-   atlas job run operations inventory-refresh -- --site default
+   atlas job inspect configuration-operations inventory-refresh
+   atlas job run configuration-operations inventory-refresh -- --site default
 
 Direct jobs inherit the caller's working directory. Arguments after ``--`` are passed unchanged.
 
@@ -69,10 +70,10 @@ Manage Atlas systemd artifacts
 
 .. code-block:: bash
 
-   atlas init list operations
-   atlas init diff operations inventory-refresh
-   sudo atlas init install operations inventory-refresh
-   sudo atlas init remove operations inventory-refresh
+   atlas init list configuration-operations
+   atlas init diff configuration-operations inventory-refresh
+   sudo atlas init install configuration-operations inventory-refresh
+   sudo atlas init remove configuration-operations inventory-refresh
 
 Every managed service must have exactly one ``ExecStart`` through ``/opt/atlas/bin/atlas``. It
 must invoke either the command declared by its manifest or a matching job instance. Job-backed
@@ -83,6 +84,6 @@ Use native commands for lifecycle actions:
 
 .. code-block:: bash
 
-   systemctl enable --now atlas-operations-inventory-refresh.timer
-   systemctl status atlas-operations-inventory-refresh.timer
-   journalctl -u atlas-operations-inventory-refresh.service
+   systemctl enable --now atlas-configuration-operations-inventory-refresh.timer
+   systemctl status atlas-configuration-operations-inventory-refresh.timer
+   journalctl -u atlas-configuration-operations-inventory-refresh.service

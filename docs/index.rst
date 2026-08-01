@@ -9,13 +9,19 @@ Atlas installs and executes commands, jobs, and systemd files declared by versio
 
    runtime
    command-surface
+   controllers
+   configctl
+   hostctl
+   imagectl
+   providerctl
+   operationctl
+   command-migration
    usage
    configuration
    releases
    jobs
    operations
    proxmox
-   hostctl
 
 .. toctree::
    :maxdepth: 2

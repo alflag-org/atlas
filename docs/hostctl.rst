@@ -1,26 +1,26 @@
 Managed host lifecycle
 ======================
 
-The ``host-operations`` release adds ``hostctl`` for creating one managed host as a reviewed,
-resumable operation. It keeps durable operation state in Global Registry, delegates Proxmox and
-Ansible work to the existing ``operations`` release, and exposes no provider-specific types in its
-public artifacts.
+The ``infrastructure-operations`` release adds ``hostctl`` for creating one managed host as a
+reviewed, resumable operation. It keeps durable operation state in Global Registry, delegates
+Proxmox work to private provider jobs and Ansible work to ``configctl``, and exposes no
+provider-specific types in its public artifacts.
 
 Install both first-party releases
 ---------------------------------
 
-``host-operations`` exposes one command, ``hostctl``. Its ten phase executors are private jobs.
-The Proxmox and Ansible adapters invoke the reviewed ``vm-create-*`` and ``config-*`` command
-shims, so install both releases into the same Atlas runtime:
+``infrastructure-operations`` exposes four controllers. The ten ``hostctl`` phase executors and
+the reviewed Proxmox implementations are private jobs. Install both first-party releases into the
+same Atlas runtime:
 
 .. code-block:: console
 
-   $ atlas release install ./operations
-   $ atlas release install ./host-operations
+   $ atlas release install ./configuration-operations
+   $ atlas release install ./infrastructure-operations
    $ atlas runtime install
    $ atlas release shims
    $ atlas which hostctl
-   /opt/atlas/releases/host-operations/1.0.0/commands/hostctl.py
+   /opt/atlas/releases/infrastructure-operations/1.0.0/commands/hostctl.py
 
 The production adapters in version 1 are ``proxmox`` and ``ansible``. The fake provider,
 configurator, readiness checker, and Registry client exist only for contract tests.
@@ -39,7 +39,7 @@ while the Resource is still ``allocated``. These capabilities are provided by Re
 
 The provisioning checkout must be a readable Git checkout. The target must already be present
 under ``hosts`` in ``inventories/<site>/hosts.yml``, and the bootstrap and converge playbooks must
-be accepted by ``config-validate``. ``hostctl`` records the checkout commit and dirty state; it
+be accepted by ``configctl validate``. ``hostctl`` records the checkout commit and dirty state; it
 does not run Git commands that change the checkout.
 
 Use a Registry profile containing references to credentials, not credential values. A Cloudflare
@@ -99,7 +99,7 @@ specification's directory; the generated plan stores absolute paths.
 
 ``resource.id`` uses the same lowercase-letter, digit, and hyphen format as a Global Registry key
 and is limited to 128 characters. Host names are lowercase DNS labels; site, zone, and playbook
-names use the safe identifiers already accepted by the ``operations`` release. SSH users cannot
+names use the safe identifiers accepted by the first-party releases. SSH users cannot
 begin with an option prefix. ``configuration.target``, ``resource.name``, the inventory host, and
 the VM name in the Proxmox input must agree. The Proxmox input's site, address, SSH port, and
 guest-agent setting must also agree with the host plan. Unknown fields, unsafe symlink sources,
@@ -139,19 +139,20 @@ Apply executes these phases in order:
    * - ``reserve``
      - Acquire the Resource lock and fencing token, check the Resource identity, and start the Operation.
    * - ``allocate``
-     - Run ``vm-create-apply`` and transition the Registry Resource to ``allocated``.
+     - Run the private ``vm-create-apply`` job and transition the Registry Resource to
+       ``allocated``.
    * - ``provider-verify``
-     - Run ``vm-create-verify`` against the recorded child artifact.
+     - Run the private ``vm-create-verify`` job against the recorded child artifact.
    * - ``bind``
      - Store the provider Resource identity and ownership evidence in the Registry Binding.
    * - ``wait-ready``
      - Check provider state, guest agent when required, TCP, SSH authentication, and cloud-init when required.
    * - ``bootstrap``
-     - Run ``config-apply <bootstrap-playbook> <target>`` and transition to ``bootstrapped``.
+     - Run ``configctl apply <bootstrap-playbook> <target>`` and transition to ``bootstrapped``.
    * - ``converge``
-     - Run ``config-apply <converge-playbook> <target>`` and transition to ``configured``.
+     - Run ``configctl apply <converge-playbook> <target>`` and transition to ``configured``.
    * - ``configuration-verify``
-     - Run ``config-check <converge-playbook> <target>``.
+     - Run ``configctl check <converge-playbook> <target>``.
    * - ``activate``
      - Transition to ``ready`` and complete the Registry Operation.
 
@@ -195,9 +196,9 @@ Rollback before configuration starts
    $ hostctl rollback web01.plan.json --confirm plan-7c4... > web01.rollback.json
 
 Before allocation, rollback cancels the Operation without touching a provider. After allocation
-and before bootstrap, it delegates deletion to ``vm-create-rollback`` and removes an existing
-Binding only after deletion succeeds. Provider deletion is refused when the recorded ownership
-marker or the original ``vm-create`` evidence is absent.
+and before bootstrap, it delegates deletion to the private ``vm-create-rollback`` job and removes
+an existing Binding only after deletion succeeds. Provider deletion is refused when the recorded
+ownership marker or the original ``vm-create`` evidence is absent.
 
 Once bootstrap, converge, or configuration verification has started, rollback retains the provider
 Resource and records ``needs-reconcile``. An Ansible failure or interrupted Ansible child never
@@ -237,3 +238,6 @@ Phase progress, child command lines, warnings, and diagnostics go to stderr.
 Artifacts never contain Registry credentials. Child processes receive argument lists with
 ``shell=False``. Each private phase job receives the same ``ATLAS_OPERATION_ID`` correlation value,
 and every completed phase writes evidence to the Registry Operation step.
+
+The previous ``vm-create-*`` commands have no shims. Replace direct callers with ``hostctl`` as
+listed in :doc:`command-migration`.

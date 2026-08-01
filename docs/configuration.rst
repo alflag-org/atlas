@@ -13,8 +13,8 @@ Atlas reads ``/etc/atlas/config.yml``. The schema is strict and rejects unknown 
        version: "3.14.6"
 
    releases:
-     operations:
-       source: "/srv/releases/operations"
+     configuration-operations:
+       source: "/srv/releases/configuration-operations"
        enabled: true
 
      maintenance:
@@ -35,15 +35,15 @@ Supported source forms are:
    * - Form
      - Example
    * - Local directory
-     - ``/srv/releases/operations``
+     - ``/srv/releases/configuration-operations``
    * - File URL
-     - ``file:///srv/releases/operations``
+     - ``file:///srv/releases/configuration-operations``
    * - Local archive
-     - ``operations-1.0.0.tar.gz``
+     - ``atlas-configuration-operations-1.0.0.tar.gz``
    * - HTTP(S) archive
-     - ``https://example.test/operations-1.0.0.tar.gz``
+     - ``https://example.test/atlas-configuration-operations-1.0.0.tar.gz``
    * - Git release source
-     - ``git+https://github.com/example/operations.git#v1.0.0``
+     - ``git+https://github.com/example/atlas.git#v1.0.0``
 
 Atlas uses Git sources only to acquire releases. It does not change Git state in the
 infrastructure repository used as an artifact working directory.

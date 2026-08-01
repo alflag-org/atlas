@@ -1,10 +1,9 @@
 Proxmox operations
 ==================
 
-The ``operations`` release provides separate plan, apply, verify, and rollback
-commands for Proxmox changes. Commands take explicit provider, input, plan, or
-evidence files. JSON artifacts go to stdout; progress and diagnostics go to
-stderr.
+The ``infrastructure-operations`` release uses reviewed Proxmox jobs behind ``hostctl`` and
+``imagectl``. Provider, input, plan, and evidence files remain explicit. JSON artifacts go to
+stdout; progress and diagnostics go to stderr.
 
 Files passed to plan commands
 -----------------------------
@@ -124,51 +123,49 @@ to a temporary sibling, checks its declared SHA-256 digest, and renames it
 atomically. It does not delete an existing file with a different checksum.
 Template creation requires both the qemu guest agent and serial console settings.
 
-Commands and their exact input
-------------------------------
+Controllers and their exact input
+---------------------------------
 
-``proxmox-status PROVIDER``
-   Reads nodes and VMs from the provider and emits JSON. It performs no
-   mutation.
+``providerctl status PROVIDER`` reads nodes and VMs without mutation. ``hostctl`` reads provider
+and VM input paths from a host specification and owns the durable managed-host lifecycle described
+in :doc:`hostctl`.
 
-``vm-create-plan PROVIDER INPUT``
-   Runs local and live Proxmox preflight checks and emits an
-   ``OperationPlan``.
+``imagectl`` takes the provider definition explicitly:
 
-``vm-create-apply PROVIDER [PLAN] --confirm PLAN_ID``
-   Reads the plan from ``PLAN`` or stdin, repeats preflight, applies its steps,
-   verifies the VM, and emits ``OperationEvidence``.
+``imagectl plan PROVIDER INPUT``
+   Runs local and live Proxmox preflight checks and emits an ``OperationPlan``.
 
-``vm-create-verify PROVIDER [PLAN_OR_EVIDENCE]``
-   Verifies live VM state and emits a JSON verification result.
+``imagectl apply PROVIDER [PLAN] --confirm PLAN_ID``
+   Reads the plan from ``PLAN`` or stdin, repeats preflight, applies its steps, verifies the
+   template, and emits ``OperationEvidence``.
 
-``vm-create-rollback PROVIDER [EVIDENCE] --confirm PLAN_ID``
-   Verifies the evidence and live resource identity, deletes only the VM
-   created by that plan, verifies deletion, and emits updated evidence.
+``imagectl verify PROVIDER [PLAN_OR_EVIDENCE]``
+   Verifies live template state and emits a JSON verification result.
 
-The four ``vm-template-create-*`` commands use the same argument and artifact
-rules for template creation. ``operation-artifact-validate [ARTIFACT]`` checks
-one plan or evidence artifact without live access.
-``operation-artifact-inspect [ARTIFACT]`` validates the artifact and prints
-operator-readable facts. For commands with an optional artifact,
-``-`` and omission both mean stdin.
+``imagectl rollback PROVIDER [EVIDENCE] --confirm PLAN_ID``
+   Verifies the evidence and live resource identity, deletes only the template created by that
+   plan, verifies deletion, and emits updated evidence.
+
+``operationctl validate [ARTIFACT]`` checks one plan or evidence artifact without live access.
+``operationctl inspect [ARTIFACT]`` prints operator-readable facts. For commands with an optional
+artifact, ``-`` and omission both mean stdin.
 
 .. code-block:: bash
 
-   vm-create-plan provider.yml vm-create.yml > vm-plan.json
-   plan_id="$(jq -r '.metadata.planId' vm-plan.json)"
+   imagectl plan provider.yml image-create.yml > image-plan.json
+   plan_id="$(jq -r '.metadata.planId' image-plan.json)"
 
-   vm-create-apply \
-     provider.yml vm-plan.json \
+   imagectl apply \
+     provider.yml image-plan.json \
      --confirm "$plan_id" \
-     > vm-evidence.json
+     > image-evidence.json
 
-   vm-create-verify provider.yml vm-evidence.json
+   imagectl verify provider.yml image-evidence.json
 
-   vm-create-rollback \
-     provider.yml vm-evidence.json \
+   imagectl rollback \
+     provider.yml image-evidence.json \
      --confirm "$plan_id" \
-     > vm-rollback-evidence.json
+     > image-rollback-evidence.json
 
 Files and evidence checked before mutation
 ------------------------------------------

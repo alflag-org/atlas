@@ -74,7 +74,8 @@ Controller syntax
 
 An omitted optional artifact and ``-`` both read stdin. ``configctl diff-many`` also reads targets
 from non-terminal stdin, keeps first-seen order, removes duplicates, and continues after a failed
-target.
+target. ``imagectl status`` and ``imagectl resume`` return exit 2 until Global Registry supplies
+durable image operation state; they do not create local state.
 
 Streams and exit status
 -----------------------

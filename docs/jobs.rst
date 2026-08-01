@@ -13,9 +13,9 @@ List, inspect, or invoke a job explicitly:
 .. code-block:: bash
 
    atlas job list
-   atlas job list operations
-   atlas job inspect operations inventory-refresh
-   atlas job run operations inventory-refresh -- --site default
+   atlas job list configuration-operations
+   atlas job inspect configuration-operations inventory-refresh
+   atlas job run configuration-operations inventory-refresh -- --site default
 
 Arguments after ``--`` are passed without shell parsing. A direct job inherits the caller's
 current working directory. The manifest may provide ``default_timeout_seconds``.
@@ -30,7 +30,7 @@ live below ``/etc/atlas/jobs.d``:
 .. code-block:: yaml
 
    schema: atlas.job-instance/v1
-   release: operations
+   release: configuration-operations
    job: inventory-refresh
    user: ops
    working_directory: /home/ops/repos/provisioning
@@ -83,7 +83,8 @@ Nested execution
 ----------------
 
 Atlas prepends ``/opt/atlas/shims`` and the artifact runtime ``bin`` directory to child ``PATH``.
-A command may therefore compose public primitive commands as child processes.
+A controller may therefore compose another public controller or invoke a private job through the
+Atlas launcher.
 
 Every execution has a ``run_id``. A root execution sets ``operation_id`` to that value and has no
 parent. A nested Atlas process reads ``ATLAS_RUN_ID`` and ``ATLAS_OPERATION_ID``, records the
@@ -96,4 +97,4 @@ Systemd service artifacts
 Use ``atlas init list`` and ``atlas init diff`` to inspect manifest-declared services. Installation
 writes ``atlas-<release>-<service>.service`` and optional ``.timer`` names, then runs
 ``systemctl daemon-reload``. Atlas does not enable, start, stop, or restart a unit. The complete
-``operations/inventory-refresh`` example is documented in :doc:`operations`.
+``configuration-operations/inventory-refresh`` is documented in :doc:`operations`.

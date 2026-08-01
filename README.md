@@ -18,11 +18,11 @@ runtime:
     version: "3.14.6"
 
 releases:
-  operations:
-    source: "/srv/releases/operations"
+  configuration-operations:
+    source: "/srv/releases/configuration-operations"
     enabled: true
-  host-operations:
-    source: "/srv/releases/host-operations"
+  infrastructure-operations:
+    source: "/srv/releases/infrastructure-operations"
     enabled: true
 ```
 
@@ -39,32 +39,27 @@ See [Configuration](docs/configuration.rst) for supported fields and release sou
 ## Install and run a release
 
 ```bash
-atlas release install ./operations
-atlas release install ./host-operations
+atlas release install ./configuration-operations
+atlas release install ./infrastructure-operations
 atlas runtime install
 atlas release shims
 atlas status
 
 atlas command list --verbose
-atlas run config-diff site web01
+atlas run configctl diff site web01
 
-atlas job list operations
-atlas job run operations inventory-refresh -- --site default
+atlas job list configuration-operations
+atlas job run configuration-operations inventory-refresh -- --site default
 ```
 
 Only commands declared by the manifest receive shims. Jobs are invoked through `atlas job`.
 Release installation and multi-release updates restore the previous active releases and shims when
 validation, activation, or shim generation fails.
 
-The repository includes the separately packaged `operations` release. It provides Ansible
-configuration commands, inventory inspection and refresh, and explicit Proxmox
-plan/apply/verify/rollback commands.
-
-The separately packaged `host-operations` release provides the provider-neutral managed-host
-controller. It exposes only `hostctl`; its lifecycle phases remain private Atlas jobs and delegate
-Proxmox and Ansible work to the reviewed commands in the `operations` release. See
-[Managed host lifecycle](docs/hostctl.rst) for prerequisites, artifacts, failure handling, and
-operator commands.
+The repository includes two first-party releases. `configuration-operations` exposes `configctl`
+and owns the Ansible jobs. `infrastructure-operations` exposes `hostctl`, `imagectl`, `providerctl`,
+and `operationctl`; provider and lifecycle phases remain private Atlas jobs. See
+[Operation controllers](docs/controllers.rst) for the process and security boundaries.
 
 ## Documentation
 
@@ -73,6 +68,8 @@ operator commands.
 - [Configuration](docs/configuration.rst)
 - [Release authoring](docs/releases.rst)
 - [Jobs and job instances](docs/jobs.rst)
+- [First-party command surface](docs/command-surface.rst)
+- [Operation controllers](docs/controllers.rst)
 - [Host operations](docs/operations.rst)
 - [Proxmox operations](docs/proxmox.rst)
 - [Managed host lifecycle](docs/hostctl.rst)

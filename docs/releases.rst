@@ -6,7 +6,7 @@ Layout
 
 .. code-block:: text
 
-   operations/
+   configuration-operations/
    ├── VERSION
    ├── release.yml
    ├── requirements.txt
@@ -24,12 +24,12 @@ Manifest
 .. code-block:: yaml
 
    schema: atlas.release/v1
-   name: operations
+   name: configuration-operations
 
    commands:
-     config-diff:
+     configctl:
        runtime: python
-       entrypoint: commands/config-diff.py
+       entrypoint: commands/configctl.py
 
    jobs:
      inventory-refresh:

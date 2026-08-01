@@ -31,8 +31,8 @@ jobs:
           python -m pip install --upgrade pip==26.2
           python -m pip install \
             -e '.[dev]' \
-            -r operations/requirements.txt \
-            -r host-operations/requirements.txt \
+            -r configuration-operations/requirements.txt \
+            -r infrastructure-operations/requirements.txt \
             -r examples/basic-release/requirements.txt \
             -r examples/companion-release/requirements.txt
           python -m pip check
@@ -42,7 +42,8 @@ jobs:
       - run: |
           python -m coverage run -m pytest -q
           python -m coverage report
-      - run: ruff check src operations host-operations tests
+      - run: >-
+          ruff check src configuration-operations infrastructure-operations tests
       - run: python -m build
       - if: matrix.python-version == '3.14'
         run: make clean-docs html SPHINXOPTS=-W
@@ -74,25 +75,37 @@ jobs:
               source: "file://examples/basic-release"
           C
           atlas release install examples/basic-release
-          atlas release install operations
-          atlas release install host-operations
+          atlas release install configuration-operations
+          atlas release install infrastructure-operations
           python -m venv "$ATLAS_RUNTIME_DIR/python/envs/scripts"
           "$ATLAS_RUNTIME_DIR/python/envs/scripts/bin/python" -m pip install --upgrade pip==26.2
           "$ATLAS_RUNTIME_DIR/python/envs/scripts/bin/python" -m pip install \
             PyYAML==6.0.3 \
-            -r operations/requirements.txt \
-            -r host-operations/requirements.txt \
+            -r configuration-operations/requirements.txt \
+            -r infrastructure-operations/requirements.txt \
             -r examples/basic-release/requirements.txt
           atlas release shims
           atlas release list
           atlas command list
+          diff -u \
+            <(printf '%s\n' configctl hostctl imagectl providerctl operationctl) \
+            <(atlas command list)
           atlas which sample
           atlas which group-nested-sample
           atlas run sample hello --name=hoge
           atlas run group-nested-sample show-context
           atlas which hostctl
-          atlas job list host-operations
+          atlas which configctl
+          atlas which imagectl
+          atlas which providerctl
+          atlas which operationctl
+          atlas job list configuration-operations
+          atlas job list infrastructure-operations
+          "$ATLAS_HOME/shims/configctl" --help
           "$ATLAS_HOME/shims/hostctl" --help
+          "$ATLAS_HOME/shims/imagectl" --help
+          "$ATLAS_HOME/shims/providerctl" --help
+          "$ATLAS_HOME/shims/operationctl" --help
 
   container:
     needs: test-and-validate

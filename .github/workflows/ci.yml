@@ -88,7 +88,9 @@ jobs:
           atlas release list
           atlas command list
           diff -u \
-            <(printf '%s\n' configctl hostctl imagectl providerctl operationctl) \
+            <(printf '%s\n' \
+              configctl hostctl imagectl providerctl operationctl \
+              group-nested-sample sample) \
             <(atlas command list)
           atlas which sample
           atlas which group-nested-sample

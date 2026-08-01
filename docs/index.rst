@@ -8,6 +8,7 @@ Atlas installs and executes commands, jobs, and systemd files declared by versio
    :caption: Operators
 
    runtime
+   command-surface
    usage
    configuration
    releases
@@ -23,3 +24,4 @@ Atlas installs and executes commands, jobs, and systemd files declared by versio
    api
    development
    hosting
+   adr/0002-public-command-controllers

@@ -14,6 +14,7 @@ Atlas installs and executes commands, jobs, and systemd files declared by versio
    jobs
    operations
    proxmox
+   hostctl
 
 .. toctree::
    :maxdepth: 2

@@ -21,6 +21,9 @@ releases:
   operations:
     source: "/srv/releases/operations"
     enabled: true
+  host-operations:
+    source: "/srv/releases/host-operations"
+    enabled: true
 ```
 
 `/etc/atlas/host.yml` provides the host identity exposed to release code:
@@ -37,6 +40,7 @@ See [Configuration](docs/configuration.rst) for supported fields and release sou
 
 ```bash
 atlas release install ./operations
+atlas release install ./host-operations
 atlas runtime install
 atlas release shims
 atlas status
@@ -56,6 +60,12 @@ The repository includes the separately packaged `operations` release. It provide
 configuration commands, inventory inspection and refresh, and explicit Proxmox
 plan/apply/verify/rollback commands.
 
+The separately packaged `host-operations` release provides the provider-neutral managed-host
+controller. It exposes only `hostctl`; its lifecycle phases remain private Atlas jobs and delegate
+Proxmox and Ansible work to the reviewed commands in the `operations` release. See
+[Managed host lifecycle](docs/hostctl.rst) for prerequisites, artifacts, failure handling, and
+operator commands.
+
 ## Documentation
 
 - [Runtime behavior](docs/runtime.rst)
@@ -65,6 +75,7 @@ plan/apply/verify/rollback commands.
 - [Jobs and job instances](docs/jobs.rst)
 - [Host operations](docs/operations.rst)
 - [Proxmox operations](docs/proxmox.rst)
+- [Managed host lifecycle](docs/hostctl.rst)
 - [Python API](docs/api.rst)
 
 ## Development

@@ -37,8 +37,8 @@ include = [
 [tool.pytest.ini_options]
 pythonpath = [
   "src",
-  "operations/modules",
-  "host-operations/modules",
+  "configuration-operations/modules",
+  "infrastructure-operations/modules",
 ]
 
 [tool.ruff]
@@ -77,8 +77,8 @@ select = [
 branch = true
 source = [
   "src",
-  "operations",
-  "host-operations",
+  "configuration-operations",
+  "infrastructure-operations",
 ]
 
 [tool.coverage.report]

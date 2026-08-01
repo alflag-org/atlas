@@ -160,7 +160,12 @@ def test_fake_configurator_contract_and_failures(tmp_path: Path) -> None:
             getattr(broken, method)(context)
 
 
-def test_proxmox_adapter_exact_argv_and_successful_lifecycle(tmp_path: Path) -> None:
+def test_proxmox_adapter_exact_argv_and_successful_lifecycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ATLAS_EXECUTABLE", raising=False)
+    monkeypatch.delenv("ATLAS_HOME", raising=False)
     fixture = make_host_fixture(tmp_path)
     plan = _proxmox_plan(fixture.plan())
     verify = {
@@ -198,19 +203,29 @@ def test_proxmox_adapter_exact_argv_and_successful_lifecycle(tmp_path: Path) -> 
     assert provider.verify(context, evidence).status == "passed"
     assert provider.rollback(context, evidence, _authority(plan)).status == "succeeded"
     assert runner.calls[0]["argv"] == [
+        "/opt/atlas/bin/atlas",
+        "job",
+        "run",
+        "infrastructure-operations",
         "vm-create-plan",
+        "--",
         plan.sources.provider_definition.path,
         plan.sources.provider_input.path,
     ]
     assert runner.calls[1]["argv"] == [
+        "/opt/atlas/bin/atlas",
+        "job",
+        "run",
+        "infrastructure-operations",
         "vm-create-apply",
+        "--",
         plan.sources.provider_definition.path,
         "-",
         "--confirm",
         "child-plan",
     ]
     assert runner.calls[2]["argv"][-1] == "-"
-    assert runner.calls[4]["argv"][0] == "vm-create-rollback"
+    assert runner.calls[4]["argv"][4] == "vm-create-rollback"
 
 
 @pytest.mark.parametrize(
@@ -440,12 +455,22 @@ def test_ansible_adapter_exact_argv_and_results(tmp_path: Path) -> None:
     assert adapter.converge(context).status == "failed"
     assert adapter.verify(context).status == "passed"
     assert adapter.verify(_bootstrap_verification_context(context)).status == "passed"
-    assert runner.calls[0]["argv"] == ["config-validate", "bootstrap"]
-    assert runner.calls[2]["argv"] == ["config-apply", "bootstrap", "web01"]
+    assert runner.calls[0]["argv"] == ["configctl", "validate", "bootstrap"]
+    assert runner.calls[2]["argv"] == [
+        "configctl",
+        "apply",
+        "bootstrap",
+        "web01",
+    ]
     assert runner.calls[2]["timeout_seconds"] == 1800
     assert runner.calls[3]["timeout_seconds"] == 3600
-    assert runner.calls[4]["argv"] == ["config-check", "site", "web01"]
-    assert runner.calls[5]["argv"] == ["config-check", "bootstrap", "web01"]
+    assert runner.calls[4]["argv"] == ["configctl", "check", "site", "web01"]
+    assert runner.calls[5]["argv"] == [
+        "configctl",
+        "check",
+        "bootstrap",
+        "web01",
+    ]
     assert all(call["cwd"] == fixture.project for call in runner.calls)
     timed_out = AnsibleHostConfigurator(
         RecordingRunner([ChildResult((), 124, timed_out=True)])

@@ -38,6 +38,7 @@ include = [
 pythonpath = [
   "src",
   "operations/modules",
+  "host-operations/modules",
 ]
 
 [tool.ruff]
@@ -77,6 +78,7 @@ branch = true
 source = [
   "src",
   "operations",
+  "host-operations",
 ]
 
 [tool.coverage.report]

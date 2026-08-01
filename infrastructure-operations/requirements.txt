@@ -1,0 +1,2 @@
+pydantic==2.13.4
+proxmoxer==2.3.0

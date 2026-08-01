@@ -1,0 +1,110 @@
+schema: atlas.release/v1
+name: infrastructure-operations
+
+commands:
+  hostctl:
+    runtime: python
+    entrypoint: commands/hostctl.py
+  imagectl:
+    runtime: python
+    entrypoint: commands/imagectl.py
+  providerctl:
+    runtime: python
+    entrypoint: commands/providerctl.py
+  operationctl:
+    runtime: python
+    entrypoint: commands/operationctl.py
+
+jobs:
+  host-registry-reserve:
+    runtime: python
+    entrypoint: jobs/host-registry-reserve.py
+    default_timeout_seconds: 60
+  host-provider-allocate:
+    runtime: python
+    entrypoint: jobs/host-provider-allocate.py
+    default_timeout_seconds: 1800
+  host-provider-verify:
+    runtime: python
+    entrypoint: jobs/host-provider-verify.py
+    default_timeout_seconds: 300
+  host-registry-bind:
+    runtime: python
+    entrypoint: jobs/host-registry-bind.py
+    default_timeout_seconds: 60
+  host-wait-ready:
+    runtime: python
+    entrypoint: jobs/host-wait-ready.py
+    default_timeout_seconds: 900
+  host-config-bootstrap:
+    runtime: python
+    entrypoint: jobs/host-config-bootstrap.py
+    default_timeout_seconds: 1800
+  host-config-converge:
+    runtime: python
+    entrypoint: jobs/host-config-converge.py
+    default_timeout_seconds: 3600
+  host-config-verify:
+    runtime: python
+    entrypoint: jobs/host-config-verify.py
+    default_timeout_seconds: 1800
+  host-registry-activate:
+    runtime: python
+    entrypoint: jobs/host-registry-activate.py
+    default_timeout_seconds: 60
+  host-operation-reconcile:
+    runtime: python
+    entrypoint: jobs/host-operation-reconcile.py
+    default_timeout_seconds: 300
+  provider-validate:
+    runtime: python
+    entrypoint: jobs/provider-validate.py
+    default_timeout_seconds: 60
+  proxmox-status:
+    runtime: python
+    entrypoint: jobs/proxmox-status.py
+    default_timeout_seconds: 300
+  vm-create-plan:
+    runtime: python
+    entrypoint: jobs/vm-create-plan.py
+    default_timeout_seconds: 300
+  vm-create-apply:
+    runtime: python
+    entrypoint: jobs/vm-create-apply.py
+    default_timeout_seconds: 1800
+  vm-create-verify:
+    runtime: python
+    entrypoint: jobs/vm-create-verify.py
+    default_timeout_seconds: 300
+  vm-create-rollback:
+    runtime: python
+    entrypoint: jobs/vm-create-rollback.py
+    default_timeout_seconds: 1800
+  vm-template-create-plan:
+    runtime: python
+    entrypoint: jobs/vm-template-create-plan.py
+    default_timeout_seconds: 300
+  vm-template-create-apply:
+    runtime: python
+    entrypoint: jobs/vm-template-create-apply.py
+    default_timeout_seconds: 1800
+  vm-template-create-verify:
+    runtime: python
+    entrypoint: jobs/vm-template-create-verify.py
+    default_timeout_seconds: 300
+  vm-template-create-rollback:
+    runtime: python
+    entrypoint: jobs/vm-template-create-rollback.py
+    default_timeout_seconds: 1800
+  operation-artifact-validate:
+    runtime: python
+    entrypoint: jobs/operation-artifact-validate.py
+    default_timeout_seconds: 60
+  operation-artifact-inspect:
+    runtime: python
+    entrypoint: jobs/operation-artifact-inspect.py
+    default_timeout_seconds: 60
+  operation-status:
+    runtime: python
+    entrypoint: jobs/operation-status.py
+    default_timeout_seconds: 60

@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh the provisioning inventory cache hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=atlas-configuration-operations-inventory-refresh.service
+
+[Install]
+WantedBy=timers.target

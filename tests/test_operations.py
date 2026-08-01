@@ -7,8 +7,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import atlas_configuration_operations.child as child_module
+import atlas_configuration_operations.controller as controller_module
 import pytest
-from atlas_operations.config_project import (
+from atlas_configuration_operations.config_project import (
     inventory_path,
     playbook_path,
     project_config,
@@ -21,17 +23,15 @@ from atlas import cli
 from atlas.manifests import load_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
-OPERATIONS = ROOT / "operations"
+CONFIGURATION_OPERATIONS = ROOT / "configuration-operations"
+INFRASTRUCTURE_OPERATIONS = ROOT / "infrastructure-operations"
 PROVISIONING_FIXTURE = ROOT / "tests/fixtures/provisioning"
 
 
-def _load_command(name: str):
-    namespace = runpy.run_path(str(OPERATIONS / "commands" / f"{name}.py"))
-    return namespace["main"]
-
-
 def _load_job(name: str):
-    namespace = runpy.run_path(str(OPERATIONS / "jobs" / f"{name}.py"))
+    namespace = runpy.run_path(
+        str(CONFIGURATION_OPERATIONS / "jobs" / f"{name}.py")
+    )
     return namespace["main"]
 
 
@@ -54,44 +54,61 @@ def _project(tmp_path: Path) -> Path:
     return project
 
 
-def test_operations_release_manifest_is_valid() -> None:
-    manifest = load_manifest(OPERATIONS)
+def test_first_party_manifests_expose_only_domain_controllers() -> None:
+    configuration = load_manifest(CONFIGURATION_OPERATIONS)
+    infrastructure = load_manifest(INFRASTRUCTURE_OPERATIONS)
 
-    assert manifest.name == "operations"
-    assert list(manifest.commands) == [
+    assert configuration.name == "configuration-operations"
+    assert list(configuration.commands) == ["configctl"]
+    assert list(configuration.jobs) == [
         "config-validate",
         "config-check",
         "config-diff",
         "config-apply",
         "inventory-show",
-        "config-diff-many",
-        "proxmox-status",
-        "vm-create-plan",
-        "vm-create-apply",
-        "vm-create-verify",
-        "vm-create-rollback",
-        "vm-template-create-plan",
-        "vm-template-create-apply",
-        "vm-template-create-verify",
-        "vm-template-create-rollback",
-        "operation-artifact-validate",
-        "operation-artifact-inspect",
+        "inventory-refresh",
     ]
-    assert list(manifest.jobs) == ["inventory-refresh"]
-    assert manifest.jobs["inventory-refresh"].default_timeout_seconds == 300
-    service = manifest.services["inventory-refresh"]
+    assert configuration.jobs["inventory-refresh"].default_timeout_seconds == 300
+    service = configuration.services["inventory-refresh"]
     assert service.job == "inventory-refresh"
     assert service.systemd.service.name == "inventory-refresh.service"
     assert service.systemd.timer is not None
     assert service.systemd.timer.name == "inventory-refresh.timer"
-    assert (OPERATIONS / "VERSION").read_text(encoding="utf-8") == "1.1.0\n"
-    assert (OPERATIONS / "requirements.txt").read_text(encoding="utf-8").startswith(
-        "ansible-core"
+
+    assert infrastructure.name == "infrastructure-operations"
+    assert list(infrastructure.commands) == [
+        "hostctl",
+        "imagectl",
+        "providerctl",
+        "operationctl",
+    ]
+    assert list(configuration.commands) + list(infrastructure.commands) == [
+        "configctl",
+        "hostctl",
+        "imagectl",
+        "providerctl",
+        "operationctl",
+    ]
+    assert not (
+        set(configuration.commands)
+        | set(infrastructure.commands)
+    ) & {
+        "config-diff",
+        "vm-create-apply",
+        "vm-template-create-apply",
+        "proxmox-status",
+        "operation-artifact-validate",
+    }
+    assert (CONFIGURATION_OPERATIONS / "VERSION").read_text(encoding="utf-8") == (
+        "1.0.0\n"
+    )
+    assert (INFRASTRUCTURE_OPERATIONS / "VERSION").read_text(encoding="utf-8") == (
+        "1.0.0\n"
     )
 
 
 @pytest.mark.parametrize(
-    ("command_name", "argv", "expected_executable", "expected_args"),
+    ("job_name", "argv", "expected_executable", "expected_args"),
     [
         (
             "config-validate",
@@ -125,8 +142,8 @@ def test_operations_release_manifest_is_valid() -> None:
         ),
     ],
 )
-def test_primitive_commands_delegate_exact_argv(
-    command_name: str,
+def test_configuration_jobs_delegate_exact_argv(
+    job_name: str,
     argv: list[str],
     expected_executable: str,
     expected_args: list[str],
@@ -144,9 +161,12 @@ def test_primitive_commands_delegate_exact_argv(
         calls.append((command, kwargs))
         return Process()
 
-    monkeypatch.setattr("atlas_operations.config_project.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "atlas_configuration_operations.config_project.subprocess.run",
+        fake_run,
+    )
 
-    assert _load_command(command_name)(argv) == 7
+    assert _load_job(job_name)(argv) == 7
     command, kwargs = calls[0]
     assert command == [expected_executable, *expected_args]
     assert kwargs["cwd"] == project
@@ -220,14 +240,17 @@ def test_native_missing_and_validation_diagnostic(
     def missing(*args, **kwargs):
         raise FileNotFoundError("missing")
 
-    monkeypatch.setattr("atlas_operations.config_project.subprocess.run", missing)
+    monkeypatch.setattr(
+        "atlas_configuration_operations.config_project.subprocess.run",
+        missing,
+    )
     assert run_native("ansible-playbook", [], project) == 127
     assert "ansible-playbook command not found" in capsys.readouterr().err
     assert report_error(ValueError("bad input")) == 2
     assert "bad input" in capsys.readouterr().err
 
 
-def test_primitive_commands_report_validation_errors(
+def test_configuration_jobs_report_validation_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -236,37 +259,17 @@ def test_primitive_commands_report_validation_errors(
     project.mkdir()
     monkeypatch.chdir(project)
 
-    assert _load_command("config-apply")(["../site", "web01"]) == 2
+    assert _load_job("config-apply")(["../site", "web01"]) == 2
     assert "invalid playbook name" in capsys.readouterr().err
-
-    assert _load_command("inventory-show")([]) == 2
+    assert _load_job("inventory-show")([]) == 2
     assert "ansible.cfg not found" in capsys.readouterr().err
+    for job_name in ("config-validate", "config-check", "config-diff"):
+        argv = ["site"] if job_name == "config-validate" else ["site", "web01"]
+        assert _load_job(job_name)(argv) == 2
+        assert "playbook not found" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(
-    ("command_name", "argv"),
-    [
-        ("config-validate", ["site"]),
-        ("config-check", ["site", "web01"]),
-        ("config-diff", ["site", "web01"]),
-    ],
-)
-def test_other_primitive_commands_report_missing_playbook(
-    command_name: str,
-    argv: list[str],
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    project = tmp_path / "empty"
-    project.mkdir()
-    monkeypatch.chdir(project)
-
-    assert _load_command(command_name)(argv) == 2
-    assert "playbook not found" in capsys.readouterr().err
-
-
-def test_config_apply_requires_nonempty_target_before_child(
+def test_config_apply_rejects_empty_or_missing_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -280,42 +283,72 @@ def test_config_apply_requires_nonempty_target_before_child(
         called = True
         raise AssertionError("Ansible must not run")
 
-    monkeypatch.setattr("atlas_operations.config_project.subprocess.run", unexpected)
-    main = _load_command("config-apply")
-
+    monkeypatch.setattr(
+        "atlas_configuration_operations.config_project.subprocess.run",
+        unexpected,
+    )
+    main = _load_job("config-apply")
     assert main(["site", ""]) == 2
     assert "target must not be empty" in capsys.readouterr().err
-    assert called is False
     with pytest.raises(SystemExit) as error:
         main(["site"])
     assert error.value.code == 2
     assert called is False
 
 
-def test_config_diff_many_orders_deduplicates_and_keeps_going(
+def test_configctl_dispatches_each_private_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ATLAS_EXECUTABLE", "/atlas")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        controller_module,
+        "run_child",
+        lambda argv: calls.append(argv) or 7,
+    )
+
+    cases = [
+        (["validate", "site"], "config-validate", ["site"]),
+        (["check", "site", "web01"], "config-check", ["site", "web01"]),
+        (["diff", "site", "web01"], "config-diff", ["site", "web01"]),
+        (["apply", "site", "web01"], "config-apply", ["site", "web01"]),
+        (["inventory"], "inventory-show", []),
+    ]
+    for argv, job, child_args in cases:
+        assert controller_module.main(argv) == 7
+        assert calls[-1] == [
+            "/atlas",
+            "job",
+            "run",
+            "configuration-operations",
+            job,
+            "--",
+            *child_args,
+        ]
+
+    with pytest.raises(SystemExit) as raised:
+        controller_module.main(["apply", "site"])
+    assert raised.value.code == 2
+
+
+def test_configctl_diff_many_orders_deduplicates_and_keeps_going(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     calls: list[list[str]] = []
     return_codes = iter([3, 0, 5])
-
-    class Process:
-        def __init__(self, returncode: int) -> None:
-            self.returncode = returncode
-
-    def fake_run(command, **kwargs):
-        assert kwargs == {"check": False, "shell": False}
-        calls.append(command)
-        return Process(next(return_codes))
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        controller_module,
+        "run_child",
+        lambda argv: calls.append(argv) or next(return_codes),
+    )
     monkeypatch.setattr(sys, "stdin", io.StringIO("web02\n\nweb03\nweb01\n"))
 
-    assert _load_command("config-diff-many")(["site", "web01", "web02"]) == 3
+    assert controller_module.main(["diff-many", "site", "web01", "web02"]) == 3
     assert calls == [
-        ["config-diff", "site", "web01"],
-        ["config-diff", "site", "web02"],
-        ["config-diff", "site", "web03"],
+        ["configctl", "diff", "site", "web01"],
+        ["configctl", "diff", "site", "web02"],
+        ["configctl", "diff", "site", "web03"],
     ]
     assert capsys.readouterr().err.splitlines() == [
         "==> web01 <==",
@@ -324,28 +357,14 @@ def test_config_diff_many_orders_deduplicates_and_keeps_going(
     ]
 
 
-def test_config_diff_many_handles_no_targets_and_missing_child(
+def test_configctl_diff_many_handles_no_targets_and_terminal_stdin(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    main = _load_command("config-diff-many")
     monkeypatch.setattr(sys, "stdin", io.StringIO(""))
-    assert main(["site"]) == 2
+    assert controller_module.main(["diff-many", "site"]) == 2
     assert "at least one target" in capsys.readouterr().err
 
-    def missing(*args, **kwargs):
-        raise FileNotFoundError("missing")
-
-    monkeypatch.setattr(subprocess, "run", missing)
-    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
-    assert main(["site", "web01", "web02"]) == 127
-    errors = capsys.readouterr().err
-    assert errors.count("config-diff command not found") == 2
-
-
-def test_config_diff_many_skips_terminal_stdin(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
     class Terminal(io.StringIO):
         def isatty(self) -> bool:
             return True
@@ -354,38 +373,77 @@ def test_config_diff_many_skips_terminal_stdin(
             raise AssertionError("terminal stdin must not be read")
 
     calls: list[list[str]] = []
-
-    class Process:
-        returncode = 0
-
     monkeypatch.setattr(sys, "stdin", Terminal("ignored"))
     monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda command, **kwargs: calls.append(command) or Process(),
+        controller_module,
+        "run_child",
+        lambda argv: calls.append(argv) or 0,
     )
+    assert controller_module.main(["diff-many", "site", "web01"]) == 0
+    assert calls == [["configctl", "diff", "site", "web01"]]
 
-    assert _load_command("config-diff-many")(["site", "web01"]) == 0
-    assert calls == [["config-diff", "site", "web01"]]
+
+def test_configuration_child_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("ATLAS_EXECUTABLE", "/custom/atlas")
+    assert child_module.atlas_executable() == "/custom/atlas"
+    assert child_module.job_argv("config-check", ["site", "web01"]) == [
+        "/custom/atlas",
+        "job",
+        "run",
+        "configuration-operations",
+        "config-check",
+        "--",
+        "site",
+        "web01",
+    ]
+    monkeypatch.delenv("ATLAS_EXECUTABLE")
+    monkeypatch.setenv("ATLAS_HOME", "/srv/atlas")
+    assert child_module.atlas_executable() == "/srv/atlas/bin/atlas"
+    monkeypatch.delenv("ATLAS_HOME")
+    assert child_module.atlas_executable() == "/opt/atlas/bin/atlas"
+
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    class Process:
+        returncode = -15
+
+    monkeypatch.setattr(
+        child_module.subprocess,
+        "run",
+        lambda argv, **kwargs: calls.append((argv, kwargs)) or Process(),
+    )
+    assert child_module.run_child(["child", "arg"]) == 143
+    assert calls == [(["child", "arg"], {"check": False, "shell": False})]
+
+    monkeypatch.setattr(
+        child_module.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError()),
+    )
+    assert child_module.run_child(["missing"]) == 127
+    assert "missing command not found" in capsys.readouterr().err
 
 
-def test_config_diff_many_runs_through_shims_with_nested_correlation(
+def test_configctl_diff_many_preserves_nested_correlation(
     atlas_paths,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_ansible = atlas_paths.runtime_python.parent / "ansible-playbook"
     fake_ansible.write_text(
-        "#!/bin/sh\n"
-        "printf 'ansible-playbook:%s\\n' \"$*\"\n",
+        "#!/bin/sh\nprintf 'ansible-playbook:%s\\n' \"$*\"\n",
         encoding="utf-8",
     )
     fake_ansible.chmod(0o755)
 
-    assert cli.main(["release", "install", str(OPERATIONS)]) == 0
+    assert cli.main(["release", "install", str(CONFIGURATION_OPERATIONS)]) == 0
     monkeypatch.chdir(PROVISIONING_FIXTURE)
     process = subprocess.run(
         [
-            str(atlas_paths.shims / "config-diff-many"),
+            str(atlas_paths.shims / "configctl"),
+            "diff-many",
             "site",
             "fixture",
         ],
@@ -402,20 +460,85 @@ def test_config_diff_many_runs_through_shims_with_nested_correlation(
     ]
     records = [
         json.loads(line)
-        for line in (atlas_paths.logs / "runs.jsonl").read_text(encoding="utf-8").splitlines()
+        for line in (atlas_paths.logs / "runs.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
-    parent = next(record for record in records if record["artifact"] == "config-diff-many")
-    children = [record for record in records if record["artifact"] == "config-diff"]
-    assert parent["parent_run_id"] is None
-    assert parent["operation_id"] == parent["run_id"]
-    assert parent["cwd"] == str(PROVISIONING_FIXTURE)
-    assert [child["args"] for child in children] == [
+    parent = next(
+        record
+        for record in records
+        if record["artifact"] == "configctl"
+        and record["args"][0] == "diff-many"
+    )
+    controllers = [
+        record
+        for record in records
+        if record["artifact"] == "configctl" and record["args"][0] == "diff"
+    ]
+    jobs = [record for record in records if record["artifact"] == "config-diff"]
+    assert [record["args"] for record in controllers] == [
+        ["diff", "site", "fixture"],
+        ["diff", "site", "second"],
+    ]
+    assert [record["args"] for record in jobs] == [
         ["site", "fixture"],
         ["site", "second"],
     ]
-    assert all(child["parent_run_id"] == parent["run_id"] for child in children)
-    assert all(child["operation_id"] == parent["operation_id"] for child in children)
-    assert all(child["cwd"] == str(PROVISIONING_FIXTURE) for child in children)
+    assert all(record["parent_run_id"] == parent["run_id"] for record in controllers)
+    assert all(record["operation_id"] == parent["operation_id"] for record in jobs)
+    assert all(
+        job["parent_run_id"] == controller["run_id"]
+        for job, controller in zip(jobs, controllers, strict=True)
+    )
+
+
+def test_final_release_install_generates_only_controller_shims(
+    atlas_paths,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["release", "install", str(CONFIGURATION_OPERATIONS)]) == 0
+    assert cli.main(["release", "install", str(INFRASTRUCTURE_OPERATIONS)]) == 0
+    capsys.readouterr()
+
+    assert cli.main(["command", "list"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "configctl",
+        "hostctl",
+        "imagectl",
+        "providerctl",
+        "operationctl",
+    ]
+    assert sorted(path.name for path in atlas_paths.shims.iterdir()) == [
+        "configctl",
+        "hostctl",
+        "imagectl",
+        "operationctl",
+        "providerctl",
+    ]
+    for old_name in (
+        "config-diff",
+        "vm-create-apply",
+        "vm-template-create-apply",
+        "proxmox-status",
+        "operation-artifact-validate",
+    ):
+        assert not (atlas_paths.shims / old_name).exists()
+
+    for controller in (
+        "configctl",
+        "hostctl",
+        "imagectl",
+        "providerctl",
+        "operationctl",
+    ):
+        process = subprocess.run(
+            [str(atlas_paths.shims / controller), "--help"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert process.returncode == 0
+        assert f"usage: {controller}" in process.stdout
 
 
 def test_inventory_refresh_job_delegates_exact_argv(
@@ -430,10 +553,9 @@ def test_inventory_refresh_job_delegates_exact_argv(
         returncode = 0
 
     monkeypatch.setattr(
-        "atlas_operations.config_project.subprocess.run",
+        "atlas_configuration_operations.config_project.subprocess.run",
         lambda command, **kwargs: calls.append((command, kwargs)) or Process(),
     )
-
     assert _load_job("inventory-refresh")(["--site", "default"]) == 0
     command, kwargs = calls[0]
     assert command == [
@@ -447,62 +569,37 @@ def test_inventory_refresh_job_delegates_exact_argv(
     assert kwargs["check"] is False
     assert kwargs["shell"] is False
 
-
-def test_inventory_refresh_job_reports_invalid_site(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    project = _project(tmp_path)
-    monkeypatch.chdir(project)
-
     assert _load_job("inventory-refresh")(["--site", "missing"]) == 2
-    assert "inventory not found" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(
-    "command_name",
-    [
+def test_configuration_entrypoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace = runpy.run_path(
+        str(CONFIGURATION_OPERATIONS / "commands/configctl.py"),
+        run_name="configuration_entrypoint_test",
+    )
+    assert namespace["__name__"] == "configuration_entrypoint_test"
+    monkeypatch.setattr(controller_module, "main", lambda: 7)
+    with pytest.raises(SystemExit) as raised:
+        runpy.run_path(
+            str(CONFIGURATION_OPERATIONS / "commands/configctl.py"),
+            run_name="__main__",
+        )
+    assert raised.value.code == 7
+
+    for job_name in (
         "config-validate",
         "config-check",
         "config-diff",
         "config-apply",
         "inventory-show",
-        "config-diff-many",
-        "proxmox-status",
-        "vm-create-plan",
-        "vm-create-apply",
-        "vm-create-verify",
-        "vm-create-rollback",
-        "vm-template-create-plan",
-        "vm-template-create-apply",
-        "vm-template-create-verify",
-        "vm-template-create-rollback",
-        "operation-artifact-validate",
-        "operation-artifact-inspect",
-    ],
-)
-def test_operation_script_entrypoints_show_help(
-    command_name: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    assert callable(_load_command(command_name))
-    monkeypatch.setattr(sys, "argv", [command_name, "--help"])
-    with pytest.raises(SystemExit) as error:
-        runpy.run_path(
-            str(OPERATIONS / "commands" / f"{command_name}.py"),
-            run_name="__main__",
-        )
-    assert error.value.code == 0
-
-
-def test_operation_job_entrypoint_shows_help(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(sys, "argv", ["inventory-refresh", "--help"])
-    with pytest.raises(SystemExit) as error:
-        runpy.run_path(
-            str(OPERATIONS / "jobs/inventory-refresh.py"),
-            run_name="__main__",
-        )
-    assert error.value.code == 0
+        "inventory-refresh",
+    ):
+        monkeypatch.setattr(sys, "argv", [job_name, "--help"])
+        with pytest.raises(SystemExit) as error:
+            runpy.run_path(
+                str(CONFIGURATION_OPERATIONS / "jobs" / f"{job_name}.py"),
+                run_name="__main__",
+            )
+        assert error.value.code == 0

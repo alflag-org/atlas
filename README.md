@@ -1,16 +1,16 @@
 # Atlas
 
-Atlas runs versioned infrastructure operations on a host. Each release declares its commands,
-jobs, and systemd files in `release.yml`. Atlas installs the release, builds a shared Python
-runtime, creates shims for its commands, and records each execution.
+Atlas installs and runs versioned infrastructure operations on a host. A release declares its
+commands, jobs, and systemd files in `release.yml`. Atlas validates the release, builds a shared
+Python runtime, creates command shims, and records every execution.
 
-Infrastructure repositories remain separate. Atlas uses the caller's working directory and
-records its Git state, but does not change repository state, desired state, inventory, playbooks,
-provider configuration, or secrets.
+Infrastructure repositories stay separate. Atlas runs an artifact in the caller's working
+directory and records its Git state, but it does not change desired state, inventory, playbooks,
+provider configuration, repository state, or secrets.
 
-## Configure the host
+## Run Atlas
 
-`/etc/atlas/config.yml` selects the Python runtime and release sources:
+Configure the Python runtime and release sources in `/etc/atlas/config.yml`:
 
 ```yaml
 runtime:
@@ -26,7 +26,7 @@ releases:
     enabled: true
 ```
 
-`/etc/atlas/host.yml` provides the host identity exposed to release code:
+Give the host a name in `/etc/atlas/host.yml`:
 
 ```yaml
 name: control-01
@@ -34,9 +34,7 @@ site: kng01
 environment: production
 ```
 
-See [Configuration](docs/configuration.rst) for supported fields and release source formats.
-
-## Install and run a release
+Install the releases and shared runtime:
 
 ```bash
 atlas release install ./configuration-operations
@@ -44,52 +42,41 @@ atlas release install ./infrastructure-operations
 atlas runtime install
 atlas release shims
 atlas status
-
-atlas command list --verbose
-atlas run configctl diff site web01
-
-atlas job list configuration-operations
-atlas job run configuration-operations inventory-refresh -- --site default
 ```
 
-Only commands declared by the manifest receive shims. Jobs are invoked through `atlas job`.
-Release installation and multi-release updates restore the previous active releases and shims when
-validation, activation, or shim generation fails.
+The first-party releases expose five commands:
 
-The repository includes two first-party releases. `configuration-operations` exposes `configctl`
-and owns the Ansible jobs. `infrastructure-operations` exposes `hostctl`, `imagectl`, `providerctl`,
-and `operationctl`; provider and lifecycle phases remain private Atlas jobs. See
-[Operation controllers](docs/controllers.rst) for the process and security boundaries.
+| Command | Purpose |
+| --- | --- |
+| `configctl` | Validate and apply an Ansible configuration project |
+| `hostctl` | Plan and run a managed-host lifecycle |
+| `imagectl` | Plan and run a machine-image lifecycle |
+| `providerctl` | Validate a provider definition and read provider status |
+| `operationctl` | Validate operation artifacts and read operation status |
 
-## Documentation
+```bash
+atlas command list --verbose
+atlas run configctl diff site web01
+atlas job list infrastructure-operations
+```
 
-- [Runtime behavior](docs/runtime.rst)
-- [CLI usage](docs/usage.rst)
-- [Configuration](docs/configuration.rst)
-- [Release authoring](docs/releases.rst)
-- [Jobs and job instances](docs/jobs.rst)
-- [First-party command surface](docs/command-surface.rst)
-- [Operation controllers](docs/controllers.rst)
-- [Host operations](docs/operations.rst)
-- [Proxmox operations](docs/proxmox.rst)
-- [Managed host lifecycle](docs/hostctl.rst)
-- [Python API](docs/api.rst)
+See [Atlas reference](docs/reference.rst) for host configuration, release manifests, jobs,
+systemd files, execution records, and recovery. See
+[First-party controllers](docs/controllers.rst) for controller inputs and safety rules.
 
-## Development
+## Develop Atlas
 
-Atlas supports Python 3.11 through 3.14. The checked-in development environment uses Python
-3.14.6.
+Atlas supports Python 3.11 through 3.14. The checked-in environment uses Python 3.14.6.
 
 ```bash
 mise install
 mise run setup
 mise run check
-make html SPHINXOPTS=-W
+make clean-docs html SPHINXOPTS=-W
 ```
 
 `mise run check` runs Ruff, the test suite with 100% line and branch coverage, and the package
-build.
-The Docker targets exercise the installed runtime and example release:
+build. The container checks exercise the installed package and bundled releases:
 
 ```bash
 docker compose build

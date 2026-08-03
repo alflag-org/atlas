@@ -11,6 +11,19 @@ from pathlib import Path
 from typing import Protocol
 
 
+def atlas_executable() -> str:
+    """Return the Atlas launcher selected for nested private jobs."""
+    configured = os.environ.get("ATLAS_EXECUTABLE")
+    if configured:
+        return configured
+    return str(Path(os.environ.get("ATLAS_HOME", "/opt/atlas")) / "bin/atlas")
+
+
+def job_argv(release: str, job: str, args: list[str]) -> list[str]:
+    """Build exact argv for a private job without crossing a public CLI."""
+    return [atlas_executable(), "job", "run", release, job, "--", *args]
+
+
 @dataclass(frozen=True)
 class ChildResult:
     argv: tuple[str, ...]

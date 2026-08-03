@@ -220,15 +220,6 @@ def cmd_command_list(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_release_shims(_: argparse.Namespace) -> int:
-    """Regenerate command-only shims."""
-    paths = get_paths()
-    ensure_dirs(paths)
-    names = _refresh_host_artifacts(paths)
-    print(f"generated shims: {len(names)}")
-    return 0
-
-
 def cmd_run(args: argparse.Namespace) -> int:
     """Run one public command through the shared executor."""
     p = get_paths()
@@ -316,8 +307,8 @@ def cmd_job_instance_run(args: argparse.Namespace) -> int:
     return run_job_instance(get_paths(), args.instance)
 
 
-def cmd_init_list(args: argparse.Namespace) -> int:
-    """List Atlas-owned init artifacts."""
+def cmd_systemd_list(args: argparse.Namespace) -> int:
+    """List Atlas-owned systemd services."""
     releases = release_index(get_paths().current_root)
     if args.release is not None and args.release not in releases:
         raise ValueError(f"unknown release: {args.release}")
@@ -329,7 +320,7 @@ def cmd_init_list(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_init_diff(args: argparse.Namespace) -> int:
+def cmd_systemd_diff(args: argparse.Namespace) -> int:
     """Print systemd unit differences."""
     paths = get_paths()
     service = resolve_service(
@@ -341,7 +332,7 @@ def cmd_init_diff(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_init_install(args: argparse.Namespace) -> int:
+def cmd_systemd_install(args: argparse.Namespace) -> int:
     """Install Atlas-owned systemd artifacts."""
     paths = get_paths()
     service = resolve_service(
@@ -354,7 +345,7 @@ def cmd_init_install(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_init_remove(args: argparse.Namespace) -> int:
+def cmd_systemd_remove(args: argparse.Namespace) -> int:
     """Remove Atlas-owned systemd artifacts."""
     paths = get_paths()
     service = resolve_service(
@@ -393,9 +384,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_release_list = release_sub.add_parser("list")
     p_release_list.add_argument("--verbose", action="store_true")
     p_release_list.set_defaults(func=cmd_release_list)
-    p_release_shims = release_sub.add_parser("shims")
-    p_release_shims.set_defaults(func=cmd_release_shims)
-
     p_command = sub.add_parser("command")
     command_sub = p_command.add_subparsers(dest="command_cmd", required=True)
     p_command_list = command_sub.add_parser("list")
@@ -436,17 +424,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_instance_run.add_argument("instance")
     p_instance_run.set_defaults(func=cmd_job_instance_run)
 
-    p_init = sub.add_parser("init")
-    init_sub = p_init.add_subparsers(dest="init_cmd", required=True)
-    p_init_list = init_sub.add_parser("list")
-    p_init_list.add_argument("release", nargs="?")
-    p_init_list.set_defaults(func=cmd_init_list)
+    p_systemd = sub.add_parser("systemd")
+    systemd_sub = p_systemd.add_subparsers(dest="systemd_cmd", required=True)
+    p_systemd_list = systemd_sub.add_parser("list")
+    p_systemd_list.add_argument("release", nargs="?")
+    p_systemd_list.set_defaults(func=cmd_systemd_list)
     for action, function in (
-        ("diff", cmd_init_diff),
-        ("install", cmd_init_install),
-        ("remove", cmd_init_remove),
+        ("diff", cmd_systemd_diff),
+        ("install", cmd_systemd_install),
+        ("remove", cmd_systemd_remove),
     ):
-        action_parser = init_sub.add_parser(action)
+        action_parser = systemd_sub.add_parser(action)
         action_parser.add_argument("release")
         action_parser.add_argument("service")
         action_parser.set_defaults(func=function)

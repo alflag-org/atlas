@@ -1,4 +1,4 @@
-"""Public configctl parser and executable composition."""
+"""Public Atlas Ansible parser and executable composition."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import sys
 from atlas_configuration_operations.child import job_argv, run_child
 
 _JOBS = {
-    "validate": "config-validate",
     "check": "config-check",
     "diff": "config-diff",
     "apply": "config-apply",
@@ -38,18 +37,16 @@ def _diff_many(playbook: str, argv_targets: list[str]) -> int:
     first_failure = 0
     for target in targets:
         print(f"==> {target} <==", file=sys.stderr)
-        return_code = run_child(["configctl", "diff", playbook, target])
+        return_code = run_child(job_argv("config-diff", [playbook, target]))
         if first_failure == 0 and return_code != 0:
             first_failure = return_code
     return first_failure
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="configctl")
+    parser = argparse.ArgumentParser(prog="atlas-ansible")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    validate = subparsers.add_parser("validate")
-    validate.add_argument("playbook")
     for command in ("check", "diff", "apply"):
         child = subparsers.add_parser(command)
         child.add_argument("playbook")
@@ -68,8 +65,6 @@ def main(argv: list[str] | None = None) -> int:
     child_args: list[str]
     if args.command == "inventory":
         child_args = []
-    elif args.command == "validate":
-        child_args = [args.playbook]
     else:
         child_args = [args.playbook, args.target]
     return run_child(job_argv(_JOBS[args.command], child_args))

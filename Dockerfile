@@ -94,4 +94,4 @@ RUN python -m pip install --upgrade pip==26.2 \
 
 USER atlas
 
-CMD ["sh", "-c", "atlas status && atlas release list && atlas command list && configctl --help >/dev/null && hostctl --help >/dev/null && imagectl --help >/dev/null && providerctl --help >/dev/null && operationctl --help >/dev/null && atlas run sample hello --name=docker"]
+CMD ["sh", "-c", "atlas status && atlas release list && atlas command list && atlas-ansible --help >/dev/null && hostctl --help >/dev/null && imagectl --help >/dev/null && atlas run sample hello --name=docker"]

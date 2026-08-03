@@ -1,4 +1,4 @@
-"""Ansible host configuration delegated to configctl."""
+"""Ansible host configuration delegated to private configuration jobs."""
 
 from __future__ import annotations
 
@@ -11,7 +11,10 @@ from atlas_host_operations.subprocesses import (
     ChildResult,
     CommandRunner,
     SubprocessRunner,
+    job_argv,
 )
+
+CONFIGURATION_RELEASE = "configuration-operations"
 
 
 class AnsibleHostConfigurator:
@@ -28,7 +31,11 @@ class AnsibleHostConfigurator:
             context.plan.configuration.converge_playbook,
         ):
             result = self._runner.run(
-                ["configctl", "validate", playbook],
+                job_argv(
+                    CONFIGURATION_RELEASE,
+                    "ansible-syntax-check",
+                    [playbook],
+                ),
                 cwd=project,
                 timeout_seconds=300,
             )
@@ -57,12 +64,14 @@ class AnsibleHostConfigurator:
 
     def verify(self, context: HostContext) -> VerificationResult:
         result = self._runner.run(
-            [
-                "configctl",
-                "check",
-                context.plan.configuration.converge_playbook,
-                context.plan.configuration.target,
-            ],
+            job_argv(
+                CONFIGURATION_RELEASE,
+                "config-check",
+                [
+                    context.plan.configuration.converge_playbook,
+                    context.plan.configuration.target,
+                ],
+            ),
             cwd=_project(context),
             timeout_seconds=1800,
         )
@@ -86,12 +95,11 @@ class AnsibleHostConfigurator:
         timeout_seconds: int,
     ) -> StepResult:
         result = self._runner.run(
-            [
-                "configctl",
-                "apply",
-                playbook,
-                context.plan.configuration.target,
-            ],
+            job_argv(
+                CONFIGURATION_RELEASE,
+                "config-apply",
+                [playbook, context.plan.configuration.target],
+            ),
             cwd=_project(context),
             timeout_seconds=timeout_seconds,
         )

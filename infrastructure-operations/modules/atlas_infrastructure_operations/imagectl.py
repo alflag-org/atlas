@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 
 from atlas_infrastructure_operations.child import run_job
 
@@ -18,11 +17,6 @@ def _parser() -> argparse.ArgumentParser:
     apply.add_argument("provider")
     apply.add_argument("artifact", nargs="?", default="-")
     apply.add_argument("--confirm", required=True)
-    status = subparsers.add_parser("status")
-    status.add_argument("target")
-    resume = subparsers.add_parser("resume")
-    resume.add_argument("target")
-    resume.add_argument("--confirm", required=True)
     verify = subparsers.add_parser("verify")
     verify.add_argument("provider")
     verify.add_argument("artifact", nargs="?", default="-")
@@ -37,12 +31,6 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "plan":
         return run_job("vm-template-create-plan", [args.provider, args.input])
-    if args.command in {"status", "resume"}:
-        print(
-            f"imagectl {args.command} requires durable image operation state",
-            file=sys.stderr,
-        )
-        return 2
     job_args = [args.provider, args.artifact]
     if args.command in {"apply", "rollback"}:
         job_args.extend(["--confirm", args.confirm])

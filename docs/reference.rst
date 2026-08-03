@@ -67,7 +67,6 @@ The manifest supplies a release name; ``atlas release install`` has no name over
    atlas release install ./configuration-operations
    atlas release list --verbose
    atlas runtime install
-   atlas release shims
    atlas status
 
    atlas release update
@@ -105,9 +104,9 @@ through Atlas.
    name: configuration-operations
 
    commands:
-     configctl:
+     atlas-ansible:
        runtime: python
-       entrypoint: commands/configctl.py
+       entrypoint: commands/atlas-ansible.py
 
    jobs:
      inventory-refresh:
@@ -148,11 +147,11 @@ Run commands and jobs
 .. code-block:: bash
 
    atlas command list --verbose
-   atlas which configctl
-   atlas run configctl diff site web01
+   atlas which atlas-ansible
+   atlas run atlas-ansible diff site web01
 
    export PATH="/opt/atlas/shims:$PATH"
-   configctl diff site web01
+   atlas-ansible diff site web01
 
    atlas job list
    atlas job inspect configuration-operations inventory-refresh
@@ -193,10 +192,10 @@ Install systemd files
 
 .. code-block:: bash
 
-   atlas init list configuration-operations
-   atlas init diff configuration-operations inventory-refresh
-   sudo atlas init install configuration-operations inventory-refresh
-   sudo atlas init remove configuration-operations inventory-refresh
+   atlas systemd list configuration-operations
+   atlas systemd diff configuration-operations inventory-refresh
+   sudo atlas systemd install configuration-operations inventory-refresh
+   sudo atlas systemd remove configuration-operations inventory-refresh
 
 Each managed service has one ``ExecStart`` through ``/opt/atlas/bin/atlas``. It invokes a
 manifest command or a matching job instance. A job-backed service must use

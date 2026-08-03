@@ -10,7 +10,6 @@ from atlas_operations.operation.artifacts import (
     read_artifact_arg,
     write_diag_stderr,
     write_json_stdout,
-    write_text_stdout,
 )
 from atlas_operations.operation.config import (
     ProviderDefinition,
@@ -28,7 +27,7 @@ from atlas_operations.operation.errors import (
 from atlas_operations.operation.evidence import OperationEvidence
 from atlas_operations.operation.files import file_digest
 from atlas_operations.operation.plan import OperationPlan
-from atlas_operations.operation.provider import ProviderQuery, VerifyResult
+from atlas_operations.operation.provider import VerifyResult
 from atlas_operations.operation.proxmox import ProxmoxProviderClient
 from atlas_operations.operation.validate import (
     validate_artifact_data,
@@ -47,39 +46,6 @@ from atlas_operations.operation.vm_template_create import (
     rollback_vm_template_create,
     verify_vm_template_create,
 )
-
-
-def proxmox_status_main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="proxmox-status")
-    parser.add_argument("provider")
-    args = parser.parse_args(argv)
-
-    def command() -> int:
-        definition, _path = _provider_definition(args.provider)
-        state = _provider_client(definition).read_state(ProviderQuery(kind="status"))
-        write_json_stdout({"provider": state.provider, **state.data})
-        return 0
-
-    return _run(command)
-
-
-def provider_validate_main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="provider-validate")
-    parser.add_argument("provider")
-    args = parser.parse_args(argv)
-
-    def command() -> int:
-        definition, _path = _provider_definition(args.provider)
-        write_json_stdout(
-            {
-                "schema": definition.schema_version,
-                "provider": definition.provider,
-                "valid": True,
-            }
-        )
-        return 0
-
-    return _run(command)
 
 
 def vm_create_plan_main(argv: Sequence[str] | None = None) -> int:
@@ -210,36 +176,6 @@ def vm_template_create_rollback_main(argv: Sequence[str] | None = None) -> int:
     )
 
 
-def operation_artifact_validate_main(argv: Sequence[str] | None = None) -> int:
-    parser = _artifact_only_parser("operation-artifact-validate")
-    args = parser.parse_args(argv)
-
-    def command() -> int:
-        artifact = validate_artifact_data(read_artifact_arg(args.artifact))
-        write_json_stdout(
-            {
-                "apiVersion": artifact.api_version,
-                "kind": artifact.kind,
-                "valid": True,
-            }
-        )
-        return 0
-
-    return _run(command)
-
-
-def operation_artifact_inspect_main(argv: Sequence[str] | None = None) -> int:
-    parser = _artifact_only_parser("operation-artifact-inspect")
-    args = parser.parse_args(argv)
-
-    def command() -> int:
-        artifact = validate_artifact_data(read_artifact_arg(args.artifact))
-        write_text_stdout(_inspection(artifact))
-        return 0
-
-    return _run(command)
-
-
 def _plan_parser(prog: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=prog)
     parser.add_argument("provider")
@@ -253,12 +189,6 @@ def _artifact_parser(prog: str, *, confirm: bool = False) -> argparse.ArgumentPa
     parser.add_argument("artifact", nargs="?", default="-")
     if confirm:
         parser.add_argument("--confirm", required=True)
-    return parser
-
-
-def _artifact_only_parser(prog: str) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog=prog)
-    parser.add_argument("artifact", nargs="?", default="-")
     return parser
 
 
@@ -450,36 +380,3 @@ def _rollback(
     validate_evidence(evidence)
     write_json_stdout(evidence.as_artifact())
     return 0 if evidence.rollback.result == "success" else 1
-
-
-def _inspection(artifact: OperationPlan | OperationEvidence) -> str:
-    if isinstance(artifact, OperationPlan):
-        return "\n".join(
-            [
-                f"kind: {artifact.kind}",
-                f"api version: {artifact.api_version}",
-                f"plan id: {artifact.metadata.plan_id}",
-                f"operation: {artifact.metadata.operation_kind}",
-                f"target: {artifact.metadata.target}",
-                f"provider: {artifact.provider.name}",
-                f"node: {artifact.provider.node}",
-                f"preflight: {artifact.preflight.status}",
-                f"apply steps: {len(artifact.apply.steps)}",
-                f"rollback supported: {str(artifact.rollback.supported).lower()}",
-                f"fingerprint: {artifact.metadata.fingerprint}",
-            ]
-        )
-    return "\n".join(
-        [
-            f"kind: {artifact.kind}",
-            f"api version: {artifact.api_version}",
-            f"evidence id: {artifact.metadata.evidence_id}",
-            f"plan id: {artifact.metadata.plan_id}",
-            f"operation: {artifact.metadata.operation_kind}",
-            f"target: {artifact.metadata.target}",
-            f"result: {artifact.metadata.result}",
-            f"provider: {artifact.provider.name}",
-            f"created resources: {len(artifact.created_resources)}",
-            f"rollback result: {artifact.rollback.result or 'not-run'}",
-        ]
-    )

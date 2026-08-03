@@ -1,1 +1,1 @@
-"""Configuration project operations exposed through configctl."""
+"""Ansible operations executed through Atlas."""

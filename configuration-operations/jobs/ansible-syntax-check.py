@@ -11,7 +11,7 @@ from atlas_configuration_operations.config_project import (
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="config-validate")
+    parser = argparse.ArgumentParser(prog="ansible-syntax-check")
     parser.add_argument("playbook")
     args = parser.parse_args(argv)
     root = Path.cwd()

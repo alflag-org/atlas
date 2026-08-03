@@ -1,38 +1,37 @@
 First-party controllers
 =======================
 
-Install both bundled releases, build the shared runtime, and generate shims:
+Install both bundled releases and build the shared runtime:
 
 .. code-block:: bash
 
    atlas release install ./configuration-operations
    atlas release install ./infrastructure-operations
    atlas runtime install
-   atlas release shims
    atlas command list
 
-The public commands are ``configctl``, ``hostctl``, ``imagectl``, ``providerctl``, and ``operationctl``.
-Provider and lifecycle phases are private jobs with no PATH entry.
+The public commands are ``atlas-ansible``, ``hostctl``, and ``imagectl``. Provider validation,
+artifact validation, and lifecycle phases run at their consuming boundaries or as private jobs;
+they have no separate PATH entry.
 
 Each controller parses a fixed set of subcommands and invokes a private job through
-``atlas job run``. ``configctl diff-many`` composes ``configctl diff``. Child processes receive an
-argument list with ``shell=False`` and inherit the working directory, environment, and streams.
-stdout contains results; diagnostics use stderr. Controllers return the child status unchanged,
-and a missing child returns 127.
+``atlas job run``. ``atlas-ansible diff-many`` invokes the private diff job once per target. Child
+processes receive an argument list with ``shell=False`` and inherit the working directory,
+environment, and streams. stdout contains results; diagnostics use stderr. Controllers return the
+child status unchanged, and a missing child returns 127.
 
-Run configuration operations with configctl
--------------------------------------------
+Run Ansible with Atlas
+----------------------
 
-``configctl`` operates on the Ansible project in the current directory:
+``atlas-ansible`` operates on the Ansible project in the current directory:
 
 .. code-block:: text
 
-   configctl validate PLAYBOOK
-   configctl check PLAYBOOK TARGET
-   configctl diff PLAYBOOK TARGET
-   configctl diff-many PLAYBOOK [TARGET ...]
-   configctl apply PLAYBOOK TARGET
-   configctl inventory
+   atlas-ansible check PLAYBOOK TARGET
+   atlas-ansible diff PLAYBOOK TARGET
+   atlas-ansible diff-many PLAYBOOK [TARGET ...]
+   atlas-ansible apply PLAYBOOK TARGET
+   atlas-ansible inventory
 
 ``PLAYBOOK`` is a basename resolved as ``playbooks/PLAYBOOK.yml``. ``TARGET`` becomes one Ansible
 ``--limit`` value. The project root must contain a regular, non-symlink ``ansible.cfg``.
@@ -42,8 +41,6 @@ Run configuration operations with configctl
 
    * - Command
      - Native process
-   * - ``validate site``
-     - ``ansible-playbook playbooks/site.yml --syntax-check``
    * - ``check site web01``
      - ``ansible-playbook playbooks/site.yml --limit web01 --check``
    * - ``diff site web01``
@@ -55,7 +52,9 @@ Run configuration operations with configctl
 
 Atlas sets ``ANSIBLE_CONFIG`` to the checked project file. ``diff-many`` reads targets from argv and
 non-terminal stdin, removes duplicates in first-seen order, runs every target, and returns the
-first non-zero status. It stores no operation state.
+first non-zero status. It stores no operation state. Source lint and standalone syntax validation
+belong to the Ansible repository's checks; ``atlas-ansible`` is the audited execution boundary for
+read-only and mutating Ansible runs.
 
 Prepare Proxmox inputs
 ----------------------
@@ -177,8 +176,8 @@ during the operation, and Binding removal by the same Operation while the Resour
 ``allocated``.
 
 The provisioning project must be a readable Git checkout. Its inventory already contains the
-target, and both playbooks must pass ``configctl validate``. Atlas records the commit and dirty
-state without changing the checkout.
+target, and both playbooks must pass the private ``ansible-syntax-check`` job. Atlas records the
+commit and dirty state without changing the checkout.
 
 Use a Registry profile that contains credential references:
 
@@ -258,33 +257,23 @@ deletes only a VM whose recorded evidence and live ownership marker match, then 
 Binding. Once bootstrap begins, rollback retains the VM and records that reconciliation is
 required. An active host is also retained.
 
-Run image and diagnostic controllers
+Run an image lifecycle with imagectl
 ------------------------------------
+
+``imagectl`` is the provider-independent Atlas image lifecycle boundary. The current
+``infrastructure-operations`` release implements this boundary with Proxmox VM-template jobs.
 
 .. code-block:: text
 
    imagectl plan PROVIDER INPUT
    imagectl apply PROVIDER [PLAN] --confirm PLAN_ID
-   imagectl status TARGET
-   imagectl resume TARGET --confirm PLAN_ID
    imagectl verify PROVIDER [PLAN_OR_EVIDENCE]
    imagectl rollback PROVIDER [EVIDENCE] --confirm PLAN_ID
 
-   providerctl validate PROVIDER
-   providerctl status PROVIDER
-
-   operationctl validate [ARTIFACT]
-   operationctl inspect [ARTIFACT]
-   operationctl status OPERATION_ID
-
 An omitted optional artifact and ``-`` read stdin. ``imagectl`` writes plans, evidence, and
-verification results to stdout. Its ``status`` and ``resume`` commands return 2 because Registry does
-not provide durable machine-image operation state; they do not create local state.
-
-``providerctl validate`` checks the provider file without live access. ``providerctl status`` resolves
-credential references and reads Proxmox nodes and VMs without mutation. ``operationctl validate``
-and ``inspect`` read one ``OperationPlan`` or ``OperationEvidence``. ``operationctl status`` requires
-``ATLAS_REGISTRY_PROFILE`` and reads a Registry Operation by ID.
+verification results to stdout. Plan generation validates the provider definition before use.
+Apply, verify, and rollback validate the supplied artifact at the boundary. Durable image status
+and resume operations are not exposed until Registry-owned image operation state exists.
 
 Keep operation artifacts
 ------------------------

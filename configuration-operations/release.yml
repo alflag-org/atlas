@@ -2,14 +2,14 @@ schema: atlas.release/v1
 name: configuration-operations
 
 commands:
-  configctl:
+  atlas-ansible:
     runtime: python
-    entrypoint: commands/configctl.py
+    entrypoint: commands/atlas-ansible.py
 
 jobs:
-  config-validate:
+  ansible-syntax-check:
     runtime: python
-    entrypoint: jobs/config-validate.py
+    entrypoint: jobs/ansible-syntax-check.py
   config-check:
     runtime: python
     entrypoint: jobs/config-check.py

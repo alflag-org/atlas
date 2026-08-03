@@ -59,9 +59,9 @@ def test_first_party_manifests_expose_only_domain_controllers() -> None:
     infrastructure = load_manifest(INFRASTRUCTURE_OPERATIONS)
 
     assert configuration.name == "configuration-operations"
-    assert list(configuration.commands) == ["configctl"]
+    assert list(configuration.commands) == ["atlas-ansible"]
     assert list(configuration.jobs) == [
-        "config-validate",
+        "ansible-syntax-check",
         "config-check",
         "config-diff",
         "config-apply",
@@ -79,15 +79,11 @@ def test_first_party_manifests_expose_only_domain_controllers() -> None:
     assert list(infrastructure.commands) == [
         "hostctl",
         "imagectl",
-        "providerctl",
-        "operationctl",
     ]
     assert list(configuration.commands) + list(infrastructure.commands) == [
-        "configctl",
+        "atlas-ansible",
         "hostctl",
         "imagectl",
-        "providerctl",
-        "operationctl",
     ]
     assert not (
         set(configuration.commands)
@@ -100,10 +96,10 @@ def test_first_party_manifests_expose_only_domain_controllers() -> None:
         "operation-artifact-validate",
     }
     assert (CONFIGURATION_OPERATIONS / "VERSION").read_text(encoding="utf-8") == (
-        "1.0.0\n"
+        "2.0.0\n"
     )
     assert (INFRASTRUCTURE_OPERATIONS / "VERSION").read_text(encoding="utf-8") == (
-        "1.0.0\n"
+        "2.0.0\n"
     )
 
 
@@ -111,7 +107,7 @@ def test_first_party_manifests_expose_only_domain_controllers() -> None:
     ("job_name", "argv", "expected_executable", "expected_args"),
     [
         (
-            "config-validate",
+            "ansible-syntax-check",
             ["site"],
             "ansible-playbook",
             ["playbooks/site.yml", "--syntax-check"],
@@ -263,8 +259,8 @@ def test_configuration_jobs_report_validation_errors(
     assert "invalid playbook name" in capsys.readouterr().err
     assert _load_job("inventory-show")([]) == 2
     assert "ansible.cfg not found" in capsys.readouterr().err
-    for job_name in ("config-validate", "config-check", "config-diff"):
-        argv = ["site"] if job_name == "config-validate" else ["site", "web01"]
+    for job_name in ("ansible-syntax-check", "config-check", "config-diff"):
+        argv = ["site"] if job_name == "ansible-syntax-check" else ["site", "web01"]
         assert _load_job(job_name)(argv) == 2
         assert "playbook not found" in capsys.readouterr().err
 
@@ -296,7 +292,7 @@ def test_config_apply_rejects_empty_or_missing_target(
     assert called is False
 
 
-def test_configctl_dispatches_each_private_job(
+def test_atlas_ansible_dispatches_each_private_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ATLAS_EXECUTABLE", "/atlas")
@@ -308,7 +304,6 @@ def test_configctl_dispatches_each_private_job(
     )
 
     cases = [
-        (["validate", "site"], "config-validate", ["site"]),
         (["check", "site", "web01"], "config-check", ["site", "web01"]),
         (["diff", "site", "web01"], "config-diff", ["site", "web01"]),
         (["apply", "site", "web01"], "config-apply", ["site", "web01"]),
@@ -329,12 +324,16 @@ def test_configctl_dispatches_each_private_job(
     with pytest.raises(SystemExit) as raised:
         controller_module.main(["apply", "site"])
     assert raised.value.code == 2
+    with pytest.raises(SystemExit) as raised:
+        controller_module.main(["validate", "site"])
+    assert raised.value.code == 2
 
 
-def test_configctl_diff_many_orders_deduplicates_and_keeps_going(
+def test_atlas_ansible_diff_many_orders_deduplicates_and_keeps_going(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    monkeypatch.setenv("ATLAS_EXECUTABLE", "/atlas")
     calls: list[list[str]] = []
     return_codes = iter([3, 0, 5])
     monkeypatch.setattr(
@@ -346,9 +345,36 @@ def test_configctl_diff_many_orders_deduplicates_and_keeps_going(
 
     assert controller_module.main(["diff-many", "site", "web01", "web02"]) == 3
     assert calls == [
-        ["configctl", "diff", "site", "web01"],
-        ["configctl", "diff", "site", "web02"],
-        ["configctl", "diff", "site", "web03"],
+        [
+            "/atlas",
+            "job",
+            "run",
+            "configuration-operations",
+            "config-diff",
+            "--",
+            "site",
+            "web01",
+        ],
+        [
+            "/atlas",
+            "job",
+            "run",
+            "configuration-operations",
+            "config-diff",
+            "--",
+            "site",
+            "web02",
+        ],
+        [
+            "/atlas",
+            "job",
+            "run",
+            "configuration-operations",
+            "config-diff",
+            "--",
+            "site",
+            "web03",
+        ],
     ]
     assert capsys.readouterr().err.splitlines() == [
         "==> web01 <==",
@@ -357,10 +383,11 @@ def test_configctl_diff_many_orders_deduplicates_and_keeps_going(
     ]
 
 
-def test_configctl_diff_many_handles_no_targets_and_terminal_stdin(
+def test_atlas_ansible_diff_many_handles_no_targets_and_terminal_stdin(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    monkeypatch.setenv("ATLAS_EXECUTABLE", "/atlas")
     monkeypatch.setattr(sys, "stdin", io.StringIO(""))
     assert controller_module.main(["diff-many", "site"]) == 2
     assert "at least one target" in capsys.readouterr().err
@@ -380,7 +407,18 @@ def test_configctl_diff_many_handles_no_targets_and_terminal_stdin(
         lambda argv: calls.append(argv) or 0,
     )
     assert controller_module.main(["diff-many", "site", "web01"]) == 0
-    assert calls == [["configctl", "diff", "site", "web01"]]
+    assert calls == [
+        [
+            "/atlas",
+            "job",
+            "run",
+            "configuration-operations",
+            "config-diff",
+            "--",
+            "site",
+            "web01",
+        ]
+    ]
 
 
 def test_configuration_child_contract(
@@ -427,7 +465,7 @@ def test_configuration_child_contract(
     assert "missing command not found" in capsys.readouterr().err
 
 
-def test_configctl_diff_many_preserves_nested_correlation(
+def test_atlas_ansible_diff_many_preserves_nested_correlation(
     atlas_paths,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -442,7 +480,7 @@ def test_configctl_diff_many_preserves_nested_correlation(
     monkeypatch.chdir(PROVISIONING_FIXTURE)
     process = subprocess.run(
         [
-            str(atlas_paths.shims / "configctl"),
+            str(atlas_paths.shims / "atlas-ansible"),
             "diff-many",
             "site",
             "fixture",
@@ -467,29 +505,16 @@ def test_configctl_diff_many_preserves_nested_correlation(
     parent = next(
         record
         for record in records
-        if record["artifact"] == "configctl"
+        if record["artifact"] == "atlas-ansible"
         and record["args"][0] == "diff-many"
     )
-    controllers = [
-        record
-        for record in records
-        if record["artifact"] == "configctl" and record["args"][0] == "diff"
-    ]
     jobs = [record for record in records if record["artifact"] == "config-diff"]
-    assert [record["args"] for record in controllers] == [
-        ["diff", "site", "fixture"],
-        ["diff", "site", "second"],
-    ]
     assert [record["args"] for record in jobs] == [
         ["site", "fixture"],
         ["site", "second"],
     ]
-    assert all(record["parent_run_id"] == parent["run_id"] for record in controllers)
     assert all(record["operation_id"] == parent["operation_id"] for record in jobs)
-    assert all(
-        job["parent_run_id"] == controller["run_id"]
-        for job, controller in zip(jobs, controllers, strict=True)
-    )
+    assert all(job["parent_run_id"] == parent["run_id"] for job in jobs)
 
 
 def test_final_release_install_generates_only_controller_shims(
@@ -502,20 +527,19 @@ def test_final_release_install_generates_only_controller_shims(
 
     assert cli.main(["command", "list"]) == 0
     assert capsys.readouterr().out.splitlines() == [
-        "configctl",
+        "atlas-ansible",
         "hostctl",
         "imagectl",
-        "providerctl",
-        "operationctl",
     ]
     assert sorted(path.name for path in atlas_paths.shims.iterdir()) == [
-        "configctl",
+        "atlas-ansible",
         "hostctl",
         "imagectl",
-        "operationctl",
-        "providerctl",
     ]
     for old_name in (
+        "configctl",
+        "providerctl",
+        "operationctl",
         "config-diff",
         "vm-create-apply",
         "vm-template-create-apply",
@@ -525,11 +549,9 @@ def test_final_release_install_generates_only_controller_shims(
         assert not (atlas_paths.shims / old_name).exists()
 
     for controller in (
-        "configctl",
+        "atlas-ansible",
         "hostctl",
         "imagectl",
-        "providerctl",
-        "operationctl",
     ):
         process = subprocess.run(
             [str(atlas_paths.shims / controller), "--help"],
@@ -576,20 +598,20 @@ def test_configuration_entrypoints(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     namespace = runpy.run_path(
-        str(CONFIGURATION_OPERATIONS / "commands/configctl.py"),
+        str(CONFIGURATION_OPERATIONS / "commands/atlas-ansible.py"),
         run_name="configuration_entrypoint_test",
     )
     assert namespace["__name__"] == "configuration_entrypoint_test"
     monkeypatch.setattr(controller_module, "main", lambda: 7)
     with pytest.raises(SystemExit) as raised:
         runpy.run_path(
-            str(CONFIGURATION_OPERATIONS / "commands/configctl.py"),
+            str(CONFIGURATION_OPERATIONS / "commands/atlas-ansible.py"),
             run_name="__main__",
         )
     assert raised.value.code == 7
 
     for job_name in (
-        "config-validate",
+        "ansible-syntax-check",
         "config-check",
         "config-diff",
         "config-apply",

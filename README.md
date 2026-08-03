@@ -40,23 +40,20 @@ Install the releases and shared runtime:
 atlas release install ./configuration-operations
 atlas release install ./infrastructure-operations
 atlas runtime install
-atlas release shims
 atlas status
 ```
 
-The first-party releases expose five commands:
+The first-party releases expose three commands:
 
 | Command | Purpose |
 | --- | --- |
-| `configctl` | Validate and apply an Ansible configuration project |
+| `atlas-ansible` | Run Ansible checks, diffs, inventory reads, and applies |
 | `hostctl` | Plan and run a managed-host lifecycle |
 | `imagectl` | Plan and run a machine-image lifecycle |
-| `providerctl` | Validate a provider definition and read provider status |
-| `operationctl` | Validate operation artifacts and read operation status |
 
 ```bash
 atlas command list --verbose
-atlas run configctl diff site web01
+atlas run atlas-ansible diff site web01
 atlas job list infrastructure-operations
 ```
 

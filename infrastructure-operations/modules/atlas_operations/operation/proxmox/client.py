@@ -9,13 +9,7 @@ from urllib.parse import urlparse
 from atlas_operations.operation.config import ProxmoxProviderConfig, resolve_secret_ref
 from atlas_operations.operation.errors import ProviderError
 from atlas_operations.operation.plan import CheckResult, OperationPlan, OperationStep
-from atlas_operations.operation.provider import (
-    ProviderCapabilities,
-    ProviderQuery,
-    ProviderState,
-    StepResult,
-    VerifyResult,
-)
+from atlas_operations.operation.provider import StepResult, VerifyResult
 from atlas_operations.operation.proxmox.cloudinit import ipconfig0, nameserver
 from atlas_operations.operation.proxmox.ownership import (
     marker_matches,
@@ -142,33 +136,6 @@ class ProxmoxProviderClient:
         self.config = config
         self.transport = transport if transport is not None else ProxmoxApiTransport(config)
         self._imported_disks: dict[tuple[str, int], str] = {}
-
-    def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities(
-            provider=self.name,
-            live_operations=[
-                "proxmox.vm-create",
-                "proxmox.vm-template-create",
-            ],
-        )
-
-    def read_state(self, query: ProviderQuery) -> ProviderState:
-        if query.kind == "status":
-            try:
-                nodes = self.transport.nodes()
-                vms = self.transport.vms()
-            except Exception as exc:
-                raise ProviderError("failed to read Proxmox status") from exc
-            return ProviderState(
-                provider=self.name,
-                data={
-                    "nodes": nodes,
-                    "vms": vms,
-                    "node_count": len(nodes),
-                    "vm_count": len(vms),
-                },
-            )
-        raise ProviderError(f"unsupported Proxmox query: {query.kind}")
 
     def preflight(self, plan: OperationPlan) -> VerifyResult:
         if plan.metadata.operation_kind == "proxmox.vm-template-create":

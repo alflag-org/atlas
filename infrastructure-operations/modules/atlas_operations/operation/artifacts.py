@@ -21,19 +21,8 @@ def read_artifact_arg(arg: str | None) -> dict[str, Any]:
     raise PlanError(f"artifact does not exist or is unsafe: {arg}")
 
 
-def detect_artifact_kind(data: dict[str, Any]) -> str:
-    kind = data.get("kind")
-    if not isinstance(kind, str):
-        raise PlanError("artifact kind is missing")
-    return kind
-
-
 def write_json_stdout(data: Any) -> None:
     print(json.dumps(data, indent=2, sort_keys=False, ensure_ascii=False, default=str))
-
-
-def write_text_stdout(text: str) -> None:
-    print(text)
 
 
 def write_diag_stderr(text: str) -> None:

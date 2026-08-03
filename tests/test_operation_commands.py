@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import io
 import json
 from pathlib import Path
 
@@ -38,7 +37,7 @@ def _plan_with_command(
     return plan, _write_json(path, plan)
 
 
-def test_status_and_plan_commands_use_explicit_files(
+def test_plan_commands_use_explicit_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -50,12 +49,6 @@ def test_status_and_plan_commands_use_explicit_files(
         "atlas_operations.operation.vm_create._ping_check",
         lambda ip: CheckResult(name="network.ip.unused", status="passed", message=ip),
     )
-
-    assert commands.proxmox_status_main([str(provider_path)]) == 0
-    assert json.loads(capsys.readouterr().out) == {
-        "provider": "proxmox",
-        "query": "status",
-    }
 
     vm_plan, _vm_plan_path = _plan_with_command(
         commands.vm_create_plan_main,
@@ -180,7 +173,7 @@ def test_template_command_lifecycle_and_nonzero_results(
     assert json.loads(capsys.readouterr().out)["status"] == "failed"
 
 
-def test_artifact_validate_and_inspect_support_file_and_stdin(
+def test_apply_rejects_evidence_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -197,21 +190,6 @@ def test_artifact_validate_and_inspect_support_file_and_stdin(
         vm_input,
         capsys,
     )
-
-    assert commands.operation_artifact_validate_main([str(plan_path)]) == 0
-    assert json.loads(capsys.readouterr().out) == {
-        "apiVersion": "atlas.operation/v1",
-        "kind": "OperationPlan",
-        "valid": True,
-    }
-    assert commands.operation_artifact_inspect_main([str(plan_path)]) == 0
-    inspection = capsys.readouterr().out
-    assert f"plan id: {plan['metadata']['planId']}" in inspection
-    assert "rollback supported: true" in inspection
-
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(plan)))
-    assert commands.operation_artifact_validate_main([]) == 0
-    assert json.loads(capsys.readouterr().out)["valid"] is True
 
     assert (
         commands.vm_create_apply_main(
@@ -238,12 +216,6 @@ def test_artifact_validate_and_inspect_support_file_and_stdin(
         == 2
     )
     assert "OperationPlan" in capsys.readouterr().err
-    assert commands.operation_artifact_inspect_main([str(evidence_path)]) == 0
-    inspection = capsys.readouterr().out
-    assert f"evidence id: {evidence['metadata']['evidenceId']}" in inspection
-    assert "rollback result: not-run" in inspection
-
-
 def test_commands_reject_wrong_artifact_boundary_and_confirmation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -402,16 +374,21 @@ def test_command_exit_codes_distinguish_input_provider_and_operation_errors(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    provider_path, _vm_input, _template_input, *_rest = write_operation_inputs(tmp_path)
-    assert commands.proxmox_status_main([str(tmp_path / "missing.yml")]) == 2
+    provider_path, vm_input, _template_input, *_rest = write_operation_inputs(tmp_path)
+    assert (
+        commands.vm_create_plan_main([str(tmp_path / "missing.yml"), str(vm_input)])
+        == 2
+    )
     assert "not found or unsafe" in capsys.readouterr().err
 
-    class BrokenProvider(FakeProvider):
-        def read_state(self, query):
-            raise ProviderError("provider unavailable")
-
-    monkeypatch.setattr(commands, "_provider_client", lambda definition: BrokenProvider())
-    assert commands.proxmox_status_main([str(provider_path)]) == 4
+    monkeypatch.setattr(
+        commands,
+        "_provider_client",
+        lambda definition: (_ for _ in ()).throw(
+            ProviderError("provider unavailable")
+        ),
+    )
+    assert commands.vm_create_plan_main([str(provider_path), str(vm_input)]) == 4
     assert "provider unavailable" in capsys.readouterr().err
 
     monkeypatch.setattr(
@@ -419,7 +396,7 @@ def test_command_exit_codes_distinguish_input_provider_and_operation_errors(
         "_provider_definition",
         lambda path: (_ for _ in ()).throw(OperationError("operation failed")),
     )
-    assert commands.proxmox_status_main([str(provider_path)]) == 1
+    assert commands.vm_create_plan_main([str(provider_path), str(vm_input)]) == 1
     assert "operation failed" in capsys.readouterr().err
 
 
@@ -427,10 +404,10 @@ def test_command_rejects_symlinked_explicit_input(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    provider_path, _vm_input, _template_input, *_rest = write_operation_inputs(tmp_path)
+    provider_path, vm_input, _template_input, *_rest = write_operation_inputs(tmp_path)
     link = tmp_path / "provider-link.yml"
     link.symlink_to(provider_path)
-    assert commands.proxmox_status_main([str(link)]) == 2
+    assert commands.vm_create_plan_main([str(link), str(vm_input)]) == 2
     assert "unsafe" in capsys.readouterr().err
 
 

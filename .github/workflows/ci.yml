@@ -84,12 +84,11 @@ jobs:
             -r configuration-operations/requirements.txt \
             -r infrastructure-operations/requirements.txt \
             -r examples/basic-release/requirements.txt
-          atlas release shims
           atlas release list
           atlas command list
           diff -u \
             <(printf '%s\n' \
-              configctl hostctl imagectl providerctl operationctl \
+              atlas-ansible hostctl imagectl \
               group-nested-sample sample) \
             <(atlas command list)
           atlas which sample
@@ -97,17 +96,13 @@ jobs:
           atlas run sample hello --name=hoge
           atlas run group-nested-sample show-context
           atlas which hostctl
-          atlas which configctl
+          atlas which atlas-ansible
           atlas which imagectl
-          atlas which providerctl
-          atlas which operationctl
           atlas job list configuration-operations
           atlas job list infrastructure-operations
-          "$ATLAS_HOME/shims/configctl" --help
+          "$ATLAS_HOME/shims/atlas-ansible" --help
           "$ATLAS_HOME/shims/hostctl" --help
           "$ATLAS_HOME/shims/imagectl" --help
-          "$ATLAS_HOME/shims/providerctl" --help
-          "$ATLAS_HOME/shims/operationctl" --help
 
   container:
     needs: test-and-validate

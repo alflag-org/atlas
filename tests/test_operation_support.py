@@ -14,13 +14,7 @@ from atlas_operations.operation.config import (
     load_vm_template_create_input,
 )
 from atlas_operations.operation.plan import CheckResult, OperationPlan, OperationStep
-from atlas_operations.operation.provider import (
-    ProviderCapabilities,
-    ProviderQuery,
-    ProviderState,
-    StepResult,
-    VerifyResult,
-)
+from atlas_operations.operation.provider import StepResult, VerifyResult
 
 
 class FakeProvider:
@@ -40,18 +34,6 @@ class FakeProvider:
         self.verify_status = verify_status
         self.applied: list[str] = []
         self.rolled_back: list[str] = []
-
-    def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities(
-            provider=self.name,
-            live_operations=[
-                "proxmox.vm-create",
-                "proxmox.vm-template-create",
-            ],
-        )
-
-    def read_state(self, query: ProviderQuery) -> ProviderState:
-        return ProviderState(provider=self.name, data={"query": query.kind})
 
     def preflight(self, plan: OperationPlan) -> VerifyResult:
         return VerifyResult(

@@ -8,11 +8,9 @@ from pathlib import Path
 import pytest
 import yaml
 from atlas_operations.operation.artifacts import (
-    detect_artifact_kind,
     read_artifact_arg,
     write_diag_stderr,
     write_json_stdout,
-    write_text_stdout,
 )
 from atlas_operations.operation.config import (
     ProviderDefinition,
@@ -155,13 +153,9 @@ def test_explicit_inputs_generate_final_plans(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    definition, vm_plan, template_plan, provider = _plans(tmp_path, monkeypatch)
+    definition, vm_plan, template_plan, _provider = _plans(tmp_path, monkeypatch)
 
     assert definition.provider == "proxmox"
-    assert provider.capabilities().live_operations == [
-        "proxmox.vm-create",
-        "proxmox.vm-template-create",
-    ]
     assert vm_plan.api_version == "atlas.operation/v1"
     assert vm_plan.metadata.operation_kind == "proxmox.vm-create"
     assert vm_plan.provider.mode == "live"
@@ -499,21 +493,16 @@ def test_artifact_roundtrip_and_strict_parsing(
     assert input_file(plan_path) == plan_path
     assert read_json(plan_path)["kind"] == "OperationPlan"
     assert read_artifact_arg(str(plan_path))["kind"] == "OperationPlan"
-    assert detect_artifact_kind(read_artifact_arg(str(plan_path))) == "OperationPlan"
     assert load_plan(plan_path).metadata.plan_id == plan.metadata.plan_id
     assert validate_plan_file(plan_path).metadata.plan_id == plan.metadata.plan_id
     assert validate_artifact_data(read_json(plan_path)).kind == "OperationPlan"
 
     write_json_stdout({"valid": True})
-    write_text_stdout("plain")
     write_diag_stderr("diagnostic")
     streams = capsys.readouterr()
     assert '"valid": true' in streams.out
-    assert "plain" in streams.out
     assert "diagnostic" in streams.err
 
-    with pytest.raises(PlanError, match="kind is missing"):
-        detect_artifact_kind({})
     with pytest.raises(PlanError, match="unsafe"):
         read_artifact_arg(str(tmp_path / "missing.json"))
 

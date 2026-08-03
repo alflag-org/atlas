@@ -91,10 +91,8 @@ def test_infrastructure_manifest_exposes_controllers_and_private_jobs() -> None:
     assert list(manifest.commands) == [
         "hostctl",
         "imagectl",
-        "providerctl",
-        "operationctl",
     ]
-    assert len(manifest.jobs) == 23
+    assert len(manifest.jobs) == 18
     assert manifest.jobs["host-provider-allocate"].default_timeout_seconds == 1800
 
 

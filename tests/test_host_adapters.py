@@ -31,6 +31,8 @@ from atlas_host_operations.subprocesses import (
     ChildResult,
     RecordingRunner,
     SubprocessRunner,
+    atlas_executable,
+    job_argv,
 )
 
 from .test_host_operations_support import make_host_fixture
@@ -434,7 +436,12 @@ def test_proxmox_observe_verify_and_rollback_failures(tmp_path: Path) -> None:
     )
 
 
-def test_ansible_adapter_exact_argv_and_results(tmp_path: Path) -> None:
+def test_ansible_adapter_exact_argv_and_results(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ATLAS_EXECUTABLE", raising=False)
+    monkeypatch.delenv("ATLAS_HOME", raising=False)
     fixture = make_host_fixture(tmp_path)
     plan = fixture.plan()
     context = HostContext(plan)
@@ -455,19 +462,44 @@ def test_ansible_adapter_exact_argv_and_results(tmp_path: Path) -> None:
     assert adapter.converge(context).status == "failed"
     assert adapter.verify(context).status == "passed"
     assert adapter.verify(_bootstrap_verification_context(context)).status == "passed"
-    assert runner.calls[0]["argv"] == ["configctl", "validate", "bootstrap"]
+    assert runner.calls[0]["argv"] == [
+        "/opt/atlas/bin/atlas",
+        "job",
+        "run",
+        "configuration-operations",
+        "ansible-syntax-check",
+        "--",
+        "bootstrap",
+    ]
     assert runner.calls[2]["argv"] == [
-        "configctl",
-        "apply",
+        "/opt/atlas/bin/atlas",
+        "job",
+        "run",
+        "configuration-operations",
+        "config-apply",
+        "--",
         "bootstrap",
         "web01",
     ]
     assert runner.calls[2]["timeout_seconds"] == 1800
     assert runner.calls[3]["timeout_seconds"] == 3600
-    assert runner.calls[4]["argv"] == ["configctl", "check", "site", "web01"]
+    assert runner.calls[4]["argv"] == [
+        "/opt/atlas/bin/atlas",
+        "job",
+        "run",
+        "configuration-operations",
+        "config-check",
+        "--",
+        "site",
+        "web01",
+    ]
     assert runner.calls[5]["argv"] == [
-        "configctl",
-        "check",
+        "/opt/atlas/bin/atlas",
+        "job",
+        "run",
+        "configuration-operations",
+        "config-check",
+        "--",
         "bootstrap",
         "web01",
     ]
@@ -550,7 +582,28 @@ def test_readiness_checks_provider_tcp_ssh_and_cloud_init(tmp_path: Path) -> Non
     assert fake.wait(context, observation).status == "failed"
 
 
-def test_subprocess_and_recording_runners(tmp_path: Path, capsys) -> None:
+def test_subprocess_and_recording_runners(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ATLAS_EXECUTABLE", "/custom/atlas")
+    assert atlas_executable() == "/custom/atlas"
+    assert job_argv("configuration-operations", "config-check", ["site"]) == [
+        "/custom/atlas",
+        "job",
+        "run",
+        "configuration-operations",
+        "config-check",
+        "--",
+        "site",
+    ]
+    monkeypatch.delenv("ATLAS_EXECUTABLE")
+    monkeypatch.setenv("ATLAS_HOME", "/srv/atlas")
+    assert atlas_executable() == "/srv/atlas/bin/atlas"
+    monkeypatch.delenv("ATLAS_HOME")
+    assert atlas_executable() == "/opt/atlas/bin/atlas"
+
     runner = SubprocessRunner()
     result = runner.run(
         [

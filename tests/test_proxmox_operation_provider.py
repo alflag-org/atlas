@@ -10,7 +10,6 @@ import pytest
 from atlas_operations.operation.config import ProxmoxProviderConfig
 from atlas_operations.operation.errors import ProviderError
 from atlas_operations.operation.plan import CheckResult, OperationPlan, OperationStep
-from atlas_operations.operation.provider import ProviderQuery
 from atlas_operations.operation.proxmox.client import (
     ProxmoxApiTransport,
     ProxmoxProviderClient,
@@ -230,30 +229,6 @@ def test_api_transport_reports_dependency_and_configuration_errors(
     monkeypatch.setenv("PROXMOX_TOKEN_ID", "ops@pve!atlas")
     with pytest.raises(ProviderError, match="initialize Proxmox API"):
         ProxmoxApiTransport(_provider_config())
-
-
-def test_provider_status_capabilities_and_query_errors() -> None:
-    client = ProxmoxProviderClient(_provider_config(), transport=FakeTransport())
-    assert client.capabilities().live_operations == [
-        "proxmox.vm-create",
-        "proxmox.vm-template-create",
-    ]
-    state = client.read_state(ProviderQuery(kind="status"))
-    assert state.data["node_count"] == 1
-    assert state.data["vm_count"] == 1
-    with pytest.raises(ProviderError, match="unsupported Proxmox query"):
-        client.read_state(ProviderQuery(kind="unknown"))
-
-    class FailedStatusTransport:
-        def nodes(self) -> list[dict[str, Any]]:
-            raise RuntimeError("status failed")
-
-    failed = ProxmoxProviderClient(
-        _provider_config(),
-        transport=FailedStatusTransport(),
-    )
-    with pytest.raises(ProviderError, match="read Proxmox status"):
-        failed.read_state(ProviderQuery(kind="status"))
 
 
 def test_provider_preflight_checks_vm_and_template(

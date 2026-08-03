@@ -216,18 +216,10 @@ def test_cli_release_update_rejects_unconfigured_release(
     assert "release is not configured: missing" in capsys.readouterr().err
 
 
-def test_cli_release_shims_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
-    home = tmp_path / "opt/atlas"
-    etc = tmp_path / "etc/atlas"
-    var = tmp_path / "var/lib/atlas"
-    etc.mkdir(parents=True)
-    _set_env(monkeypatch, home, etc, var)
-    release = _release(tmp_path / "release")
-    install_release(release, home / "releases", home / "current")
-
-    assert cli.main(["release", "shims"]) == 0
-
-    assert "generated shims: 1" in capsys.readouterr().out
+def test_release_shims_is_not_a_public_command() -> None:
+    with pytest.raises(SystemExit) as error:
+        cli.main(["release", "shims"])
+    assert error.value.code == 2
 
 
 def test_release_install_rejects_broken_current_entry(tmp_path: Path) -> None:

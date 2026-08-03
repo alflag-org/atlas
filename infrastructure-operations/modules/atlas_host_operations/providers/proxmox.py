@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from atlas_infrastructure_operations.child import job_argv
 from pydantic import ValidationError
 
 from atlas_host_operations.errors import AdapterError, UnknownProviderResult
@@ -22,7 +21,10 @@ from atlas_host_operations.subprocesses import (
     ChildResult,
     CommandRunner,
     SubprocessRunner,
+    job_argv,
 )
+
+INFRASTRUCTURE_RELEASE = "infrastructure-operations"
 
 
 class ProxmoxHostProvider:
@@ -36,6 +38,7 @@ class ProxmoxHostProvider:
     def validate(self, context: HostContext) -> list[CheckResult]:
         result = self._runner.run(
             job_argv(
+                INFRASTRUCTURE_RELEASE,
                 "vm-create-plan",
                 [
                     context.plan.sources.provider_definition.path,
@@ -100,6 +103,7 @@ class ProxmoxHostProvider:
             raise AdapterError("Proxmox child plan is missing its plan ID")
         result = self._runner.run(
             job_argv(
+                INFRASTRUCTURE_RELEASE,
                 "vm-create-apply",
                 [
                     context.plan.sources.provider_definition.path,
@@ -247,6 +251,7 @@ class ProxmoxHostProvider:
             raise AdapterError("Proxmox rollback plan ID is missing")
         result = self._runner.run(
             job_argv(
+                INFRASTRUCTURE_RELEASE,
                 "vm-create-rollback",
                 [
                     context.plan.sources.provider_definition.path,
@@ -279,6 +284,7 @@ class ProxmoxHostProvider:
     ) -> tuple[ChildResult, dict[str, Any]]:
         result = self._runner.run(
             job_argv(
+                INFRASTRUCTURE_RELEASE,
                 "vm-create-verify",
                 [context.plan.sources.provider_definition.path, "-"],
             ),

@@ -432,7 +432,7 @@ def test_atomic_install_cleans_temporary_file_on_replace_failure(
     assert sorted(tmp_path.iterdir()) == [source]
 
 
-def test_init_cli_uses_systemd_adapter(
+def test_systemd_cli_uses_systemd_adapter(
     atlas_paths,
     release_factory,
     monkeypatch: pytest.MonkeyPatch,
@@ -474,16 +474,19 @@ def test_init_cli_uses_systemd_adapter(
             return [Path("/etc/systemd/system/atlas-worker-refresh.service")]
 
     monkeypatch.setattr(cli, "SystemdAdapter", Adapter)
-    assert cli.main(["init", "list"]) == 0
+    with pytest.raises(SystemExit) as error:
+        cli.main(["init", "list"])
+    assert error.value.code == 2
+    assert cli.main(["systemd", "list"]) == 0
     assert capsys.readouterr().out == "worker\trefresh\tsystemd\n"
-    assert cli.main(["init", "list", "worker"]) == 0
+    assert cli.main(["systemd", "list", "worker"]) == 0
     assert capsys.readouterr().out == "worker\trefresh\tsystemd\n"
-    assert cli.main(["init", "diff", "worker", "refresh"]) == 0
+    assert cli.main(["systemd", "diff", "worker", "refresh"]) == 0
     assert capsys.readouterr().out == "unit diff\n"
-    assert cli.main(["init", "install", "worker", "refresh"]) == 0
+    assert cli.main(["systemd", "install", "worker", "refresh"]) == 0
     assert "atlas-worker-refresh.service" in capsys.readouterr().out
-    assert cli.main(["init", "remove", "worker", "refresh"]) == 0
+    assert cli.main(["systemd", "remove", "worker", "refresh"]) == 0
     assert "atlas-worker-refresh.service" in capsys.readouterr().out
     assert calls == ["diff:refresh", "install:refresh", "remove:refresh"]
-    assert cli.main(["init", "list", "missing"]) == 2
+    assert cli.main(["systemd", "list", "missing"]) == 2
     assert "unknown release: missing" in capsys.readouterr().err

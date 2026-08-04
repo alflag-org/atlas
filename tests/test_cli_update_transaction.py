@@ -13,17 +13,20 @@ def _set_env(monkeypatch, home: Path, etc: Path, var: Path) -> None:
 
 
 def _write_release(path: Path, release_name: str, release_version: str, command_name: str) -> Path:
-    (path / "commands").mkdir(parents=True, exist_ok=True)
+    (path / "modules").mkdir(parents=True, exist_ok=True)
     (path / "modules").mkdir(parents=True, exist_ok=True)
     (path / "VERSION").write_text(f"{release_version}\n", encoding="utf-8")
-    (path / "commands" / f"{command_name}.py").write_text("print('ok')\n", encoding="utf-8")
+    module_name = command_name.replace("-", "_")
+    (path / "modules" / f"{module_name}.py").write_text(
+        "def main(argv: list[str] | None = None) -> int:\n    return 0\n",
+        encoding="utf-8",
+    )
     (path / "release.yml").write_text(
         "schema: atlas.release/v1\n"
         f"name: {release_name}\n"
         "commands:\n"
         f"  {command_name}:\n"
-        "    runtime: python\n"
-        f"    entrypoint: commands/{command_name}.py\n",
+        f"    target: {module_name}:main\n",
         encoding="utf-8",
     )
     return path

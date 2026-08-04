@@ -1,0 +1,152 @@
+from __future__ import annotations
+
+import importlib
+import runpy
+import sys
+from pathlib import Path
+from re import escape
+from types import ModuleType
+
+import pytest
+
+from atlas import release_runner
+
+
+@pytest.fixture
+def selected_release(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    root = tmp_path / "release"
+    modules = root / "modules"
+    modules.mkdir(parents=True)
+    (modules / "runner_target.py").write_text(
+        "def returns_none(argv):\n"
+        "    assert argv == ['one']\n"
+        "\n"
+        "def returns_int(argv):\n"
+        "    return len(argv) + 6\n"
+        "\n"
+        "def returns_bool(argv):\n"
+        "    return True\n"
+        "\n"
+        "def returns_text(argv):\n"
+        "    return 'invalid'\n"
+        "\n"
+        "def no_args():\n"
+        "    return 0\n"
+        "\n"
+        "class NotAFunction:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ATLAS_RELEASE_ROOT", str(root))
+    monkeypatch.syspath_prepend(str(modules))
+    importlib.invalidate_caches()
+    for name in (
+        "runner_target",
+        "runner_outside",
+        "runner_missing",
+    ):
+        sys.modules.pop(name, None)
+    return root
+
+
+def test_target_parts_and_module_selection(selected_release: Path) -> None:
+    assert release_runner._target_parts("runner_target:returns_none") == (
+        "runner_target",
+        "returns_none",
+    )
+    assert release_runner._target_parts("runner_target.returns_none") is None
+
+    module = importlib.import_module("runner_target")
+    assert release_runner._module_is_selected(module) is True
+
+    no_origin = ModuleType("no_origin")
+    assert release_runner._module_is_selected(no_origin) is False
+
+    no_file = ModuleType("no_file")
+    no_file.__file__ = str(selected_release / "modules")
+    assert release_runner._module_is_selected(no_file) is False
+
+
+def test_module_selection_requires_release_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = ModuleType("module")
+    module.__file__ = __file__
+    monkeypatch.delenv("ATLAS_RELEASE_ROOT", raising=False)
+    assert release_runner._module_is_selected(module) is False
+
+
+def test_runner_invokes_targets_and_validates_results(selected_release: Path) -> None:
+    assert release_runner.run_target("runner_target:returns_none", ["one"]) == 0
+    assert release_runner.run_target("runner_target:returns_int", ["one"]) == 7
+
+    with pytest.raises(ValueError, match=escape("target must be package.module:callable")):
+        release_runner.run_target("runner_target.returns_int", [])
+    with pytest.raises(TypeError, match="target must return int or None"):
+        release_runner.run_target("runner_target:returns_bool", [])
+    with pytest.raises(TypeError, match="target must return int or None"):
+        release_runner.run_target("runner_target:returns_text", [])
+
+
+@pytest.mark.parametrize(
+    ("callable_name", "message"),
+    [
+        ("missing", "target is not a function"),
+        ("NotAFunction", "target is not a function"),
+        ("no_args", "target callable must accept argv"),
+    ],
+)
+def test_runner_rejects_invalid_callables(
+    selected_release: Path,
+    callable_name: str,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        release_runner.run_target(f"runner_target:{callable_name}", [])
+
+
+def test_runner_rejects_import_failures_and_unselected_modules(
+    monkeypatch: pytest.MonkeyPatch,
+    selected_release: Path,
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="could not be imported"):
+        release_runner.run_target("runner_missing:main", [])
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "runner_outside.py").write_text(
+        "def main(argv):\n    return 0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(outside))
+    importlib.invalidate_caches()
+    with pytest.raises(ValueError, match="outside the selected release"):
+        release_runner.run_target("runner_outside:main", [])
+
+
+def test_runner_main_uses_supplied_and_process_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+    selected_release: Path,
+) -> None:
+    assert release_runner.main(["runner_target:returns_int", "one"]) == 7
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["atlas_release_runner.py", "runner_target:returns_none", "one"],
+    )
+    assert release_runner.main() == 0
+    with pytest.raises(ValueError, match="target is required"):
+        release_runner.main([])
+
+
+def test_runner_module_entrypoint(
+    monkeypatch: pytest.MonkeyPatch,
+    selected_release: Path,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["atlas_release_runner.py", "runner_target:returns_int", "one"],
+    )
+    with pytest.raises(SystemExit) as raised:
+        runpy.run_path(str(Path(release_runner.__file__)), run_name="__main__")
+    assert raised.value.code == 7

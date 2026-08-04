@@ -1,12 +1,11 @@
 First-party controllers
 =======================
 
-Install both bundled releases and build the shared runtime:
+Install the bundled operations release and build the shared runtime:
 
 .. code-block:: bash
 
-   atlas release install /srv/atlas/source/configuration-operations
-   atlas release install /srv/atlas/source/infrastructure-operations
+   atlas release install /srv/atlas/source/operations
    atlas runtime install
    atlas command list
 
@@ -266,8 +265,8 @@ required. An active host is also retained.
 Run an image lifecycle with imagectl
 ------------------------------------
 
-``imagectl`` is the provider-independent Atlas image lifecycle boundary. The current
-``infrastructure-operations`` release implements this boundary with Proxmox VM-template jobs.
+``imagectl`` is the provider-independent Atlas image lifecycle boundary. The ``operations``
+release implements this boundary with an internal Proxmox adapter and VM-template jobs.
 
 .. code-block:: text
 

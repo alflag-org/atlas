@@ -42,16 +42,18 @@ def test_shims_symlink_to_artifact_runner(monkeypatch, tmp_path: Path) -> None:
 def test_regenerate_shims_removes_stale_files_and_preserves_directories(tmp_path: Path) -> None:
     current = tmp_path / "current"
     release = tmp_path / "releases/sample/0.1.0"
-    (release / "commands").mkdir(parents=True)
+    (release / "modules").mkdir(parents=True)
     (release / "VERSION").write_text("0.1.0\n", encoding="utf-8")
-    (release / "commands/sample.py").write_text("print('sample')\n", encoding="utf-8")
+    (release / "modules/sample.py").write_text(
+        "def main(argv: list[str] | None = None) -> int:\n    return 0\n",
+        encoding="utf-8",
+    )
     (release / "release.yml").write_text(
         "schema: atlas.release/v1\n"
         "name: sample\n"
         "commands:\n"
         "  sample:\n"
-        "    runtime: python\n"
-        "    entrypoint: commands/sample.py\n",
+        "    target: sample:main\n",
         encoding="utf-8",
     )
     current.mkdir(parents=True)
@@ -114,16 +116,18 @@ def test_release_shims_fails_on_collision(monkeypatch, tmp_path: Path, capsys) -
 
     for name in ["one", "two"]:
         release = tmp_path / name
-        (release / "commands").mkdir(parents=True)
+        (release / "modules").mkdir(parents=True)
         (release / "VERSION").write_text("0.1.0\n", encoding="utf-8")
-        (release / "commands/dup.py").write_text("print('dup')\n", encoding="utf-8")
+        (release / "modules/dup.py").write_text(
+            "def main(argv: list[str] | None = None) -> int:\n    return 0\n",
+            encoding="utf-8",
+        )
         (release / "release.yml").write_text(
             "schema: atlas.release/v1\n"
             f"name: {name}\n"
             "commands:\n"
             "  dup:\n"
-            "    runtime: python\n"
-            "    entrypoint: commands/dup.py\n",
+            "    target: dup:main\n",
             encoding="utf-8",
         )
         if name == "one":

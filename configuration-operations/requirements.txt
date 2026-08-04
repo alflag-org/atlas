@@ -1,2 +1,0 @@
-ansible-core==2.19.11; python_version < "3.12"
-ansible-core==2.21.2; python_version >= "3.12"

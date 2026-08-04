@@ -17,7 +17,6 @@ def _set_env(monkeypatch, home: Path, etc: Path, var: Path) -> None:
 
 
 def _write_release(path: Path, release_version: str, command_name: str, marker: str) -> Path:
-    (path / "commands").mkdir(parents=True)
     (path / "modules").mkdir(parents=True)
     (path / "VERSION").write_text(f"{release_version}\n", encoding="utf-8")
     (path / "release.yml").write_text(
@@ -25,12 +24,11 @@ def _write_release(path: Path, release_version: str, command_name: str, marker: 
         f"name: {path.name}\n"
         "commands:\n"
         f"  {command_name}:\n"
-        "    runtime: python\n"
-        f"    entrypoint: commands/{command_name}.py\n",
+        f"    target: {command_name}_entry:main\n",
         encoding="utf-8",
     )
     (path / "modules/sharedmod.py").write_text(f"IDENT = {marker!r}\n", encoding="utf-8")
-    (path / "commands" / f"{command_name}.py").write_text(
+    (path / "modules" / f"{command_name}_entry.py").write_text(
         """
 from __future__ import annotations
 
@@ -41,7 +39,7 @@ from pathlib import Path
 from sharedmod import IDENT
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     payload = {
         "release": os.environ["ATLAS_RELEASE_NAME"],
         "release_root": os.environ["ATLAS_RELEASE_ROOT"],
@@ -126,7 +124,6 @@ def test_run_sets_release_env_and_pythonpath_order(monkeypatch, tmp_path: Path, 
     assert main(["run", "alpha"]) == 0
     payload = json.loads((var / "runner-env.json").read_text(encoding="utf-8"))
     alpha_root = home / "releases/alpha/0.1.0"
-    beta_root = home / "releases/beta/0.2.0"
     assert payload["release"] == "alpha"
     assert payload["release_root"] == str(alpha_root)
     assert payload["artifact"] == "alpha"
@@ -134,8 +131,7 @@ def test_run_sets_release_env_and_pythonpath_order(monkeypatch, tmp_path: Path, 
     assert payload["legacy_present"] is False
     assert payload["ident"] == "alpha"
     assert payload["pythonpath"][0] == str(alpha_root / "modules")
-    assert payload["pythonpath"][1] == str(beta_root / "modules")
-    assert payload["pythonpath"][-2] == str(home / "lib/python")
+    assert payload["pythonpath"][1] == str(home / "lib/python")
     assert payload["pythonpath"][-1] == "/existing/pythonpath"
 
 
@@ -151,16 +147,18 @@ def test_run_fails_on_command_collision(monkeypatch, tmp_path: Path, capsys) -> 
     release_one = tmp_path / "release-one"
     release_two = tmp_path / "release-two"
     for root, release_name in [(release_one, "one"), (release_two, "two")]:
-        (root / "commands").mkdir(parents=True)
+        (root / "modules").mkdir(parents=True)
         (root / "VERSION").write_text("0.1.0\n", encoding="utf-8")
-        (root / "commands/collision.py").write_text("print('x')\n", encoding="utf-8")
+        (root / "modules/collision.py").write_text(
+            "def main(argv: list[str] | None = None) -> int:\n    return 0\n",
+            encoding="utf-8",
+        )
         (root / "release.yml").write_text(
             "schema: atlas.release/v1\n"
             f"name: {release_name}\n"
             "commands:\n"
             "  collision:\n"
-            "    runtime: python\n"
-            "    entrypoint: commands/collision.py\n",
+            "    target: collision:main\n",
             encoding="utf-8",
         )
 

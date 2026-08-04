@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,18 +12,33 @@ from .yamlutil import load_yaml_file
 
 SCHEMA = "atlas.release/v1"
 NAME_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
-RUNTIMES = {"python"}
 RESERVED_COMMAND_NAMES = {"atlas", "artifact-runner"}
+TARGET_RE = re.compile(
+    r"^(?P<module>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*):"
+    r"(?P<callable>[A-Za-z_][A-Za-z0-9_]*)$"
+)
 
 
 @dataclass(frozen=True)
 class ExecutableArtifact:
-    """One command or job declared by a release."""
+    """One manifest-declared command or job."""
 
     name: str
-    runtime: str
-    entrypoint: Path
+    target: Target
     default_timeout_seconds: int | None = None
+
+
+@dataclass(frozen=True)
+class Target:
+    """A release module and callable selected by a manifest entry."""
+
+    module: str
+    callable_name: str
+
+    @property
+    def spec(self) -> str:
+        """Return the manifest form of the target."""
+        return f"{self.module}:{self.callable_name}"
 
 
 @dataclass(frozen=True)
@@ -108,6 +124,84 @@ def _release_file(
     return resolved
 
 
+def _module_source(release_root: Path, target: Target, label: str) -> Path:
+    """Resolve a target module only below the selected release's modules root."""
+    modules_root = release_root / "modules"
+    if modules_root.is_symlink():
+        raise ValueError(f"{label}.target must not contain a symlink: {target.spec}")
+    if not modules_root.is_dir():
+        raise ValueError(f"{label}.target module root not found: {modules_root}")
+    module_parts = target.module.split(".")
+    module_path = modules_root.joinpath(*module_parts)
+    candidates = (module_path.with_suffix(".py"), module_path / "__init__.py")
+    for candidate in candidates:
+        current = candidate
+        while current != modules_root:
+            if current.is_symlink():
+                raise ValueError(
+                    f"{label}.target must not contain a symlink: {target.spec}"
+                )
+            current = current.parent
+    existing = [candidate for candidate in candidates if candidate.is_file()]
+    if len(existing) > 1:
+        raise ValueError(f"{label}.target module is ambiguous: {target.module}")
+    if not existing:
+        raise ValueError(f"{label}.target module not found: {target.module}")
+    source = existing[0].resolve()
+    resolved_root = modules_root.resolve()
+    if resolved_root not in source.parents:
+        raise ValueError(
+            f"{label}.target module escapes the release root: {target.module}"
+        )
+    return source
+
+
+def _validate_target_callable(source: Path, target: Target, label: str) -> None:
+    """Validate a target function without importing release code in Atlas."""
+    try:
+        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    except (OSError, SyntaxError, UnicodeDecodeError) as exc:
+        raise ValueError(f"{label}.target module cannot be parsed: {target.module}") from exc
+    functions = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    if target.callable_name not in functions:
+        raise ValueError(
+            f"{label}.target callable is not a function: {target.callable_name}"
+        )
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == target.callable_name
+    )
+    if not isinstance(function, ast.FunctionDef):
+        raise ValueError(  # noqa: TRY004 - manifest validation uses one error type
+            f"{label}.target callable must be a synchronous function: "
+            f"{target.callable_name}"
+        )
+    positional = [*function.args.posonlyargs, *function.args.args]
+    if not positional and function.args.vararg is None:
+        raise ValueError(
+            f"{label}.target callable must accept argv: {target.callable_name}"
+        )
+
+
+def _parse_target(release_root: Path, value: Any, label: str) -> Target:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{label}.target is required")
+    raw = value
+    match = TARGET_RE.fullmatch(raw.strip())
+    if match is None or raw != raw.strip():
+        raise ValueError(f"{label}.target must be package.module:callable")
+    target = Target(match.group("module"), match.group("callable"))
+    source = _module_source(release_root, target, label)
+    _validate_target_callable(source, target, label)
+    return target
+
+
 def _parse_executables(
     release_root: Path,
     raw: Any,
@@ -116,7 +210,7 @@ def _parse_executables(
 ) -> dict[str, ExecutableArtifact]:
     entries = _mapping(raw, kind + "s")
     parsed: dict[str, ExecutableArtifact] = {}
-    allowed = {"runtime", "entrypoint"}
+    allowed = {"target"}
     if kind == "job":
         allowed.add("default_timeout_seconds")
     for raw_name, raw_entry in entries.items():
@@ -126,9 +220,6 @@ def _parse_executables(
         label = f"{kind}s.{name}"
         entry = _mapping(raw_entry, label)
         _reject_unknown(entry, allowed, label)
-        runtime = _required_string(entry, "runtime", label)
-        if runtime not in RUNTIMES:
-            raise ValueError(f"{label}.runtime is unsupported: {runtime}")
         timeout = entry.get("default_timeout_seconds")
         if timeout is not None and (
             isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0
@@ -136,12 +227,10 @@ def _parse_executables(
             raise ValueError(f"{label}.default_timeout_seconds must be a positive integer")
         parsed[name] = ExecutableArtifact(
             name=name,
-            runtime=runtime,
-            entrypoint=_release_file(
+            target=_parse_target(
                 release_root,
-                _required_string(entry, "entrypoint", label),
-                f"{label}.entrypoint",
-                suffix=".py",
+                entry.get("target"),
+                label,
             ),
             default_timeout_seconds=timeout,
         )

@@ -51,11 +51,10 @@ RUN mkdir -p "$ATLAS_ETC_DIR" "$ATLAS_VAR_DIR" \
     && cp docker/atlas/config.yml "$ATLAS_ETC_DIR/config.yml" \
     && cp docker/atlas/host.yml "$ATLAS_ETC_DIR/host.yml" \
     && atlas release install /workspace/examples/basic-release \
-    && atlas release install /workspace/configuration-operations \
-    && atlas release install /workspace/infrastructure-operations \
+    && atlas release install /workspace/operations \
     && atlas runtime install
 
-CMD ["sh", "-c", "ruff check src configuration-operations infrastructure-operations tests && pytest -q && python -m build"]
+CMD ["sh", "-c", "ruff check src operations tests && pytest -q && python -m build"]
 
 
 FROM dev AS wheel

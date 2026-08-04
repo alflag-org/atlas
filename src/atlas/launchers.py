@@ -19,6 +19,16 @@ def sync_atlas_core(home: Path) -> None:
     shutil.copytree(src, dst)
 
 
+def sync_release_runner(home: Path) -> None:
+    """Copy the standalone release child runner into the Atlas home."""
+    source = Path(__file__).with_name("release_runner.py")
+    destination = home / "lib/python/atlas_release_runner.py"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+        raise ValueError(f"release runner destination must be a regular file: {destination}")
+    shutil.copyfile(source, destination)
+
+
 def ensure_atlas_launcher(path: Path) -> None:
     """Create the host-side ``atlas`` launcher script."""
     content = (

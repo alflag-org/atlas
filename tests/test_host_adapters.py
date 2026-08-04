@@ -31,9 +31,8 @@ from atlas_host_operations.subprocesses import (
     ChildResult,
     RecordingRunner,
     SubprocessRunner,
-    atlas_executable,
-    job_argv,
 )
+from atlas_operations.child import atlas_executable, job_argv
 
 from .test_host_operations_support import make_host_fixture
 
@@ -208,7 +207,7 @@ def test_proxmox_adapter_exact_argv_and_successful_lifecycle(
         "/opt/atlas/bin/atlas",
         "job",
         "run",
-        "infrastructure-operations",
+        "operations",
         "vm-create-plan",
         "--",
         plan.sources.provider_definition.path,
@@ -218,7 +217,7 @@ def test_proxmox_adapter_exact_argv_and_successful_lifecycle(
         "/opt/atlas/bin/atlas",
         "job",
         "run",
-        "infrastructure-operations",
+        "operations",
         "vm-create-apply",
         "--",
         plan.sources.provider_definition.path,
@@ -466,7 +465,7 @@ def test_ansible_adapter_exact_argv_and_results(
         "/opt/atlas/bin/atlas",
         "job",
         "run",
-        "configuration-operations",
+        "operations",
         "ansible-syntax-check",
         "--",
         "bootstrap",
@@ -475,7 +474,7 @@ def test_ansible_adapter_exact_argv_and_results(
         "/opt/atlas/bin/atlas",
         "job",
         "run",
-        "configuration-operations",
+        "operations",
         "config-apply",
         "--",
         "bootstrap",
@@ -487,7 +486,7 @@ def test_ansible_adapter_exact_argv_and_results(
         "/opt/atlas/bin/atlas",
         "job",
         "run",
-        "configuration-operations",
+        "operations",
         "config-check",
         "--",
         "site",
@@ -497,7 +496,7 @@ def test_ansible_adapter_exact_argv_and_results(
         "/opt/atlas/bin/atlas",
         "job",
         "run",
-        "configuration-operations",
+        "operations",
         "config-check",
         "--",
         "bootstrap",
@@ -589,11 +588,11 @@ def test_subprocess_and_recording_runners(
 ) -> None:
     monkeypatch.setenv("ATLAS_EXECUTABLE", "/custom/atlas")
     assert atlas_executable() == "/custom/atlas"
-    assert job_argv("configuration-operations", "config-check", ["site"]) == [
+    assert job_argv("config-check", ["site"]) == [
         "/custom/atlas",
         "job",
         "run",
-        "configuration-operations",
+        "operations",
         "config-check",
         "--",
         "site",

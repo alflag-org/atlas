@@ -4,8 +4,7 @@ updates:
   - package-ecosystem: pip
     directories:
       - /
-      - /configuration-operations
-      - /infrastructure-operations
+      - /operations
       - /examples/basic-release
       - /examples/companion-release
     schedule:

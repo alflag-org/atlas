@@ -37,8 +37,8 @@ Atlas reads ``/etc/atlas/config.yml``. The schema is strict and rejects unknown 
        version: "3.14.6"
 
    releases:
-     configuration-operations:
-       source: "/srv/atlas/source/configuration-operations"
+     operations:
+       source: "/srv/atlas/source/operations"
        enabled: true
 
      maintenance:
@@ -126,13 +126,13 @@ The manifest supplies a release name; ``atlas release install`` has no name over
 
 .. code-block:: bash
 
-   atlas release install /srv/atlas/source/configuration-operations
+   atlas release install /srv/atlas/source/operations
    atlas release list --verbose
    atlas runtime install
    atlas status
 
    atlas release update
-   atlas release update configuration-operations
+   atlas release update operations
 
 Atlas validates every requested source, copies it below ``$ATLAS_HOME/releases``, and then switches
 the link below ``$ATLAS_HOME/current``. Installed release directories, active links, launchers, and
@@ -152,29 +152,29 @@ through Atlas.
 
 .. code-block:: text
 
-   configuration-operations/
+   operations/
    ├── VERSION
    ├── release.yml
    ├── requirements.txt
-   ├── commands/
-   ├── jobs/
    ├── init/systemd/
    └── modules/
+       ├── atlas_configuration_operations/
+       ├── atlas_host_operations/
+       ├── atlas_image_operations/
+       └── atlas_operations/
 
 .. code-block:: yaml
 
    schema: atlas.release/v1
-   name: configuration-operations
+   name: operations
 
    commands:
      atlas-ansible:
-       runtime: python
-       entrypoint: commands/atlas-ansible.py
+       target: atlas_configuration_operations.controller:main
 
    jobs:
      inventory-refresh:
-       runtime: python
-       entrypoint: jobs/inventory-refresh.py
+       target: atlas_configuration_operations.inventory_refresh:main
        default_timeout_seconds: 300
 
    services:
@@ -188,13 +188,15 @@ through Atlas.
 Identifiers use lowercase letters, digits, and single hyphens. Command and job names may not
 overlap within a release. ``atlas`` and ``artifact-runner`` are reserved command names.
 
-Atlas rejects unknown manifest keys, unsupported runtimes, missing files, absolute or traversing
-entrypoints, release symlinks, malformed service references, invalid unit suffixes, and duplicate
-public command names across active releases.
+Atlas rejects unknown manifest keys, malformed or missing targets, targets outside the selected
+release, ambiguous module paths, symlinks, malformed service references, invalid unit suffixes, and
+duplicate public command names across active releases. A target uses the
+``package.module:callable`` form. Its module is checked without importing release code; the child
+runner imports that callable only after Atlas starts the isolated release process.
 
-The selected release's ``modules/`` directory is first on ``PYTHONPATH``. Module directories from
-other active releases follow in release-name order, then the Atlas runtime package path and the
-incoming ``PYTHONPATH``. Release code imports its context from ``atlas_core``:
+The selected release's ``modules/`` directory is first on ``PYTHONPATH``, followed by Atlas's
+support packages and the incoming ``PYTHONPATH``. Other active releases are not exposed to the
+child. Release code imports its context from ``atlas_core``:
 
 .. code-block:: python
 
@@ -217,8 +219,8 @@ Run commands and jobs
    atlas-ansible diff site web-01
 
    atlas job list
-   atlas job inspect configuration-operations inventory-refresh
-   atlas job run configuration-operations inventory-refresh -- --site default
+   atlas job inspect operations inventory-refresh
+   atlas job run operations inventory-refresh -- --site default
 
 The shim invokes ``/opt/atlas/bin/artifact-runner``, which delegates to ``atlas run``. Arguments after
 ``--`` reach a job unchanged. Direct jobs inherit the caller's working directory.
@@ -228,7 +230,7 @@ A job instance binds a release job to host settings stored below ``/etc/atlas/jo
 .. code-block:: yaml
 
    schema: atlas.job-instance/v1
-   release: configuration-operations
+   release: operations
    job: inventory-refresh
    user: ops
    working_directory: /srv/provisioning
@@ -260,10 +262,10 @@ Install systemd files
 
 .. code-block:: bash
 
-   atlas systemd list configuration-operations
-   atlas systemd diff configuration-operations inventory-refresh
-   sudo atlas systemd install configuration-operations inventory-refresh
-   sudo atlas systemd remove configuration-operations inventory-refresh
+   atlas systemd list operations
+   atlas systemd diff operations inventory-refresh
+   sudo atlas systemd install operations inventory-refresh
+   sudo atlas systemd remove operations inventory-refresh
 
 Each managed service has one ``ExecStart`` through ``/opt/atlas/bin/atlas``. It invokes a
 manifest command or a matching job instance. A job-backed service must use
@@ -275,9 +277,9 @@ units. Review the diff before using native systemd commands:
 
 .. code-block:: bash
 
-   sudo systemctl enable --now atlas-configuration-operations-inventory-refresh.timer
-   systemctl status atlas-configuration-operations-inventory-refresh.timer
-   journalctl -u atlas-configuration-operations-inventory-refresh.service
+   sudo systemctl enable --now atlas-operations-inventory-refresh.timer
+   systemctl status atlas-operations-inventory-refresh.timer
+   journalctl -u atlas-operations-inventory-refresh.service
 
 Read execution state
 --------------------
@@ -295,6 +297,7 @@ The default layout is:
    /opt/atlas/
      bin/atlas
      bin/artifact-runner
+     lib/python/atlas_release_runner.py
      runtime/
      releases/<release>/<version>/
      current/<release> -> ../releases/<release>/<version>

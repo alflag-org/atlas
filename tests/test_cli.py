@@ -34,7 +34,7 @@ def test_install_list_commands_and_which(monkeypatch, tmp_path: Path, capsys) ->
     assert "group-nested-sample" in commands
 
     assert main(["which", "sample"]) == 0
-    assert capsys.readouterr().out.strip().endswith("/commands/sample.py")
+    assert capsys.readouterr().out.strip() == "sample_command:main"
 
 
 def test_update_list_verbose_and_status_with_multiple_releases(

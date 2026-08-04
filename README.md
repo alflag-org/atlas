@@ -10,7 +10,7 @@ provider configuration, repository state, or secrets.
 
 ## Try Atlas
 
-The repository includes a containerized example. It installs the sample and first-party releases,
+The repository includes a containerized example. It installs the sample and first-party release,
 builds their shared runtime, and prints the available commands without touching host configuration:
 
 ```bash
@@ -45,11 +45,8 @@ runtime:
     version: "3.14.6"
 
 releases:
-  configuration-operations:
-    source: "/srv/atlas/source/configuration-operations"
-    enabled: true
-  infrastructure-operations:
-    source: "/srv/atlas/source/infrastructure-operations"
+  operations:
+    source: "/srv/atlas/source/operations"
     enabled: true
 ```
 
@@ -70,13 +67,12 @@ a release source.
 Install the releases and shared runtime:
 
 ```bash
-atlas release install /srv/atlas/source/configuration-operations
-atlas release install /srv/atlas/source/infrastructure-operations
+atlas release install /srv/atlas/source/operations
 atlas runtime install
 atlas status
 ```
 
-The first-party releases expose three commands:
+The first-party release exposes three commands:
 
 | Command | Purpose |
 | --- | --- |
@@ -87,7 +83,7 @@ The first-party releases expose three commands:
 ```bash
 atlas command list --verbose
 atlas run atlas-ansible diff site web-01
-atlas job list infrastructure-operations
+atlas job list operations
 ```
 
 See [Atlas reference](docs/reference.rst) for host configuration, release manifests, jobs,

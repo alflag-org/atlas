@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+import importlib
 import io
 import json
-import runpy
 import subprocess
 import sys
 from pathlib import Path
 
-import atlas_configuration_operations.child as child_module
 import atlas_configuration_operations.controller as controller_module
+import atlas_operations.child as child_module
 import pytest
 from atlas_configuration_operations.config_project import (
     inventory_path,
@@ -23,16 +23,13 @@ from atlas import cli
 from atlas.manifests import load_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIGURATION_OPERATIONS = ROOT / "configuration-operations"
-INFRASTRUCTURE_OPERATIONS = ROOT / "infrastructure-operations"
+OPERATIONS = ROOT / "operations"
 PROVISIONING_FIXTURE = ROOT / "tests/fixtures/provisioning"
 
 
 def _load_job(name: str):
-    namespace = runpy.run_path(
-        str(CONFIGURATION_OPERATIONS / "jobs" / f"{name}.py")
-    )
-    return namespace["main"]
+    module = importlib.import_module(f"atlas_configuration_operations.{name.replace('-', '_')}")
+    return module.main
 
 
 def _project(tmp_path: Path) -> Path:
@@ -55,50 +52,51 @@ def _project(tmp_path: Path) -> Path:
 
 
 def test_first_party_manifests_expose_only_domain_controllers() -> None:
-    configuration = load_manifest(CONFIGURATION_OPERATIONS)
-    infrastructure = load_manifest(INFRASTRUCTURE_OPERATIONS)
+    manifest = load_manifest(OPERATIONS)
 
-    assert configuration.name == "configuration-operations"
-    assert list(configuration.commands) == ["atlas-ansible"]
-    assert list(configuration.jobs) == [
+    assert manifest.name == "operations"
+    assert list(manifest.commands) == ["atlas-ansible", "hostctl", "imagectl"]
+    assert list(manifest.jobs) == [
         "ansible-syntax-check",
         "config-check",
         "config-diff",
         "config-apply",
         "inventory-show",
         "inventory-refresh",
+        "host-registry-reserve",
+        "host-provider-allocate",
+        "host-provider-verify",
+        "host-registry-bind",
+        "host-wait-ready",
+        "host-config-bootstrap",
+        "host-config-converge",
+        "host-config-verify",
+        "host-registry-activate",
+        "host-operation-reconcile",
+        "vm-create-plan",
+        "vm-create-apply",
+        "vm-create-verify",
+        "vm-create-rollback",
+        "vm-template-create-plan",
+        "vm-template-create-apply",
+        "vm-template-create-verify",
+        "vm-template-create-rollback",
     ]
-    assert configuration.jobs["inventory-refresh"].default_timeout_seconds == 300
-    service = configuration.services["inventory-refresh"]
+    assert manifest.jobs["inventory-refresh"].default_timeout_seconds == 300
+    service = manifest.services["inventory-refresh"]
     assert service.job == "inventory-refresh"
     assert service.systemd.service.name == "inventory-refresh.service"
     assert service.systemd.timer is not None
     assert service.systemd.timer.name == "inventory-refresh.timer"
 
-    assert infrastructure.name == "infrastructure-operations"
-    assert list(infrastructure.commands) == [
-        "hostctl",
-        "imagectl",
-    ]
-    assert list(configuration.commands) + list(infrastructure.commands) == [
-        "atlas-ansible",
-        "hostctl",
-        "imagectl",
-    ]
-    assert not (
-        set(configuration.commands)
-        | set(infrastructure.commands)
-    ) & {
+    assert not set(manifest.commands) & {
         "config-diff",
         "vm-create-apply",
         "vm-template-create-apply",
         "proxmox-status",
         "operation-artifact-validate",
     }
-    assert (CONFIGURATION_OPERATIONS / "VERSION").read_text(encoding="utf-8") == (
-        "2.0.0\n"
-    )
-    assert (INFRASTRUCTURE_OPERATIONS / "VERSION").read_text(encoding="utf-8") == (
+    assert (OPERATIONS / "VERSION").read_text(encoding="utf-8") == (
         "2.0.0\n"
     )
 
@@ -315,7 +313,7 @@ def test_atlas_ansible_dispatches_each_private_job(
             "/atlas",
             "job",
             "run",
-            "configuration-operations",
+            "operations",
             job,
             "--",
             *child_args,
@@ -349,7 +347,7 @@ def test_atlas_ansible_diff_many_orders_deduplicates_and_keeps_going(
             "/atlas",
             "job",
             "run",
-            "configuration-operations",
+            "operations",
             "config-diff",
             "--",
             "site",
@@ -359,7 +357,7 @@ def test_atlas_ansible_diff_many_orders_deduplicates_and_keeps_going(
             "/atlas",
             "job",
             "run",
-            "configuration-operations",
+            "operations",
             "config-diff",
             "--",
             "site",
@@ -369,7 +367,7 @@ def test_atlas_ansible_diff_many_orders_deduplicates_and_keeps_going(
             "/atlas",
             "job",
             "run",
-            "configuration-operations",
+            "operations",
             "config-diff",
             "--",
             "site",
@@ -412,7 +410,7 @@ def test_atlas_ansible_diff_many_handles_no_targets_and_terminal_stdin(
             "/atlas",
             "job",
             "run",
-            "configuration-operations",
+            "operations",
             "config-diff",
             "--",
             "site",
@@ -431,7 +429,7 @@ def test_configuration_child_contract(
         "/custom/atlas",
         "job",
         "run",
-        "configuration-operations",
+        "operations",
         "config-check",
         "--",
         "site",
@@ -476,7 +474,7 @@ def test_atlas_ansible_diff_many_preserves_nested_correlation(
     )
     fake_ansible.chmod(0o755)
 
-    assert cli.main(["release", "install", str(CONFIGURATION_OPERATIONS)]) == 0
+    assert cli.main(["release", "install", str(OPERATIONS)]) == 0
     monkeypatch.chdir(PROVISIONING_FIXTURE)
     process = subprocess.run(
         [
@@ -521,8 +519,7 @@ def test_final_release_install_generates_only_controller_shims(
     atlas_paths,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert cli.main(["release", "install", str(CONFIGURATION_OPERATIONS)]) == 0
-    assert cli.main(["release", "install", str(INFRASTRUCTURE_OPERATIONS)]) == 0
+    assert cli.main(["release", "install", str(OPERATIONS)]) == 0
     capsys.readouterr()
 
     assert cli.main(["command", "list"]) == 0
@@ -594,22 +591,11 @@ def test_inventory_refresh_job_delegates_exact_argv(
     assert _load_job("inventory-refresh")(["--site", "missing"]) == 2
 
 
-def test_configuration_entrypoints(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    namespace = runpy.run_path(
-        str(CONFIGURATION_OPERATIONS / "commands/atlas-ansible.py"),
-        run_name="configuration_entrypoint_test",
+def test_configuration_targets_are_direct_manifest_callables() -> None:
+    manifest = load_manifest(OPERATIONS)
+    assert manifest.commands["atlas-ansible"].target.spec == (
+        "atlas_configuration_operations.controller:main"
     )
-    assert namespace["__name__"] == "configuration_entrypoint_test"
-    monkeypatch.setattr(controller_module, "main", lambda: 7)
-    with pytest.raises(SystemExit) as raised:
-        runpy.run_path(
-            str(CONFIGURATION_OPERATIONS / "commands/atlas-ansible.py"),
-            run_name="__main__",
-        )
-    assert raised.value.code == 7
-
     for job_name in (
         "ansible-syntax-check",
         "config-check",
@@ -618,10 +604,6 @@ def test_configuration_entrypoints(
         "inventory-show",
         "inventory-refresh",
     ):
-        monkeypatch.setattr(sys, "argv", [job_name, "--help"])
-        with pytest.raises(SystemExit) as error:
-            runpy.run_path(
-                str(CONFIGURATION_OPERATIONS / "jobs" / f"{job_name}.py"),
-                run_name="__main__",
-            )
-        assert error.value.code == 0
+        target = manifest.jobs[job_name].target
+        assert target.module == f"atlas_configuration_operations.{job_name.replace('-', '_')}"
+        assert target.callable_name == "main"

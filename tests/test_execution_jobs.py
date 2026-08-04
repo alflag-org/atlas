@@ -5,7 +5,9 @@ import os
 import pwd
 import signal
 import subprocess
+import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,7 @@ from atlas.errors import LockUnavailableError
 from atlas.execution import (
     _append_run_log,
     _forward_termination_signal,
+    _pythonpath,
     _terminate_process_group,
     execute,
     git_context,
@@ -61,10 +64,7 @@ def test_execute_sets_environment_and_logs_correlation(
     capfd,
 ) -> None:
     source = release_factory(name="sample", commands=("sample-show",))
-    modules = source / "modules"
-    modules.mkdir()
     other = release_factory(name="other", commands=())
-    (other / "modules").mkdir()
     _activate(atlas_paths, source)
     _activate(atlas_paths, other)
     monkeypatch.setenv("ATLAS_RUN_ID", "parent-run")
@@ -128,9 +128,7 @@ def test_execute_orders_path_and_preserves_caller_environment(
     tmp_path: Path,
 ) -> None:
     source = release_factory(name="selected")
-    (source / "modules").mkdir()
     other = release_factory(name="other", commands=())
-    (other / "modules").mkdir()
     _activate(atlas_paths, source)
     _activate(atlas_paths, other)
     monkeypatch.setenv("PATH", "/caller/bin")
@@ -187,7 +185,6 @@ def test_execute_orders_path_and_preserves_caller_environment(
     ]
     assert env["PYTHONPATH"].split(os.pathsep) == [
         str((atlas_paths.current_root / "selected").resolve() / "modules"),
-        str((atlas_paths.current_root / "other").resolve() / "modules"),
         str(atlas_paths.home / "lib/python"),
         "/caller/python",
     ]
@@ -581,10 +578,11 @@ def test_advisory_lock_rejects_symlinks_and_non_files(atlas_paths, tmp_path: Pat
 
 def test_execute_timeout_terminates_process_group(atlas_paths, release_factory) -> None:
     source = release_factory(name="worker", commands=(), jobs=("slow-job",))
-    (source / "jobs/slow-job.py").write_text(
-        "import subprocess, sys, time\n"
-        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
-        "time.sleep(30)\n",
+    (source / "modules/slow_job_entry.py").write_text(
+        "def main(argv=None):\n"
+        "    import subprocess, sys, time\n"
+        "    subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        "    time.sleep(30)\n",
         encoding="utf-8",
     )
     _activate(atlas_paths, source)
@@ -601,8 +599,10 @@ def test_execute_timeout_terminates_process_group(atlas_paths, release_factory) 
 
 def test_execute_normalizes_signal_exit(atlas_paths, release_factory) -> None:
     source = release_factory(name="signals", commands=("signal-stop",))
-    (source / "commands/signal-stop.py").write_text(
-        "import os, signal\nos.kill(os.getpid(), signal.SIGTERM)\n",
+    (source / "modules/signal_stop_entry.py").write_text(
+        "def main(argv=None):\n"
+        "    import os, signal\n"
+        "    os.kill(os.getpid(), signal.SIGTERM)\n",
         encoding="utf-8",
     )
     _activate(atlas_paths, source)
@@ -625,6 +625,31 @@ def test_execute_validates_runtime_cwd_and_timeout(
     atlas_paths.runtime_python.unlink()
     with pytest.raises(ValueError, match="runtime python executable not found"):
         execute(atlas_paths, command, [])
+    atlas_paths.runtime_python.symlink_to(Path(sys.executable))
+    atlas_paths.release_runner.unlink()
+    with pytest.raises(ValueError, match="release runner not found"):
+        execute(atlas_paths, command, [])
+    atlas_paths.release_runner.symlink_to(Path(sys.executable))
+    with pytest.raises(ValueError, match="release runner not found"):
+        execute(atlas_paths, command, [])
+
+
+def test_pythonpath_omits_a_missing_selected_modules_root(
+    atlas_paths,
+    release_factory,
+    tmp_path: Path,
+) -> None:
+    source = release_factory()
+    _activate(atlas_paths, source)
+    command = resolve_command(atlas_paths.current_root, "sample-show")
+    missing_release = replace(
+        command.release,
+        root=tmp_path / "missing-release",
+    )
+    missing_command = replace(command, release=missing_release)
+    assert _pythonpath(atlas_paths, missing_command, {}) == str(
+        atlas_paths.home / "lib/python"
+    )
 
 
 def test_execute_reports_popen_missing_after_precheck(
@@ -819,9 +844,10 @@ def test_nested_shim_execution_preserves_operation_and_parent(
     release_factory,
 ) -> None:
     source = release_factory(name="nested", commands=("parent", "child"))
-    (source / "commands/parent.py").write_text(
-        "import subprocess\n"
-        "raise SystemExit(subprocess.run(['child'], check=False).returncode)\n",
+    (source / "modules/parent_entry.py").write_text(
+        "def main(argv=None):\n"
+        "    import subprocess\n"
+        "    raise SystemExit(subprocess.run(['child'], check=False).returncode)\n",
         encoding="utf-8",
     )
     _activate(atlas_paths, source)

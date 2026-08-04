@@ -14,7 +14,7 @@ import pytest
 
 from atlas import cli
 from atlas.catalog import active_releases, resolve_command
-from atlas.launchers import regenerate_shims
+from atlas.launchers import regenerate_shims, sync_release_runner
 from atlas.manifests import validate_name
 from atlas.releases import (
     install_release,
@@ -46,16 +46,19 @@ def _release(
     command_name: str = "sample",
     version: str = "0.1.0",
 ) -> Path:
-    (path / "commands").mkdir(parents=True, exist_ok=True)
+    (path / "modules").mkdir(parents=True, exist_ok=True)
     (path / "VERSION").write_text(f"{version}\n", encoding="utf-8")
-    (path / "commands" / f"{command_name}.py").write_text("print('ok')\n", encoding="utf-8")
+    module_name = command_name.replace("-", "_")
+    (path / "modules" / f"{module_name}.py").write_text(
+        "def main(argv: list[str] | None = None) -> int:\n    return 0\n",
+        encoding="utf-8",
+    )
     (path / "release.yml").write_text(
         "schema: atlas.release/v1\n"
         f"name: {release_name}\n"
         "commands:\n"
         f"  {command_name}:\n"
-        "    runtime: python\n"
-        f"    entrypoint: commands/{command_name}.py\n",
+        f"    target: {module_name}:main\n",
         encoding="utf-8",
     )
     return path
@@ -350,15 +353,21 @@ def test_reversible_release_install_restores_same_version_contents(tmp_path: Pat
     releases = tmp_path / "releases"
     current = tmp_path / "current"
     install_release(source, releases, current)
-    installed_command = releases / "default/0.1.0/commands/sample.py"
-    installed_command.write_text("print('old')\n", encoding="utf-8")
-    (source / "commands/sample.py").write_text("print('new')\n", encoding="utf-8")
+    installed_command = releases / "default/0.1.0/modules/sample.py"
+    installed_command.write_text(
+        "def main(argv: list[str] | None = None) -> int:\n    return 1\n",
+        encoding="utf-8",
+    )
+    (source / "modules/sample.py").write_text(
+        "def main(argv: list[str] | None = None) -> int:\n    return 2\n",
+        encoding="utf-8",
+    )
 
     with pytest.raises(RuntimeError, match="downstream failure"):
         with reversible_release_install(source, releases, current):
             raise RuntimeError("downstream failure")
 
-    assert installed_command.read_text(encoding="utf-8") == "print('old')\n"
+    assert installed_command.read_text(encoding="utf-8").endswith("return 1\n")
     assert (current / "default").resolve() == releases / "default/0.1.0"
 
 
@@ -416,6 +425,7 @@ def test_runner_redacts_sensitive_arguments(monkeypatch: pytest.MonkeyPatch, tmp
     runtime_python = home / "runtime/python/envs/scripts/bin/python"
     runtime_python.parent.mkdir(parents=True)
     runtime_python.symlink_to(Path("/usr/bin/python3"))
+    sync_release_runner(home)
     release = _release(tmp_path / "release")
     install_release(release, home / "releases", home / "current")
     other = _release(tmp_path / "other", release_name="other", command_name="other")
@@ -424,6 +434,25 @@ def test_runner_redacts_sensitive_arguments(monkeypatch: pytest.MonkeyPatch, tmp
 
     log = (var / "logs/runs.jsonl").read_text(encoding="utf-8")
     assert '"args": ["--token", "***", "--api-key=***", "DB_PASSWORD=***"]' in log
+
+
+@pytest.mark.parametrize("destination_kind", ["directory", "symlink"])
+def test_sync_release_runner_rejects_non_file_destination(
+    tmp_path: Path,
+    destination_kind: str,
+) -> None:
+    home = tmp_path / destination_kind / "opt/atlas"
+    destination = home / "lib/python/atlas_release_runner.py"
+    destination.parent.mkdir(parents=True)
+    if destination_kind == "directory":
+        destination.mkdir()
+    else:
+        target = tmp_path / destination_kind / "runner.py"
+        target.write_text("# runner\n", encoding="utf-8")
+        destination.symlink_to(target)
+
+    with pytest.raises(ValueError, match="destination must be a regular file"):
+        sync_release_runner(home)
 
 
 def test_runtime_install_uses_no_extra_requirements_for_release_without_requirements(

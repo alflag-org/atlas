@@ -32,6 +32,7 @@ from .launchers import (
     ensure_atlas_launcher,
     regenerate_shims,
     sync_atlas_core,
+    sync_release_runner,
 )
 from .paths import AtlasPaths, ensure_dirs, get_paths
 from .releases import reversible_release_install, validate_release
@@ -45,6 +46,7 @@ def _bool_text(value: bool) -> str:
 
 def _refresh_host_artifacts(paths: AtlasPaths) -> list[str]:
     sync_atlas_core(paths.home)
+    sync_release_runner(paths.home)
     atlas_launcher = paths.bin_dir / "atlas"
     ensure_atlas_launcher(atlas_launcher)
     ensure_artifact_runner(paths.artifact_runner, atlas_launcher)
@@ -213,7 +215,7 @@ def cmd_command_list(args: argparse.Namespace) -> int:
         if args.verbose:
             print(
                 f"{name}\t{command.release.name}\t{command.release.version}\t"
-                f"{command.artifact.entrypoint}"
+                f"{command.artifact.target.spec}"
             )
         else:
             print(name)
@@ -232,9 +234,9 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_which(args: argparse.Namespace) -> int:
-    """Print the entrypoint for one command."""
+    """Print the target for one command."""
     p = get_paths()
-    print(resolve_command(p.current_root, args.command_name).artifact.entrypoint)
+    print(resolve_command(p.current_root, args.command_name).artifact.target.spec)
     return 0
 
 
@@ -252,8 +254,7 @@ def _job_data(release_name: str, job_name: str) -> dict[str, object]:
         "release": job.release.name,
         "version": job.release.version,
         "job": job.artifact.name,
-        "runtime": job.artifact.runtime,
-        "entrypoint": str(job.artifact.entrypoint),
+        "target": job.artifact.target.spec,
         "default_timeout_seconds": job.artifact.default_timeout_seconds,
     }
 

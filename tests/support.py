@@ -5,6 +5,7 @@ from pathlib import Path
 
 import yaml
 
+from atlas.launchers import sync_atlas_core, sync_release_runner
 from atlas.paths import AtlasPaths, get_paths
 
 
@@ -21,6 +22,8 @@ def configure_paths(monkeypatch, tmp_path: Path) -> AtlasPaths:
     paths = get_paths()
     paths.runtime_python.parent.mkdir(parents=True)
     paths.runtime_python.symlink_to(sys.executable)
+    sync_atlas_core(paths.home)
+    sync_release_runner(paths.home)
     return paths
 
 
@@ -36,6 +39,8 @@ def make_release(
 ) -> Path:
     root.mkdir(parents=True)
     (root / "VERSION").write_text(f"{version}\n", encoding="utf-8")
+    modules = root / "modules"
+    modules.mkdir(parents=True, exist_ok=True)
     manifest: dict[str, object] = {
         "schema": "atlas.release/v1",
         "name": name,
@@ -46,35 +51,35 @@ def make_release(
     command_entries = manifest["commands"]
     assert isinstance(command_entries, dict)
     for command in commands:
-        entrypoint = root / "commands" / f"{command}.py"
-        entrypoint.parent.mkdir(parents=True, exist_ok=True)
-        entrypoint.write_text(
+        module_name = command.replace("-", "_") + "_entry"
+        module_file = modules / f"{module_name}.py"
+        module_file.write_text(
             "from __future__ import annotations\n"
             "import os\n"
-            "print(f\"{os.environ['ATLAS_ARTIFACT_NAME']}:"
+            "def main(argv: list[str] | None = None) -> None:\n"
+            "    print(f\"{os.environ['ATLAS_ARTIFACT_NAME']}:"
             "{os.environ['ATLAS_RELEASE_NAME']}\")\n",
             encoding="utf-8",
         )
         command_entries[command] = {
-            "runtime": "python",
-            "entrypoint": f"commands/{command}.py",
+            "target": f"{module_name}:main",
         }
     job_entries = manifest["jobs"]
     assert isinstance(job_entries, dict)
     for job in jobs:
-        entrypoint = root / "jobs" / f"{job}.py"
-        entrypoint.parent.mkdir(parents=True, exist_ok=True)
-        entrypoint.write_text(
+        module_name = job.replace("-", "_") + "_entry"
+        module_file = modules / f"{module_name}.py"
+        module_file.write_text(
             "from __future__ import annotations\n"
             "import os\n"
             "import sys\n"
-            "print(os.environ.get('TEST_JOB_VALUE', 'unset'))\n"
-            "print('|'.join(sys.argv[1:]))\n",
+            "def main(argv: list[str] | None = None) -> None:\n"
+            "    print(os.environ.get('TEST_JOB_VALUE', 'unset'))\n"
+            "    print('|'.join(argv or []))\n",
             encoding="utf-8",
         )
         definition: dict[str, object] = {
-            "runtime": "python",
-            "entrypoint": f"jobs/{job}.py",
+            "target": f"{module_name}:main",
         }
         if timeout is not None:
             definition["default_timeout_seconds"] = timeout

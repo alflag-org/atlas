@@ -31,8 +31,7 @@ jobs:
           python -m pip install --upgrade pip==26.2
           python -m pip install \
             -e '.[dev]' \
-            -r configuration-operations/requirements.txt \
-            -r infrastructure-operations/requirements.txt \
+            -r operations/requirements.txt \
             -r examples/basic-release/requirements.txt \
             -r examples/companion-release/requirements.txt
           python -m pip check
@@ -43,7 +42,7 @@ jobs:
           python -m coverage run -m pytest -q
           python -m coverage report
       - run: >-
-          ruff check src configuration-operations infrastructure-operations tests
+          ruff check src operations tests
       - run: python -m build
       - if: matrix.python-version == '3.14'
         run: make clean-docs html SPHINXOPTS=-W
@@ -75,14 +74,12 @@ jobs:
               source: "file://examples/basic-release"
           C
           atlas release install examples/basic-release
-          atlas release install configuration-operations
-          atlas release install infrastructure-operations
+          atlas release install operations
           python -m venv "$ATLAS_RUNTIME_DIR/python/envs/scripts"
           "$ATLAS_RUNTIME_DIR/python/envs/scripts/bin/python" -m pip install --upgrade pip==26.2
           "$ATLAS_RUNTIME_DIR/python/envs/scripts/bin/python" -m pip install \
             PyYAML==6.0.3 \
-            -r configuration-operations/requirements.txt \
-            -r infrastructure-operations/requirements.txt \
+            -r operations/requirements.txt \
             -r examples/basic-release/requirements.txt
           atlas release list
           atlas command list
@@ -98,8 +95,7 @@ jobs:
           atlas which hostctl
           atlas which atlas-ansible
           atlas which imagectl
-          atlas job list configuration-operations
-          atlas job list infrastructure-operations
+          atlas job list operations
           "$ATLAS_HOME/shims/atlas-ansible" --help
           "$ATLAS_HOME/shims/hostctl" --help
           "$ATLAS_HOME/shims/imagectl" --help

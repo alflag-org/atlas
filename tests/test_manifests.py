@@ -9,6 +9,7 @@ from atlas.catalog import active_releases, command_index, resolve_service
 from atlas.manifests import (
     ExecutableArtifact,
     ReleaseManifest,
+    Target,
     load_manifest,
     validate_name,
 )
@@ -19,23 +20,28 @@ def _release(
     path: Path,
     *,
     manifest: str | None = None,
-    command_files: tuple[str, ...] = ("commands/sample.py",),
+    command_files: tuple[str, ...] = ("sample.py",),
     version: str = "1.0.0",
 ) -> Path:
     path.mkdir(parents=True)
     (path / "VERSION").write_text(f"{version}\n", encoding="utf-8")
+    modules = path / "modules"
+    modules.mkdir()
     for command_file in command_files:
-        entrypoint = path / command_file
-        entrypoint.parent.mkdir(parents=True, exist_ok=True)
-        entrypoint.write_text("print('ok')\n", encoding="utf-8")
+        module_name = Path(command_file).stem.replace("-", "_")
+        module_file = modules / f"{module_name}.py"
+        module_file.write_text(
+            "def main(argv: list[str] | None = None) -> int:\n"
+            "    return 0\n",
+            encoding="utf-8",
+        )
     if manifest is None:
         manifest = (
             "schema: atlas.release/v1\n"
             "name: sample\n"
             "commands:\n"
             "  sample:\n"
-            "    runtime: python\n"
-            "    entrypoint: commands/sample.py\n"
+            "    target: sample:main\n"
         )
     (path / "release.yml").write_text(manifest, encoding="utf-8")
     return path
@@ -49,16 +55,14 @@ def test_load_manifest_declares_commands_explicitly(tmp_path: Path) -> None:
             "name: operations\n"
             "commands:\n"
             "  config-check:\n"
-            "    runtime: python\n"
-            "    entrypoint: commands/config-check.py\n"
+            "    target: config_check:main\n"
             "  inventory-show:\n"
-            "    runtime: python\n"
-            "    entrypoint: commands/inventory-show.py\n"
+            "    target: inventory_show:main\n"
         ),
         command_files=(
-            "commands/config-check.py",
-            "commands/inventory-show.py",
-            "commands/not-declared.py",
+            "config-check.py",
+            "inventory-show.py",
+            "not-declared.py",
         ),
     )
 
@@ -69,13 +73,11 @@ def test_load_manifest_declares_commands_explicitly(tmp_path: Path) -> None:
         commands={
             "config-check": ExecutableArtifact(
                 name="config-check",
-                runtime="python",
-                entrypoint=(release / "commands/config-check.py").resolve(),
+                target=Target("config_check", "main"),
             ),
             "inventory-show": ExecutableArtifact(
                 name="inventory-show",
-                runtime="python",
-                entrypoint=(release / "commands/inventory-show.py").resolve(),
+                target=Target("inventory_show", "main"),
             ),
         },
         jobs={},
@@ -102,11 +104,10 @@ def test_load_manifest_declares_non_public_jobs(tmp_path: Path) -> None:
             "commands: {}\n"
             "jobs:\n"
             "  inventory-refresh:\n"
-            "    runtime: python\n"
-            "    entrypoint: jobs/inventory-refresh.py\n"
+            "    target: inventory_refresh:main\n"
             "    default_timeout_seconds: 300\n"
         ),
-        command_files=("jobs/inventory-refresh.py",),
+        command_files=("inventory-refresh.py",),
     )
 
     manifest = load_manifest(release)
@@ -114,8 +115,7 @@ def test_load_manifest_declares_non_public_jobs(tmp_path: Path) -> None:
     assert manifest.commands == {}
     assert manifest.jobs["inventory-refresh"] == ExecutableArtifact(
         name="inventory-refresh",
-        runtime="python",
-        entrypoint=(release / "jobs/inventory-refresh.py").resolve(),
+        target=Target("inventory_refresh", "main"),
         default_timeout_seconds=300,
     )
 
@@ -279,6 +279,20 @@ def test_load_manifest_declares_job_service_and_catalog_resolves_it(
             ValueError,
             "timer must be a non-empty string",
         ),
+        (
+            lambda raw: raw["services"]["refresh"]["init"]["systemd"].update(
+                service="../escape.service"
+            ),
+            ValueError,
+            "must be a relative path inside the release",
+        ),
+        (
+            lambda raw: raw["services"]["refresh"]["init"]["systemd"].update(
+                service="init/systemd/missing.service"
+            ),
+            ValueError,
+            "not found",
+        ),
     ],
 )
 def test_load_manifest_rejects_invalid_services(
@@ -321,6 +335,121 @@ def test_manifest_supports_command_service_without_timer(
     assert parsed.systemd.timer is None
 
 
+def test_manifest_service_paths_reject_symlink_escape_and_wrong_suffix(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    release = _release(tmp_path / "release")
+    systemd = release / "init/systemd"
+    systemd.mkdir(parents=True)
+    service_path = systemd / "refresh.service"
+    service_path.write_text("[Service]\n", encoding="utf-8")
+    raw = _read_manifest(release)
+    raw["services"] = {
+        "refresh": {
+            "command": "sample",
+            "init": {
+                "systemd": {
+                    "service": "init/systemd/refresh.service",
+                }
+            },
+        }
+    }
+    _write_manifest(release, raw)
+    assert load_manifest(release).services["refresh"].systemd.timer is None
+
+    service_path.unlink()
+    outside = tmp_path / "outside.service"
+    outside.write_text("[Service]\n", encoding="utf-8")
+    service_path.symlink_to(outside)
+    with pytest.raises(ValueError, match="must not contain a symlink"):
+        load_manifest(release)
+
+    service_path.unlink()
+    wrong_suffix = systemd / "refresh.txt"
+    wrong_suffix.write_text("[Service]\n", encoding="utf-8")
+    raw["services"]["refresh"]["init"]["systemd"]["service"] = (
+        "init/systemd/refresh.txt"
+    )
+    _write_manifest(release, raw)
+    with pytest.raises(ValueError, match=r"must end with \.service"):
+        load_manifest(release)
+
+    raw["services"]["refresh"]["init"]["systemd"]["service"] = (
+        "init/systemd/refresh.service"
+    )
+    service_path = systemd / "refresh.service"
+    service_path.write_text("[Service]\n", encoding="utf-8")
+    _write_manifest(release, raw)
+    original_resolve = Path.resolve
+
+    def fake_resolve(path: Path, *args, **kwargs):
+        if path == service_path:
+            return tmp_path / "outside" / "refresh.service"
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fake_resolve)
+    with pytest.raises(ValueError, match="escapes the release root"):
+        load_manifest(release)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            "missing-modules",
+            "module root not found",
+        ),
+        (
+            "ambiguous",
+            "module is ambiguous",
+        ),
+        (
+            "syntax",
+            "module cannot be parsed",
+        ),
+        (
+            "async",
+            "must be a synchronous function",
+        ),
+        (
+            "no-argv",
+            "must accept argv",
+        ),
+    ],
+)
+def test_manifest_target_source_and_callable_validation(
+    tmp_path: Path,
+    mutation: str,
+    message: str,
+) -> None:
+    release = _release(tmp_path / mutation)
+    modules = release / "modules"
+    if mutation == "missing-modules":
+        modules.rename(release / "saved-modules")
+    elif mutation == "ambiguous":
+        (modules / "ambiguous").mkdir()
+        (modules / "ambiguous.py").write_text(
+            "def main(argv):\n    return 0\n", encoding="utf-8"
+        )
+        (modules / "ambiguous/__init__.py").write_text(
+            "def main(argv):\n    return 0\n", encoding="utf-8"
+        )
+        raw = _read_manifest(release)
+        raw["commands"]["sample"]["target"] = "ambiguous:main"
+        _write_manifest(release, raw)
+    else:
+        contents = {
+            "syntax": "def main(\n",
+            "async": "async def main(argv):\n    return 0\n",
+            "no-argv": "def main():\n    return 0\n",
+        }
+        (modules / "sample.py").write_text(contents[mutation], encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        load_manifest(release)
+
+
 @pytest.mark.parametrize(
     ("jobs", "expected_exception", "message"),
     [
@@ -328,18 +457,18 @@ def test_manifest_supports_command_service_without_timer(
         ("{1: {}}", TypeError, "job name must be a string"),
         ("{Bad: {}}", ValueError, "invalid job name"),
         (
-            "{collect: {runtime: python, entrypoint: jobs/collect.py, extra: true}}",
+            "{collect: {target: collect:main, extra: true}}",
             ValueError,
             "jobs.collect has unknown key: extra",
         ),
         (
-            "{collect: {runtime: python, entrypoint: jobs/collect.py, "
+            "{collect: {target: collect:main, "
             "default_timeout_seconds: 0}}",
             ValueError,
             "must be a positive integer",
         ),
         (
-            "{collect: {runtime: python, entrypoint: jobs/collect.py, "
+            "{collect: {target: collect:main, "
             "default_timeout_seconds: true}}",
             ValueError,
             "must be a positive integer",
@@ -360,7 +489,7 @@ def test_load_manifest_rejects_invalid_jobs(
             "commands: {}\n"
             f"jobs: {jobs}\n"
         ),
-        command_files=("jobs/collect.py",),
+        command_files=("collect.py",),
     )
 
     with pytest.raises(expected_exception, match=message):
@@ -375,14 +504,12 @@ def test_load_manifest_rejects_command_job_name_overlap(tmp_path: Path) -> None:
             "name: worker\n"
             "commands:\n"
             "  collect:\n"
-            "    runtime: python\n"
-            "    entrypoint: commands/sample.py\n"
+            "    target: sample:main\n"
             "jobs:\n"
             "  collect:\n"
-            "    runtime: python\n"
-            "    entrypoint: jobs/collect.py\n"
+            "    target: collect:main\n"
         ),
-        command_files=("commands/sample.py", "jobs/collect.py"),
+        command_files=("sample.py", "collect.py"),
     )
 
     with pytest.raises(ValueError, match="command and job names overlap: collect"):
@@ -437,27 +564,27 @@ def test_load_manifest_rejects_command_job_name_overlap(tmp_path: Path) -> None:
         ),
         (
             "schema: atlas.release/v1\nname: sample\ncommands:\n"
-            "  sample:\n    runtime: python\n    entrypoint: commands/sample.py\n    extra: true\n",
+            "  sample:\n    target: sample:main\n    extra: true\n",
             ValueError,
             "commands.sample has unknown key: extra",
         ),
         (
             "schema: atlas.release/v1\nname: sample\ncommands:\n"
-            "  sample:\n    entrypoint: commands/sample.py\n",
+            "  sample:\n    target: \n",
             ValueError,
-            "commands.sample.runtime is required",
+            "commands.sample.target is required",
         ),
         (
             "schema: atlas.release/v1\nname: sample\ncommands:\n"
-            "  sample:\n    runtime: shell\n    entrypoint: commands/sample.py\n",
+            "  sample:\n    target: sample:main\n    runtime: shell\n",
             ValueError,
-            "commands.sample.runtime is unsupported",
+            "commands.sample has unknown key: runtime",
         ),
         (
             "schema: atlas.release/v1\nname: sample\ncommands:\n"
-            "  sample:\n    runtime: python\n",
+            "  sample:\n    other: true\n",
             ValueError,
-            "commands.sample.entrypoint is required",
+            "commands.sample has unknown key: other",
         ),
     ],
 )
@@ -474,18 +601,18 @@ def test_load_manifest_rejects_invalid_shapes(
 
 
 @pytest.mark.parametrize(
-    ("entrypoint", "message"),
+    ("target", "message"),
     [
-        ("/tmp/sample.py", "must be a relative path"),
-        ("../sample.py", "must be a relative path"),
-        (r"commands\\sample.py", "must be a relative path"),
-        ("commands/missing.py", "not found"),
-        ("commands/sample.txt", r"must end with \.py"),
+        ("/tmp/sample.py", "must be package.module:callable"),
+        ("../sample", "must be package.module:callable"),
+        (r"commands\\sample", "must be package.module:callable"),
+        ("missing:main", "target module not found"),
+        ("sample:missing", "target callable is not a function"),
     ],
 )
-def test_load_manifest_rejects_unsafe_entrypoints(
+def test_load_manifest_rejects_unsafe_targets(
     tmp_path: Path,
-    entrypoint: str,
+    target: str,
     message: str,
 ) -> None:
     release = _release(
@@ -495,27 +622,27 @@ def test_load_manifest_rejects_unsafe_entrypoints(
             "name: sample\n"
             "commands:\n"
             "  sample:\n"
-            "    runtime: python\n"
-            f"    entrypoint: {entrypoint}\n"
+            f"    target: {target}\n"
         ),
-        command_files=("commands/sample.py", "commands/sample.txt"),
+        command_files=("sample.py",),
     )
 
     with pytest.raises(ValueError, match=message):
         load_manifest(release)
 
 
-def test_load_manifest_rejects_entrypoint_and_parent_symlinks(tmp_path: Path) -> None:
+def test_load_manifest_rejects_target_and_parent_symlinks(tmp_path: Path) -> None:
     outside = tmp_path / "outside.py"
-    outside.write_text("print('outside')\n", encoding="utf-8")
+    outside.write_text("def main(argv):\n    return 0\n", encoding="utf-8")
     release = _release(tmp_path / "release")
-    (release / "commands/sample.py").unlink()
-    (release / "commands/sample.py").symlink_to(outside)
+    (release / "modules/sample.py").unlink()
+    (release / "modules/sample.py").symlink_to(outside)
     with pytest.raises(ValueError, match="must not contain a symlink"):
         load_manifest(release)
 
-    (release / "commands").rename(release / "real-commands")
-    (release / "commands").symlink_to(release / "real-commands", target_is_directory=True)
+    (release / "modules/sample.py").unlink()
+    (release / "modules").rename(release / "real-modules")
+    (release / "modules").symlink_to(release / "real-modules", target_is_directory=True)
     with pytest.raises(ValueError, match="must not contain a symlink"):
         load_manifest(release)
 
@@ -525,11 +652,11 @@ def test_load_manifest_rejects_resolved_escape(
     tmp_path: Path,
 ) -> None:
     release = _release(tmp_path / "release")
-    entrypoint = release / "commands/sample.py"
+    module_source = release / "modules/sample.py"
     original_resolve = Path.resolve
 
     def fake_resolve(path: Path, *args, **kwargs):
-        if path == entrypoint:
+        if path == module_source:
             return tmp_path / "outside.py"
         return original_resolve(path, *args, **kwargs)
 
@@ -601,7 +728,7 @@ def test_active_releases_requires_manifest_name_to_match_link(tmp_path: Path) ->
 def test_command_index_uses_only_manifest_declarations(tmp_path: Path) -> None:
     release = _release(
         tmp_path / "release",
-        command_files=("commands/sample.py", "commands/implicit.py"),
+        command_files=("sample.py", "implicit.py"),
     )
     current = tmp_path / "current"
     current.mkdir()

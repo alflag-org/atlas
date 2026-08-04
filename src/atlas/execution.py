@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from .catalog import ExecutableRef, active_releases
+from .catalog import ExecutableRef
 from .locks import acquire_lock
 from .paths import AtlasPaths
 
@@ -117,12 +117,6 @@ def _pythonpath(paths: AtlasPaths, executable: ExecutableRef, env: dict[str, str
     selected_modules = executable.release.root / "modules"
     if selected_modules.is_dir():
         module_paths.append(str(selected_modules))
-    for release in active_releases(paths.current_root):
-        if release.name == executable.release.name:
-            continue
-        modules = release.root / "modules"
-        if modules.is_dir():
-            module_paths.append(str(modules))
     module_paths.append(str(paths.home / "lib/python"))
     if env.get("PYTHONPATH"):
         module_paths.append(env["PYTHONPATH"])
@@ -251,6 +245,8 @@ def execute(
         raise ValueError(f"working directory not found: {working_directory}")
     if not paths.runtime_python.is_file():
         raise ValueError(f"runtime python executable not found: {paths.runtime_python}")
+    if paths.release_runner.is_symlink() or not paths.release_runner.is_file():
+        raise ValueError(f"release runner not found: {paths.release_runner}")
     if timeout_seconds is not None and (
         isinstance(timeout_seconds, bool)
         or not isinstance(timeout_seconds, int)
@@ -269,7 +265,12 @@ def execute(
         operation_id=operation_id,
         environment_files=environment_files,
     )
-    command = [str(paths.runtime_python), str(executable.artifact.entrypoint), *args]
+    command = [
+        str(paths.runtime_python),
+        str(paths.release_runner),
+        executable.artifact.target.spec,
+        *args,
+    ]
     display_args = redact_args(args)
     print(f"$ {shlex.join([executable.artifact.name, *display_args])}", file=sys.stderr)
     started_at = datetime.now(UTC)

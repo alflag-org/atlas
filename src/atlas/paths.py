@@ -26,6 +26,7 @@ class AtlasPaths:
     shims: Path
     bin_dir: Path
     artifact_runner: Path
+    release_runner: Path
     runtime_python: Path
 
 
@@ -44,6 +45,7 @@ def get_paths() -> AtlasPaths:
     shims = home / "shims"
     bin_dir = home / "bin"
     artifact_runner = bin_dir / "artifact-runner"
+    release_runner = home / "lib/python/atlas_release_runner.py"
     runtime_python = runtime / "python" / "envs" / "scripts" / "bin" / "python"
     return AtlasPaths(
         home=home,
@@ -61,6 +63,7 @@ def get_paths() -> AtlasPaths:
         shims=shims,
         bin_dir=bin_dir,
         artifact_runner=artifact_runner,
+        release_runner=release_runner,
         runtime_python=runtime_python,
     )
 

@@ -73,7 +73,7 @@ def test_run_and_logs(monkeypatch, tmp_path: Path) -> None:
     etc.mkdir(parents=True, exist_ok=True)
     var.mkdir(parents=True, exist_ok=True)
 
-    (etc / "host.yml").write_text("name: t1\nsite: kng01\n", encoding="utf-8")
+    (etc / "host.yml").write_text("name: t1\nsite: site-a\n", encoding="utf-8")
     (etc / "config.yml").write_text(
         "runtime:\n  python:\n    version: '3.12'\nreleases: {}\n",
         encoding="utf-8",
@@ -109,7 +109,7 @@ def test_run_sets_release_env_and_pythonpath_order(monkeypatch, tmp_path: Path, 
     var = tmp_path / "var/lib/atlas"
     etc.mkdir(parents=True, exist_ok=True)
     var.mkdir(parents=True, exist_ok=True)
-    (etc / "host.yml").write_text("name: t1\nsite: kng01\n", encoding="utf-8")
+    (etc / "host.yml").write_text("name: t1\nsite: site-a\n", encoding="utf-8")
     _set_env(monkeypatch, home, etc, var)
     monkeypatch.setenv("PYTHONPATH", "/existing/pythonpath")
     runtime_python = home / "runtime/python/envs/scripts/bin/python"
@@ -145,7 +145,7 @@ def test_run_fails_on_command_collision(monkeypatch, tmp_path: Path, capsys) -> 
     var = tmp_path / "var/lib/atlas"
     etc.mkdir(parents=True, exist_ok=True)
     var.mkdir(parents=True, exist_ok=True)
-    (etc / "host.yml").write_text("name: t1\nsite: kng01\n", encoding="utf-8")
+    (etc / "host.yml").write_text("name: t1\nsite: site-a\n", encoding="utf-8")
     _set_env(monkeypatch, home, etc, var)
 
     release_one = tmp_path / "release-one"
@@ -179,7 +179,7 @@ def test_run_fails_when_runtime_python_is_missing(monkeypatch, tmp_path: Path, c
     etc.mkdir(parents=True, exist_ok=True)
     var.mkdir(parents=True, exist_ok=True)
 
-    (etc / "host.yml").write_text("name: t1\nsite: kng01\n", encoding="utf-8")
+    (etc / "host.yml").write_text("name: t1\nsite: site-a\n", encoding="utf-8")
     (etc / "config.yml").write_text(
         "runtime:\n  python:\n    version: '3.12'\nreleases: {}\n",
         encoding="utf-8",

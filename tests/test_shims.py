@@ -78,7 +78,7 @@ def test_shim_executes_command(monkeypatch, tmp_path: Path) -> None:
     etc = tmp_path / "etc/atlas"
     var = tmp_path / "var/lib/atlas"
     etc.mkdir(parents=True, exist_ok=True)
-    (etc / "host.yml").write_text("name: t1\nsite: kng01\n", encoding="utf-8")
+    (etc / "host.yml").write_text("name: t1\nsite: site-a\n", encoding="utf-8")
 
     _set_env(monkeypatch, home, etc, var)
     runtime_python = home / "runtime/python/envs/scripts/bin/python"

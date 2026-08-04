@@ -8,9 +8,36 @@ Infrastructure repositories stay separate. Atlas runs an artifact in the caller'
 directory and records its Git state, but it does not change desired state, inventory, playbooks,
 provider configuration, repository state, or secrets.
 
-## Run Atlas
+## Try Atlas
 
-Configure the Python runtime and release sources in `/etc/atlas/config.yml`:
+The repository includes a containerized example. It installs the sample and first-party releases,
+builds their shared runtime, and prints the available commands without touching host configuration:
+
+```bash
+docker compose build
+docker compose run --rm atlas
+```
+
+## Install Atlas
+
+Atlas supports Python 3.11 through 3.14 on Linux. This example keeps an operator-managed source
+checkout at `/srv/atlas/source`:
+
+```bash
+git clone https://github.com/alflag-org/atlas.git /srv/atlas/source
+python -m pip install /srv/atlas/source
+```
+
+Another durable checkout path is valid. Use that same path for the release sources below. Atlas
+reads the checkout but does not pull, reset, or otherwise modify it.
+
+`atlas runtime install` requires `pyenv` on `PATH` and the operating-system packages needed to
+build the configured Python version. The account running Atlas must be able to write its configured
+home, configuration, and state directories. The defaults are `/opt/atlas`, `/etc/atlas`, and
+`/var/lib/atlas`. Keep `ATLAS_HOME=/opt/atlas` when using the bundled systemd artifacts because
+they use `/opt/atlas/bin/atlas` as the stable launcher.
+
+Configure the release sources in `/etc/atlas/config.yml`:
 
 ```yaml
 runtime:
@@ -19,10 +46,10 @@ runtime:
 
 releases:
   configuration-operations:
-    source: "/srv/releases/configuration-operations"
+    source: "/srv/atlas/source/configuration-operations"
     enabled: true
   infrastructure-operations:
-    source: "/srv/releases/infrastructure-operations"
+    source: "/srv/atlas/source/infrastructure-operations"
     enabled: true
 ```
 
@@ -30,15 +57,21 @@ Give the host a name in `/etc/atlas/host.yml`:
 
 ```yaml
 name: control-01
-site: kng01
+site: site-a
 environment: production
 ```
+
+`control-01`, `site-a`, and `/srv/atlas/source` are examples. Replace them with values for your
+environment. A release source is separate from the installed copy: Atlas copies validated releases
+to `/opt/atlas/releases/<release>/<version>` and switches
+`/opt/atlas/current/<release>` to the active version. Do not use either Atlas-managed directory as
+a release source.
 
 Install the releases and shared runtime:
 
 ```bash
-atlas release install ./configuration-operations
-atlas release install ./infrastructure-operations
+atlas release install /srv/atlas/source/configuration-operations
+atlas release install /srv/atlas/source/infrastructure-operations
 atlas runtime install
 atlas status
 ```
@@ -53,7 +86,7 @@ The first-party releases expose three commands:
 
 ```bash
 atlas command list --verbose
-atlas run atlas-ansible diff site web01
+atlas run atlas-ansible diff site web-01
 atlas job list infrastructure-operations
 ```
 
@@ -61,22 +94,7 @@ See [Atlas reference](docs/reference.rst) for host configuration, release manife
 systemd files, execution records, and recovery. See
 [First-party controllers](docs/controllers.rst) for controller inputs and safety rules.
 
-## Develop Atlas
+## Contribute
 
-Atlas supports Python 3.11 through 3.14. The checked-in environment uses Python 3.14.6.
-
-```bash
-mise install
-mise run setup
-mise run check
-make clean-docs html SPHINXOPTS=-W
-```
-
-`mise run check` runs Ruff, the test suite with 100% line and branch coverage, and the package
-build. The container checks exercise the installed package and bundled releases:
-
-```bash
-docker compose build
-docker compose run --rm check
-docker compose run --rm atlas atlas release list
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development environment, required checks, and pull
+request expectations.

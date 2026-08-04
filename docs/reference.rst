@@ -1,10 +1,34 @@
 Atlas reference
 ===============
 
+Install Atlas
+-------------
+
+Atlas supports Python 3.11 through 3.14 on Linux. This guide uses
+``/srv/atlas/source`` for an operator-managed checkout:
+
+.. code-block:: bash
+
+   git clone https://github.com/alflag-org/atlas.git /srv/atlas/source
+   python -m pip install /srv/atlas/source
+
+Another durable checkout path is valid. Use that same path in release source configuration. Atlas
+reads the checkout but does not pull, reset, or otherwise modify it.
+
+The host needs Git for Git-backed release sources and execution context. ``atlas runtime install``
+also requires ``pyenv`` on ``PATH`` and the operating-system packages needed to build the configured
+Python version. The account running Atlas must be able to write the configured home, configuration,
+and state directories.
+
 Configure an Atlas host
 -----------------------
 
 Atlas reads ``/etc/atlas/config.yml``. The schema is strict and rejects unknown keys.
+
+.. note::
+
+   Resource names and release source values in these examples are placeholders. Replace them with
+   values for your environment.
 
 .. code-block:: yaml
 
@@ -14,7 +38,7 @@ Atlas reads ``/etc/atlas/config.yml``. The schema is strict and rejects unknown 
 
    releases:
      configuration-operations:
-       source: "/srv/releases/configuration-operations"
+       source: "/srv/atlas/source/configuration-operations"
        enabled: true
 
      maintenance:
@@ -23,7 +47,7 @@ Atlas reads ``/etc/atlas/config.yml``. The schema is strict and rejects unknown 
 
 ``atlas release update`` updates every enabled entry. Naming one entry updates it even when
 ``enabled`` is false. A source may be a local directory, ``file:`` URL, local archive, HTTP(S)
-archive, or ``git+https://github.com/example/project.git#ref``.
+archive, or ``git+https://github.com/example/operations.git#v1.0.0``.
 
 ``/etc/atlas/host.yml`` supplies metadata to release code. ``name`` is required. ``site``, ``zone``,
 ``role``, ``environment``, and ``runtime_kind`` are optional strings; ``tags`` is a list of strings.
@@ -31,7 +55,7 @@ archive, or ``git+https://github.com/example/project.git#ref``.
 .. code-block:: yaml
 
    name: control-01
-   site: kng01
+   site: site-a
    zone: management
    role: control
    environment: production
@@ -57,6 +81,44 @@ These environment variables change host-side paths:
    * - ``ATLAS_TMP_DIR``
      - ``$ATLAS_HOME/tmp``
 
+Keep source and installed paths separate
+----------------------------------------
+
+The default paths have distinct owners and purposes:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Path
+     - Managed by
+     - Purpose
+   * - ``/srv/atlas/source``
+     - Operator
+     - Example checkout containing release sources; another durable path is valid.
+   * - ``/etc/atlas``
+     - Operator
+     - Host configuration, job instances, and child-process environment files.
+   * - ``/opt/atlas/releases/<release>/<version>``
+     - Atlas
+     - Validated, versioned copy of one release source.
+   * - ``/opt/atlas/current/<release>``
+     - Atlas
+     - Symbolic link selecting the active installed release.
+   * - ``/opt/atlas/bin`` and ``/opt/atlas/shims``
+     - Atlas
+     - Stable launchers and public command shims.
+   * - ``/opt/atlas/runtime``
+     - Atlas
+     - Shared Python runtime for active releases.
+   * - ``/var/lib/atlas``
+     - Atlas
+     - Execution records, locks, and source or build caches.
+
+Do not configure ``/opt/atlas/releases`` or ``/opt/atlas/current`` as a release source. Atlas
+replaces content below those directories during installation and activation. The bundled systemd
+artifacts and adapter use ``/opt/atlas/bin/atlas`` as the stable launcher, so hosts that install
+them must keep the default ``ATLAS_HOME=/opt/atlas``.
+
 Install and update releases
 ---------------------------
 
@@ -64,7 +126,7 @@ The manifest supplies a release name; ``atlas release install`` has no name over
 
 .. code-block:: bash
 
-   atlas release install ./configuration-operations
+   atlas release install /srv/atlas/source/configuration-operations
    atlas release list --verbose
    atlas runtime install
    atlas status
@@ -72,10 +134,11 @@ The manifest supplies a release name; ``atlas release install`` has no name over
    atlas release update
    atlas release update configuration-operations
 
-Atlas copies and validates every requested source before activation. Release directories, active
-links, launchers, and command shims change as one operation. A failed install or update leaves the
-active set unchanged. Runtime installation restores the active environment when dependency
-installation or validation fails.
+Atlas validates every requested source, copies it below ``$ATLAS_HOME/releases``, and then switches
+the link below ``$ATLAS_HOME/current``. Installed release directories, active links, launchers, and
+command shims change as one operation. A failed install or update leaves the active set unchanged.
+Runtime installation restores the active environment when dependency installation or validation
+fails.
 
 ``atlas runtime install`` reads ``requirements.lock`` when a release provides it, otherwise
 ``requirements.txt``. Only manifest commands receive shims below ``/opt/atlas/shims``. Jobs remain
@@ -148,10 +211,10 @@ Run commands and jobs
 
    atlas command list --verbose
    atlas which atlas-ansible
-   atlas run atlas-ansible diff site web01
+   atlas run atlas-ansible diff site web-01
 
    export PATH="/opt/atlas/shims:$PATH"
-   atlas-ansible diff site web01
+   atlas-ansible diff site web-01
 
    atlas job list
    atlas job inspect configuration-operations inventory-refresh
@@ -168,7 +231,7 @@ A job instance binds a release job to host settings stored below ``/etc/atlas/jo
    release: configuration-operations
    job: inventory-refresh
    user: ops
-   working_directory: /home/ops/repos/provisioning
+   working_directory: /srv/provisioning
    arguments:
      - --site
      - default
@@ -186,6 +249,11 @@ A job instance binds a release job to host settings stored below ``/etc/atlas/jo
 Working directories and environment-file paths must be absolute. Atlas reads environment values
 only into the child process and does not put them in the run record. It does not switch users or
 invoke ``sudo``; direct execution fails when the declared user differs from the caller.
+
+The bundled inventory-refresh systemd service uses the ``ops`` account and the
+``provisioning-inventory-refresh`` job instance. Create that account and instance before installing
+the unit. A maintained release variant may use another account or instance name, but its ``User=``
+and job instance must change together.
 
 Install systemd files
 ---------------------

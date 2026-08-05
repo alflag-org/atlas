@@ -15,7 +15,7 @@ from atlas.manifests import (
     load_manifest,
     validate_name,
 )
-from atlas.releases import read_version, validate_release
+from atlas.releases import install_release, read_version, validate_release
 from atlas.target_contract import (
     TargetResolutionError,
     TargetSources,
@@ -173,17 +173,18 @@ def test_load_manifest_declares_job_service_and_catalog_resolves_it(
     ).resolve()
 
     current = tmp_path / "current"
-    current.mkdir()
-    (current / "operations").symlink_to(root, target_is_directory=True)
+    releases = tmp_path / "releases"
+    install_release(root, releases, current)
     assert resolve_service(
         current,
+        releases,
         "operations",
         "state-collect",
-    ).service == service
+    ).service.name == service.name
     with pytest.raises(ValueError, match="unknown service"):
-        resolve_service(current, "operations", "missing")
+        resolve_service(current, releases, "operations", "missing")
     with pytest.raises(ValueError, match="unknown release"):
-        resolve_service(current, "missing", "state-collect")
+        resolve_service(current, releases, "missing", "state-collect")
 
 
 @pytest.mark.parametrize(
@@ -458,6 +459,18 @@ def test_manifest_service_paths_reject_symlink_escape_and_wrong_suffix(
             "bad-return",
             "return annotation",
         ),
+        (
+            "decorator",
+            "decorators are not allowed",
+        ),
+        (
+            "wildcard",
+            "wildcard import",
+        ),
+        (
+            "dynamic",
+            "dynamic binding",
+        ),
     ],
 )
 def test_manifest_target_source_and_callable_validation(
@@ -501,6 +514,19 @@ def test_manifest_target_source_and_callable_validation(
                 "async def main(argv):\n    return 1\n"
             ),
             "bad-return": "def main(argv) -> str:\n    return 'bad'\n",
+            "decorator": (
+                "def decorator(function):\n    return function\n\n"
+                "@decorator\n"
+                "def main(argv):\n    return 0\n"
+            ),
+            "wildcard": (
+                "from dependency import *\n"
+                "def main(argv):\n    return 0\n"
+            ),
+            "dynamic": (
+                "exec('value = 1')\n"
+                "def main(argv):\n    return 0\n"
+            ),
         }
         (modules / "sample.py").write_text(contents[mutation], encoding="utf-8")
 
@@ -580,6 +606,14 @@ def test_target_contract_edge_helpers(tmp_path: Path) -> None:
     assert _annotation_is_int_or_none(
         ast.parse("x: typing.Union[int, None]").body[0].annotation
     )
+    lambda_release = _release(tmp_path / "lambda-release")
+    (lambda_release / "modules/sample.py").write_text(
+        "value = lambda: globals()\n"
+        "def main(argv: list[str] | None = None) -> int:\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    assert load_manifest(lambda_release).commands["sample"].name == "sample"
     assert not _annotation_is_int_or_none(
         ast.parse("x: list[int]").body[0].annotation
     )
@@ -659,6 +693,50 @@ def test_runtime_target_contract_and_provenance_edges(
 
     with pytest.raises(ValueError, match="synchronous"):
         validate_callable_runtime(async_target, "selected", "main")
+
+    def invalid_annotation(argv) -> list[str]:
+        return []
+
+    invalid_annotation.__annotations__["return"] = list[str]
+    with pytest.raises(ValueError, match="return annotation"):
+        validate_callable_runtime(invalid_annotation, "selected", "main")
+
+    def invalid_annotation_text(argv):
+        return None
+
+    invalid_annotation_text.__annotations__["return"] = "("
+    with pytest.raises(ValueError, match="return annotation is invalid"):
+        validate_callable_runtime(invalid_annotation_text, "selected", "main")
+
+    def invalid_annotation_value(argv):
+        return None
+
+    invalid_annotation_value.__annotations__["return"] = "list[str]"
+    with pytest.raises(ValueError, match="return annotation"):
+        validate_callable_runtime(invalid_annotation_value, "selected", "main")
+
+    def no_positional(*, argv=None):
+        return None
+
+    with pytest.raises(ValueError, match="must accept argv"):
+        validate_callable_runtime(no_positional, "selected", "main")
+
+    def required_extra(argv, extra):
+        return None
+
+    with pytest.raises(ValueError, match="must accept argv"):
+        validate_callable_runtime(required_extra, "selected", "main")
+
+    def valid_string_annotation(argv) -> int | None:
+        return None
+
+    validate_callable_runtime(valid_string_annotation, "selected", "main")
+
+    def valid_value_annotation(argv):
+        return None
+
+    valid_value_annotation.__annotations__["return"] = int
+    validate_callable_runtime(valid_value_annotation, "selected", "main")
 
     def valid_target(argv):
         return None
@@ -942,8 +1020,10 @@ def test_active_releases_requires_manifest_name_to_match_link(tmp_path: Path) ->
     current.mkdir()
     (current / "other").symlink_to(release, target_is_directory=True)
 
-    with pytest.raises(ValueError, match="active release name mismatch: other != sample"):
-        active_releases(current)
+    releases = tmp_path / "releases"
+    releases.mkdir()
+    with pytest.raises(ValueError, match="outside releases root"):
+        active_releases(current, releases)
 
 
 def test_command_index_uses_only_manifest_declarations(tmp_path: Path) -> None:
@@ -952,7 +1032,7 @@ def test_command_index_uses_only_manifest_declarations(tmp_path: Path) -> None:
         command_files=("sample.py", "implicit.py"),
     )
     current = tmp_path / "current"
-    current.mkdir()
-    (current / "sample").symlink_to(release, target_is_directory=True)
+    releases = tmp_path / "releases"
+    install_release(release, releases, current)
 
-    assert list(command_index(current)) == ["sample"]
+    assert list(command_index(current, releases)) == ["sample"]

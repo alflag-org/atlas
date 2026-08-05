@@ -17,6 +17,7 @@ if __package__:
         parse_target_spec,
         resolve_target_sources,
         validate_callable_runtime,
+        validate_callable_source,
         validate_selected_module,
     )
 else:
@@ -32,6 +33,7 @@ else:
     TargetResolutionError = _contract_module.TargetResolutionError
     parse_target_spec = _contract_module.parse_target_spec
     resolve_target_sources = _contract_module.resolve_target_sources
+    validate_callable_source = _contract_module.validate_callable_source
     validate_callable_runtime = _contract_module.validate_callable_runtime
     validate_selected_module = _contract_module.validate_selected_module
 
@@ -109,6 +111,32 @@ def _load_module(source: Path, module_name: str, *, is_package: bool) -> ModuleT
     return module
 
 
+def _load_process_supervisor_helper() -> None:
+    """Pin the shared supervisor to the Atlas runtime before release imports."""
+    if "atlas_process_supervisor" in sys.modules:
+        return
+    candidates = (
+        Path(__file__).with_name("atlas_process_supervisor.py"),
+        Path(__file__).resolve().parents[1] / "atlas_process_supervisor.py",
+    )
+    helper = next((candidate for candidate in candidates if candidate.is_file()), None)
+    if helper is None:
+        raise ValueError("process supervisor helper is unavailable")
+    helper_spec = importlib.util.spec_from_file_location(
+        "atlas_process_supervisor",
+        helper,
+    )
+    if helper_spec is None or helper_spec.loader is None:
+        raise ValueError("process supervisor helper could not be imported")
+    helper_module = importlib.util.module_from_spec(helper_spec)
+    sys.modules["atlas_process_supervisor"] = helper_module
+    try:
+        helper_spec.loader.exec_module(helper_module)
+    except BaseException as exc:
+        sys.modules.pop("atlas_process_supervisor", None)
+        raise ValueError("process supervisor helper could not be imported") from exc
+
+
 def _selected_target_sources(module_name: str):
     release_root = os.environ.get("ATLAS_RELEASE_ROOT")
     if not release_root:
@@ -148,7 +176,9 @@ def _external_target_source_exists(module_name: str, selected_modules: Path) -> 
 
 
 def _load_callable(module_name: str, callable_name: str) -> Callable[[list[str]], Any]:
+    _load_process_supervisor_helper()
     sources = _selected_target_sources(module_name)
+    validate_callable_source(sources.source, callable_name)
     package_names = tuple(name for name, _ in sources.package_sources)
     _purge_target_modules(module_name, package_names)
     with _selected_import_path(sources.modules_root):

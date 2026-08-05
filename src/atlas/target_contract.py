@@ -176,7 +176,8 @@ class _ModuleRebindingVisitor(ast.NodeVisitor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         for alias in node.names:
             name = alias.asname or alias.name
-            self.bindings.append((name, "rebind", node))
+            kind = "wildcard" if alias.name == "*" else "rebind"
+            self.bindings.append((name, kind, node))
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self.bindings.append((node.name, "rebind", node))
@@ -204,7 +205,8 @@ def _module_bindings(tree: ast.Module) -> list[tuple[str, str, ast.AST]]:
             aliases = node.names
             for alias in aliases:
                 name = alias.asname or alias.name.split(".")[0]
-                bindings.append((name, "rebind", node))
+                kind = "wildcard" if alias.name == "*" else "rebind"
+                bindings.append((name, kind, node))
         elif isinstance(node, ast.Delete):
             for target in node.targets:
                 bindings.extend((name, "rebind", node) for name in _bound_names(target))
@@ -213,6 +215,37 @@ def _module_bindings(tree: ast.Module) -> list[tuple[str, str, ast.AST]]:
             visitor.visit(node)
             bindings.extend(visitor.bindings)
     return bindings
+
+
+_DYNAMIC_BINDING_CALLS = {"__import__", "eval", "exec", "globals", "locals"}
+
+
+class _ModuleDynamicBindingVisitor(ast.NodeVisitor):
+    """Reject module expressions whose bindings cannot be proven statically."""
+
+    def __init__(self) -> None:
+        self.bindings: list[tuple[str, str, ast.AST]] = []
+
+    def visit_FunctionDef(self, _node: ast.FunctionDef) -> None:
+        return
+
+    def visit_AsyncFunctionDef(self, _node: ast.AsyncFunctionDef) -> None:
+        return
+
+    def visit_ClassDef(self, _node: ast.ClassDef) -> None:
+        return
+
+    def visit_Lambda(self, _node: ast.Lambda) -> None:
+        return
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if any(alias.name == "*" for alias in node.names):
+            self.bindings.append(("*", "wildcard", node))
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if isinstance(node.func, ast.Name) and node.func.id in _DYNAMIC_BINDING_CALLS:
+            self.bindings.append((node.func.id, "dynamic", node))
+        self.generic_visit(node)
 
 
 def _annotation_is_int_or_none(annotation: ast.expr) -> bool:
@@ -246,7 +279,15 @@ def validate_callable_source(source: Path, callable_name: str) -> None:
         tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
     except (OSError, SyntaxError, UnicodeDecodeError) as exc:
         raise ValueError("target module cannot be parsed") from exc
-    matches = [binding for binding in _module_bindings(tree) if binding[0] == callable_name]
+    bindings = _module_bindings(tree)
+    dynamic = _ModuleDynamicBindingVisitor()
+    dynamic.visit(tree)
+    bindings.extend(dynamic.bindings)
+    if any(kind == "wildcard" for _, kind, _ in bindings):
+        raise ValueError("target module uses an unverifiable wildcard import")
+    if any(kind == "dynamic" for _, kind, _ in bindings):
+        raise ValueError("target module uses an unverifiable dynamic binding")
+    matches = [binding for binding in bindings if binding[0] == callable_name]
     if any(kind == "async" for _, kind, _ in matches):
         raise ValueError(
             f"target callable must be a synchronous function: {callable_name}"
@@ -255,6 +296,8 @@ def validate_callable_source(source: Path, callable_name: str) -> None:
         raise ValueError(f"target callable is not a function: {callable_name}")
     function = matches[0][2]
     assert isinstance(function, ast.FunctionDef)
+    if function.decorator_list:
+        raise ValueError(f"target callable decorators are not allowed: {callable_name}")
     positional = [*function.args.posonlyargs, *function.args.args]
     if not positional:
         raise ValueError(f"target callable must accept argv: {callable_name}")
@@ -291,6 +334,26 @@ def validate_callable_runtime(
         raise ValueError(
             f"target callable signature is unavailable: {module_name}:{callable_name}"
         ) from exc
+    annotation = signature.return_annotation
+    if annotation is not inspect.Signature.empty:
+        if isinstance(annotation, str):
+            try:
+                parsed = ast.parse(annotation, mode="eval").body
+            except SyntaxError as exc:
+                raise ValueError(
+                    f"target callable return annotation is invalid: "
+                    f"{module_name}:{callable_name}"
+                ) from exc
+            if not _annotation_is_int_or_none(parsed):
+                raise ValueError(
+                    f"target callable return annotation must be int or None: "
+                    f"{module_name}:{callable_name}"
+                )
+        elif annotation is not int and annotation is not None and annotation is not type(None):
+            raise ValueError(
+                f"target callable return annotation must be int or None: "
+                f"{module_name}:{callable_name}"
+            )
     positional = tuple(
         parameter
         for parameter in signature.parameters.values()

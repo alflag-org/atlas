@@ -100,11 +100,11 @@ def test_runner_invokes_targets_and_validates_results(selected_release: Path) ->
 @pytest.mark.parametrize(
     ("callable_name", "message"),
     [
-        ("missing", "target is not a function"),
-        ("NotAFunction", "target is not a function"),
+        ("missing", "target callable is not a function"),
+        ("NotAFunction", "target callable is not a function"),
         ("no_args", "target callable must accept argv"),
-        ("required_positional", "target callable must accept argv"),
-        ("required_keyword", "target callable must accept argv"),
+        ("required_positional", "required positional arguments beyond argv"),
+        ("required_keyword", "required keyword-only arguments"),
         ("async_target", "must be a synchronous function"),
     ],
 )
@@ -115,6 +115,35 @@ def test_runner_rejects_invalid_callables(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         release_runner.run_target(f"runner_target:{callable_name}", [])
+
+
+def test_runner_rejects_static_contract_bypasses_before_import(
+    selected_release: Path,
+) -> None:
+    modules = selected_release / "modules"
+    (modules / "runner_decorated.py").write_text(
+        "def decorate(function):\n"
+        "    return function\n\n"
+        "@decorate\n"
+        "def main(argv):\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    (modules / "runner_wildcard.py").write_text(
+        "from runner_dependency import *\n\n"
+        "def main(argv):\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    (modules / "runner_dependency.py").write_text(
+        "value = 1\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="decorators are not allowed"):
+        release_runner.run_target("runner_decorated:main", [])
+    with pytest.raises(ValueError, match="wildcard import"):
+        release_runner.run_target("runner_wildcard:main", [])
 
 
 def test_runner_rejects_import_failures_and_unselected_modules(
@@ -205,6 +234,54 @@ def test_runner_import_and_path_validation_edges(
     monkeypatch.setattr(release_runner, "validate_selected_module", lambda *args: False)
     with pytest.raises(ValueError, match="outside the selected release"):
         release_runner._load_callable("runner_target", "returns_int")
+
+
+def test_runner_loads_the_trusted_process_supervisor_before_release_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delitem(sys.modules, "atlas_process_supervisor", raising=False)
+    release_runner._load_process_supervisor_helper()
+    helper = sys.modules["atlas_process_supervisor"]
+    assert Path(helper.__file__).resolve() == (
+        Path(release_runner.__file__).resolve().parents[1]
+        / "atlas_process_supervisor.py"
+    )
+
+
+def test_runner_process_supervisor_helper_fails_closed_when_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delitem(sys.modules, "atlas_process_supervisor", raising=False)
+    monkeypatch.setattr(Path, "is_file", lambda _path: False)
+    with pytest.raises(ValueError, match="helper is unavailable"):
+        release_runner._load_process_supervisor_helper()
+
+
+@pytest.mark.parametrize("spec_shape", ["missing-loader", "loader-error"])
+def test_runner_process_supervisor_helper_rejects_invalid_loader(
+    monkeypatch: pytest.MonkeyPatch,
+    spec_shape: str,
+) -> None:
+    monkeypatch.delitem(sys.modules, "atlas_process_supervisor", raising=False)
+
+    class FailingLoader:
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            raise RuntimeError("helper import failed")
+
+    if spec_shape == "missing-loader":
+        spec = ModuleSpec("atlas_process_supervisor", None)
+    else:
+        spec = ModuleSpec("atlas_process_supervisor", FailingLoader())
+    monkeypatch.setattr(
+        release_runner.importlib.util,
+        "spec_from_file_location",
+        lambda *args, **kwargs: spec,
+    )
+    with pytest.raises(ValueError, match="could not be imported"):
+        release_runner._load_process_supervisor_helper()
 
 
 def test_standalone_runner_fails_closed_when_contract_helper_cannot_load(

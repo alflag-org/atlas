@@ -18,7 +18,11 @@ reads the checkout but does not pull, reset, or otherwise modify it.
 The host needs Git for Git-backed release sources and execution context. ``atlas runtime install``
 also requires ``pyenv`` on ``PATH`` and the operating-system packages needed to build the configured
 Python version. The account running Atlas must be able to write the configured home, configuration,
-and state directories.
+and state directories. Runtime execution additionally requires a writable delegated Linux cgroup v2
+parent. Atlas creates one child cgroup per run and keeps the supervisor and every descendant in it;
+there is no ``/proc`` or process-group fallback. If delegation is unavailable, Atlas returns 125,
+writes a run record with the containment error, and does not start release code. The bundled systemd
+service uses ``Delegate=yes`` to provide this boundary.
 
 Configure an Atlas host
 -----------------------
@@ -112,7 +116,7 @@ The default paths have distinct owners and purposes:
      - Shared Python runtime for active releases.
    * - ``/var/lib/atlas``
      - Atlas
-     - Execution records, locks, and source or build caches.
+     - Execution records, release transaction locks, and source or build caches.
 
 Do not configure ``/opt/atlas/releases`` or ``/opt/atlas/current`` as a release source. Atlas
 replaces content below those directories during installation and activation. The bundled systemd
@@ -137,8 +141,13 @@ The manifest supplies a release name; ``atlas release install`` has no name over
 Atlas validates every requested source, copies it to a staged digest-addressed snapshot below
 ``$ATLAS_HOME/releases``, revalidates the staged tree, and then atomically switches the link below
 ``$ATLAS_HOME/current``. Installed snapshots are never replaced, so a running child keeps its
-selected tree while a later install activates a new snapshot. A failed install or update leaves the
-active set unchanged.
+selected tree while a later install activates a new snapshot. Snapshot trees are read-only after
+staging, and the child forces ``PYTHONDONTWRITEBYTECODE=1``. A per-release lock serializes installs;
+``atlas release update`` acquires those locks in sorted manifest-name order. Activation is a
+compare-and-swap transaction: rollback restores the previous link only when it still points to the
+failed transaction's target. A failed install or update therefore leaves a concurrently activated
+release in place rather than restoring an older link over it. Atlas does not remove installed
+snapshots automatically.
 Runtime installation restores the active environment when dependency installation or validation
 fails.
 
@@ -191,14 +200,16 @@ Identifiers use lowercase letters, digits, and single hyphens. Command and job n
 overlap within a release. ``atlas`` and ``artifact-runner`` are reserved command names.
 
 Atlas rejects unknown manifest keys, malformed or missing targets, targets outside the selected
-release, missing dotted parent package initializers, ambiguous module paths, symlinks, malformed
-service references, invalid unit suffixes, and duplicate public command names across active
-releases. A target uses the ``package.module:callable`` form. Atlas resolves the final module and
-every parent package below the selected release's ``modules/`` directory without importing release
-code. The child runner loads those exact source files in order, then checks the same callable
-contract: one unambiguous top-level synchronous function that accepts ``argv`` and returns an
-integer or ``None``. Required arguments beyond ``argv``, duplicate definitions, rebindings, async
-functions, and incompatible return annotations are rejected.
+release, missing dotted parent package initializers, ambiguous module paths, symlinks, wildcard or
+dynamic imports, decorated targets, malformed service references, invalid unit suffixes, and
+duplicate public command names across active releases. A target uses the
+``package.module:callable`` form. Atlas resolves the final module and every parent package below
+the selected release's ``modules/`` directory without importing release code. The child runner
+loads those exact source files in order, then checks the same callable contract: one unambiguous
+top-level synchronous function that accepts ``argv`` and returns an integer or ``None``. Required
+arguments beyond ``argv``, duplicate definitions, rebindings, async functions, and incompatible
+return annotations are rejected. An expression the source validator cannot prove safe is rejected
+at install time, and the runtime repeats the contract check before calling the function.
 
 The selected release's ``modules/`` directory is first on ``PYTHONPATH``, followed by Atlas's
 support packages. The caller's ``PYTHONPATH`` and other active releases are not exposed to the
@@ -276,6 +287,10 @@ Install systemd files
 Each managed service has one ``ExecStart`` through ``/opt/atlas/bin/atlas``. It invokes a
 manifest command or a matching job instance. A job-backed service must use
 ``atlas job instance run``, and its ``User=`` value must match the instance user.
+The service unit must include ``Delegate=yes``. This gives the Atlas process a delegated cgroup
+v2 child in which its supervisor can contain release code and all descendants, including processes
+that call ``setsid``. Copying an ``ExecStart`` into a unit without delegation is invalid; Atlas
+returns 125 rather than running the release.
 
 Atlas writes ``atlas-<release>-<service>.service`` and an optional ``.timer`` with mode ``0644`` and
 owner ``root:root``, then runs ``systemctl daemon-reload``. It does not enable, start, stop, or restart
@@ -303,10 +318,12 @@ The default layout is:
    /opt/atlas/
      bin/atlas
      bin/artifact-runner
+     lib/python/atlas_process_supervisor.py
      lib/python/atlas_release_runner.py
      runtime/
      releases/<release>/<version>-<content-digest>/
      current/<release> -> ../releases/<release>/<version>-<content-digest>
+     releases/.locks/<release>.lock
      shims/
      tmp/
 
@@ -316,10 +333,12 @@ The default layout is:
      cache/
 
 Commands and jobs share one executor. Arguments remain a list and run with ``shell=False``. Atlas
-records read-only Git context for the working directory and starts the child in a new process
-group. A timeout or termination signal reaches descendant process groups as well: Atlas sends
-SIGTERM, allows five seconds for cleanup, then sends SIGKILL to groups that remain. A timeout's
-exit status is 124. A held non-blocking job-instance lock returns 75.
+records read-only Git context for the working directory and starts a trusted supervisor in the
+run's delegated cgroup before the release runner forks. A timeout or termination signal sends
+SIGTERM to the complete cgroup, uses one five-second deadline, and then writes ``cgroup.kill``
+once. This contains forks and ``setsid`` descendants without PID reuse decisions. A timeout's
+exit status is 124. A containment failure's exit status is 125 and its run record includes the
+error. A held non-blocking job-instance lock returns 75.
 
 Each run receives ``run_id``, ``parent_run_id``, and ``operation_id``. Nested Atlas execution records the
 caller as its parent while retaining the operation ID. Release code receives the same values as
@@ -366,7 +385,14 @@ Job lock conflict
    operating-system lock.
 
 Timed-out job
-   Atlas returns 124, records ``timed_out``, and terminates the process group and its descendants.
+   Atlas returns 124, records ``timed_out``, and terminates the cgroup and its descendants. If the
+   cgroup cannot be signalled or emptied, Atlas returns 125 and records the containment error.
+
+Containment unavailable
+   Verify that the Atlas service or the invoking scope has a writable delegated cgroup v2 parent.
+   The bundled service requires ``Delegate=yes``. A default Docker container is intentionally not
+   treated as delegated; configure cgroup delegation at the container runtime boundary or expect
+   exit 125. Atlas has no unsafe fallback based on ``/proc`` or process groups.
 
 Systemd installation failure
    Check root permission, the unit files, destination symlinks, and

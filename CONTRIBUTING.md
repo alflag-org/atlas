@@ -21,6 +21,11 @@ mise run setup
 
 Docker Compose is optional and is only needed for the container checks.
 
+The host test environment must provide a writable delegated Linux cgroup v2 parent; the test and
+release workflows fail closed when it is unavailable. The default Docker smoke image deliberately
+has no delegation and verifies that an attempted release execution returns 125 instead of starting
+release code.
+
 ## Verify a change
 
 Run the full local check before submitting a pull request:

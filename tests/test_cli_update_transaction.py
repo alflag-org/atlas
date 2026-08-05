@@ -167,7 +167,8 @@ def test_release_update_reports_failed_host_artifact_restore(
         '    version: "3.12"\n'
         "releases:\n"
         "  sample:\n"
-        f'    source: "{source}"\n',
+        f'    source: "{source}"\n'
+        "    enabled: true\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -181,3 +182,30 @@ def test_release_update_reports_failed_host_artifact_restore(
         in capsys.readouterr().err
     )
     assert not (home / "current/sample").exists()
+
+
+def test_release_update_activates_enabled_release_and_refreshes_artifacts(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    etc.mkdir(parents=True)
+    _set_env(monkeypatch, home, etc, var)
+    source = _write_release(tmp_path / "source", "sample", "0.1.0", "sample-show")
+    (etc / "config.yml").write_text(
+        "runtime:\n"
+        "  python:\n"
+        '    version: "3.12"\n'
+        "releases:\n"
+        "  sample:\n"
+        f'    source: "{source}"\n',
+        encoding="utf-8",
+    )
+
+    assert main(["release", "update"]) == 0
+    assert (home / "current/sample").is_symlink()
+    assert (home / "shims/sample-show").is_symlink()
+    assert capsys.readouterr().err == ""

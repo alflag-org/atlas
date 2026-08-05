@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -27,13 +27,8 @@ from .execution import execute
 from .init import SystemdAdapter
 from .job_instances import list_job_instances, load_job_instance
 from .jobs import list_jobs, run_job, run_job_instance
-from .launchers import (
-    ensure_artifact_runner,
-    ensure_atlas_launcher,
-    regenerate_shims,
-    sync_atlas_core,
-    sync_release_runner,
-)
+from .launchers import publish_host_artifacts
+from .locks import acquire_lock
 from .paths import AtlasPaths, ensure_dirs, get_paths
 from .releases import reversible_release_install, validate_release
 from .runtime import install_runtime, runtime_status
@@ -45,17 +40,15 @@ def _bool_text(value: bool) -> str:
 
 
 def _refresh_host_artifacts(paths: AtlasPaths) -> list[str]:
-    sync_atlas_core(paths.home)
-    sync_release_runner(paths.home)
-    atlas_launcher = paths.bin_dir / "atlas"
-    ensure_atlas_launcher(atlas_launcher)
-    ensure_artifact_runner(paths.artifact_runner, atlas_launcher)
-    return regenerate_shims(
-        paths.current_root,
-        paths.shims,
-        paths.artifact_runner,
-        paths.releases_root,
-    )
+    return publish_host_artifacts(paths, _lock_held=True)
+
+
+@contextmanager
+def _host_artifact_transaction(paths: AtlasPaths):
+    """Serialize host publication before per-release activation locks."""
+    # Lock order is fixed: host-artifacts, then sorted release locks.
+    with acquire_lock(paths.locks, "host-artifacts", wait=True):
+        yield
 
 
 def cmd_status(_: argparse.Namespace) -> int:
@@ -139,17 +132,18 @@ def cmd_release_install(args: argparse.Namespace) -> int:
     ensure_dirs(paths)
     source = resolve_source(args.source, cache_dir=paths.cache)
     release = validate_release(source)
-    try:
-        with reversible_release_install(source, paths.releases_root, paths.current_root):
-            names = _refresh_host_artifacts(paths)
-    except Exception:
+    with _host_artifact_transaction(paths):
         try:
-            _refresh_host_artifacts(paths)
-        except Exception as rollback_error:
-            raise RuntimeError(
-                "release installation failed and host artifacts could not be restored"
-            ) from rollback_error
-        raise
+            with reversible_release_install(source, paths.releases_root, paths.current_root):
+                names = _refresh_host_artifacts(paths)
+        except Exception:
+            try:
+                _refresh_host_artifacts(paths)
+            except Exception as rollback_error:
+                raise RuntimeError(
+                    "release installation failed and host artifacts could not be restored"
+                ) from rollback_error
+            raise
     print(f"installed release: {release.manifest.name} {release.version}")
     print(f"commands: {len(names)}")
     return 0
@@ -184,25 +178,26 @@ def cmd_release_update(args: argparse.Namespace) -> int:
             temporary_source = temporary_root / name
             shutil.copytree(release.root, temporary_source)
             sources.append(temporary_source)
-        try:
-            with ExitStack() as installations:
-                for source in sources:
-                    installations.enter_context(
-                        reversible_release_install(
-                            source,
-                            paths.releases_root,
-                            paths.current_root,
-                        )
-                    )
-                _refresh_host_artifacts(paths)
-        except Exception:
+        with _host_artifact_transaction(paths):
             try:
-                _refresh_host_artifacts(paths)
-            except Exception as rollback_error:
-                raise RuntimeError(
-                    "release update failed and host artifacts could not be restored"
-                ) from rollback_error
-            raise
+                with ExitStack() as installations:  # pragma: no branch - interpreter-generated with entry arc
+                    for source in sources:
+                        installations.enter_context(
+                            reversible_release_install(
+                                source,
+                                paths.releases_root,
+                                paths.current_root,
+                            )
+                        )
+                    _refresh_host_artifacts(paths)
+            except Exception:
+                try:
+                    _refresh_host_artifacts(paths)
+                except Exception as rollback_error:
+                    raise RuntimeError(
+                        "release update failed and host artifacts could not be restored"
+                    ) from rollback_error
+                raise
     return 0
 
 

@@ -23,11 +23,12 @@ class AtlasPaths:
     logs: Path
     locks: Path
     cache: Path
+    artifact_root: Path
+    artifact_current: Path
     shims: Path
     bin_dir: Path
     artifact_runner: Path
     release_runner: Path
-    process_supervisor: Path
     runtime_python: Path
 
 
@@ -43,11 +44,12 @@ def get_paths() -> AtlasPaths:
     logs = var / "logs"
     locks = var / "locks"
     cache = var / "cache"
+    artifact_root = home / "artifacts"
+    artifact_current = artifact_root / "current"
     shims = home / "shims"
     bin_dir = home / "bin"
     artifact_runner = bin_dir / "artifact-runner"
     release_runner = home / "lib/python/atlas_release_runner.py"
-    process_supervisor = home / "lib/python/atlas_process_supervisor.py"
     runtime_python = runtime / "python" / "envs" / "scripts" / "bin" / "python"
     return AtlasPaths(
         home=home,
@@ -62,11 +64,12 @@ def get_paths() -> AtlasPaths:
         logs=logs,
         locks=locks,
         cache=cache,
+        artifact_root=artifact_root,
+        artifact_current=artifact_current,
         shims=shims,
         bin_dir=bin_dir,
         artifact_runner=artifact_runner,
         release_runner=release_runner,
-        process_supervisor=process_supervisor,
         runtime_python=runtime_python,
     )
 
@@ -80,6 +83,10 @@ def ensure_dirs(paths: AtlasPaths) -> None:
     paths.home.mkdir(parents=True, exist_ok=True)
     paths.tmp.mkdir(parents=True, exist_ok=True)
     paths.bin_dir.mkdir(parents=True, exist_ok=True)
-    paths.shims.mkdir(parents=True, exist_ok=True)
+    paths.artifact_root.mkdir(parents=True, exist_ok=True)
+    generations = paths.artifact_root / "generations"
+    if generations.is_symlink() or (generations.exists() and not generations.is_dir()):
+        raise ValueError(f"artifact generations path must be a directory: {generations}")
+    generations.mkdir(parents=True, exist_ok=True)
     paths.releases_root.mkdir(parents=True, exist_ok=True)
     paths.current_root.mkdir(parents=True, exist_ok=True)

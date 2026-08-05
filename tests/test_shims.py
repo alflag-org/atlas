@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 from atlas.cli import main
-from atlas.launchers import regenerate_shims
+from atlas.launchers import publish_host_artifacts
+from atlas.paths import ensure_dirs, get_paths
 from atlas.releases import install_release
 
 
@@ -40,8 +44,20 @@ def test_shims_symlink_to_artifact_runner(monkeypatch, tmp_path: Path) -> None:
     assert f'exec "{home / "bin/atlas"}" run' in content
 
 
-def test_regenerate_shims_removes_stale_files_and_preserves_directories(tmp_path: Path) -> None:
-    current = tmp_path / "current"
+def test_publish_host_artifacts_removes_stale_files_and_preserves_directories(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    monkeypatch.setenv("ATLAS_HOME", str(home))
+    monkeypatch.setenv("ATLAS_ETC_DIR", str(etc))
+    monkeypatch.setenv("ATLAS_VAR_DIR", str(var))
+    monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
+    paths = get_paths()
+    ensure_dirs(paths)
+    current = paths.current_root
     release = tmp_path / "source"
     (release / "modules").mkdir(parents=True)
     (release / "VERSION").write_text("0.1.0\n", encoding="utf-8")
@@ -57,23 +73,20 @@ def test_regenerate_shims_removes_stale_files_and_preserves_directories(tmp_path
         "    target: sample:main\n",
         encoding="utf-8",
     )
-    releases = tmp_path / "releases"
+    releases = paths.releases_root
     install_release(release, releases, current)
-    shims = tmp_path / "shims"
+    shims = paths.shims
     shims.mkdir()
     stale = shims / "old-command"
     stale.write_text("stale", encoding="utf-8")
     preserved = shims / "manual-dir"
     preserved.mkdir()
-    runner = tmp_path / "artifact-runner"
-    runner.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-
-    names = regenerate_shims(current, shims, runner, releases)
+    names = publish_host_artifacts(paths)
 
     assert names == ["sample"]
     assert not stale.exists()
     assert preserved.is_dir()
-    assert (shims / "sample").resolve() == runner
+    assert (shims / "sample").resolve() == paths.artifact_runner
 
 
 def test_shim_executes_command(monkeypatch, tmp_path: Path) -> None:
@@ -136,3 +149,80 @@ def test_release_shims_fails_on_collision(monkeypatch, tmp_path: Path, capsys) -
             continue
         assert main(["release", "install", str(release)]) == 2
         assert "command name collision: dup found in releases: one, two" in capsys.readouterr().err
+
+
+def test_concurrent_release_refreshes_publish_complete_generations(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    etc.mkdir(parents=True, exist_ok=True)
+    (etc / "host.yml").write_text("name: t1\n", encoding="utf-8")
+    _set_env(monkeypatch, home, etc, var)
+
+    sources: list[Path] = []
+    for name in ("alpha", "bravo"):
+        source = tmp_path / f"source-{name}"
+        (source / "modules").mkdir(parents=True)
+        (source / "VERSION").write_text("1.0.0\n", encoding="utf-8")
+        (source / f"modules/{name}.py").write_text(
+            "def main(argv: list[str] | None = None) -> int:\n"
+            "    return 0\n",
+            encoding="utf-8",
+        )
+        (source / "release.yml").write_text(
+            "schema: atlas.release/v1\n"
+            f"name: {name}\n"
+            "commands:\n"
+            f"  {name}:\n"
+            f"    target: {name}:main\n",
+            encoding="utf-8",
+        )
+        sources.append(source)
+    sources.append(sources[0])
+
+    repository = Path(__file__).resolve().parents[1]
+    child_env = os.environ.copy()
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        [str(repository / "src"), str(repository / "operations/modules")]
+    )
+    command = (
+        "import sys\n"
+        "from atlas.cli import main\n"
+        "raise SystemExit(main(['release', 'install', sys.argv[1]]))\n"
+    )
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", command, str(source)],
+            cwd=repository,
+            env=child_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for source in sources
+    ]
+    deadline = time.monotonic() + 10
+    while any(process.poll() is None for process in processes):
+        current = home / "artifacts/current"
+        if current.is_symlink():
+            generation = current.resolve()
+            assert (generation / "python/atlas_core").is_dir()
+            assert (generation / "python/atlas_release_runner.py").is_file()
+            assert (generation / "python/target_contract.py").is_file()
+            assert (generation / "shims").is_dir()
+            for shim in (generation / "shims").iterdir():
+                if shim.is_symlink():
+                    assert shim.resolve() == home / "bin/artifact-runner"
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+
+    results = [process.communicate(timeout=5) for process in processes]
+    assert [process.returncode for process in processes] == [0, 0, 0], results
+    generation = (home / "artifacts/current").resolve()
+    assert (generation / "shims/alpha").is_symlink()
+    assert (generation / "shims/bravo").is_symlink()
+    assert (home / "shims/alpha").resolve() == home / "bin/artifact-runner"
+    assert (home / "shims/bravo").resolve() == home / "bin/artifact-runner"

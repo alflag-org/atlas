@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from atlas.launchers import sync_atlas_core, sync_release_runner
+from atlas.launchers import publish_host_artifacts
 from atlas.paths import AtlasPaths, get_paths
 
 
@@ -22,8 +22,7 @@ def configure_paths(monkeypatch, tmp_path: Path) -> AtlasPaths:
     paths = get_paths()
     paths.runtime_python.parent.mkdir(parents=True)
     paths.runtime_python.symlink_to(sys.executable)
-    sync_atlas_core(paths.home)
-    sync_release_runner(paths.home)
+    publish_host_artifacts(paths)
     return paths
 
 
@@ -91,7 +90,6 @@ def make_release(
         (unit_root / f"{service}.service").write_text(
             "[Unit]\nDescription=Sample\n"
             "[Service]\nUser=ops\n"
-            "Delegate=yes\n"
             "ExecStart=/opt/atlas/bin/atlas job instance run sample-instance\n",
             encoding="utf-8",
         )

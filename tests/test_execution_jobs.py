@@ -26,11 +26,7 @@ from atlas.execution import (
 )
 from atlas.job_instances import list_job_instances, load_job_instance
 from atlas.jobs import list_jobs, run_job, run_job_instance
-from atlas.launchers import (
-    ensure_artifact_runner,
-    ensure_atlas_launcher,
-    regenerate_shims,
-)
+from atlas.launchers import publish_host_artifacts
 from atlas.locks import acquire_lock
 from atlas.releases import install_release, release_digest
 
@@ -71,7 +67,7 @@ def test_execute_sets_environment_and_logs_correlation(
     monkeypatch.setenv("ATLAS_OPERATION_ID", "root-operation")
     monkeypatch.setenv("PYTHONPATH", "/existing")
     command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
-    atlas_paths.var.mkdir(parents=True)
+    atlas_paths.var.mkdir(parents=True, exist_ok=True)
 
     assert execute(
         atlas_paths,
@@ -134,7 +130,7 @@ def test_reinstall_same_version_keeps_running_snapshot_and_correlates_digest(
         atlas_paths.releases_root,
         "sample-show",
     )
-    atlas_paths.var.mkdir(parents=True)
+    atlas_paths.var.mkdir(parents=True, exist_ok=True)
     runner = (
         "from atlas.catalog import resolve_command\n"
         "from atlas.execution import execute\n"
@@ -204,11 +200,11 @@ def test_reinstall_same_version_keeps_running_snapshot_and_correlates_digest(
     }
 
 
-def test_executed_snapshot_stays_immutable_and_digest_stable(
+def test_executed_snapshot_stays_unchanged_and_digest_stable(
     atlas_paths,
     release_factory,
 ) -> None:
-    source = release_factory(name="immutable")
+    source = release_factory(name="unchanged")
     target = install_release(source, atlas_paths.releases_root, atlas_paths.current_root)
     before = {
         item.relative_to(target): (item.read_bytes(), item.stat().st_mode & 0o777)
@@ -689,6 +685,8 @@ def test_advisory_lock_conflict_and_cli_exit(
 
 def test_advisory_lock_rejects_symlinks_and_non_files(atlas_paths, tmp_path: Path) -> None:
     atlas_paths.locks.parent.mkdir(parents=True, exist_ok=True)
+    (atlas_paths.locks / "host-artifacts.lock").unlink()
+    atlas_paths.locks.rmdir()
     real_locks = tmp_path / "real-locks"
     real_locks.mkdir()
     atlas_paths.locks.symlink_to(real_locks, target_is_directory=True)
@@ -986,13 +984,7 @@ def test_cli_job_commands_and_instances(atlas_paths, release_factory, capsys) ->
     assert "schema: atlas.job-instance/v1" in capsys.readouterr().out
     assert main(["job", "instance", "run", "worker-collect"]) == 0
 
-    ensure_artifact_runner(atlas_paths.artifact_runner, atlas_paths.bin_dir / "atlas")
-    assert regenerate_shims(
-        atlas_paths.current_root,
-        atlas_paths.shims,
-        atlas_paths.artifact_runner,
-        atlas_paths.releases_root,
-    ) == []
+    assert publish_host_artifacts(atlas_paths) == []
     assert not (atlas_paths.shims / "collect").exists()
 
 
@@ -1008,14 +1000,7 @@ def test_nested_shim_execution_preserves_operation_and_parent(
         encoding="utf-8",
     )
     _activate(atlas_paths, source)
-    ensure_atlas_launcher(atlas_paths.bin_dir / "atlas")
-    ensure_artifact_runner(atlas_paths.artifact_runner, atlas_paths.bin_dir / "atlas")
-    regenerate_shims(
-        atlas_paths.current_root,
-        atlas_paths.shims,
-        atlas_paths.artifact_runner,
-        atlas_paths.releases_root,
-    )
+    publish_host_artifacts(atlas_paths)
 
     parent = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "parent")
     assert execute(atlas_paths, parent, []) == 0

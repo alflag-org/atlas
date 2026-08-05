@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import runpy
+import shutil
 import stat
 import subprocess
 import sys
@@ -19,8 +20,14 @@ import pytest
 
 from atlas import cli
 from atlas.catalog import active_releases, resolve_command
-from atlas.launchers import regenerate_shims, sync_release_runner
+from atlas.launchers import (
+    _atomic_write,
+    _ensure_generation_link,
+    _stage_generation,
+    publish_host_artifacts,
+)
 from atlas.manifests import validate_name
+from atlas.paths import ensure_dirs, get_paths
 from atlas.releases import (
     install_release,
     read_version,
@@ -223,6 +230,23 @@ def test_cli_release_update_rejects_unconfigured_release(
 
     assert cli.main(["release", "update", "missing"]) == 2
     assert "release is not configured: missing" in capsys.readouterr().err
+
+
+def test_cli_release_update_with_no_enabled_releases_is_a_noop(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    etc.mkdir(parents=True)
+    (etc / "config.yml").write_text(
+        "runtime:\n  python:\n    version: '3.12.3'\nreleases: {}\n",
+        encoding="utf-8",
+    )
+    _set_env(monkeypatch, home, etc, var)
+
+    assert cli.main(["release", "update"]) == 0
 
 
 def test_release_shims_is_not_a_public_command() -> None:
@@ -789,76 +813,17 @@ def test_runner_redacts_sensitive_arguments(monkeypatch: pytest.MonkeyPatch, tmp
     runtime_python = home / "runtime/python/envs/scripts/bin/python"
     runtime_python.parent.mkdir(parents=True)
     runtime_python.symlink_to(Path("/usr/bin/python3"))
-    sync_release_runner(home)
     release = _release(tmp_path / "release")
     install_release(release, home / "releases", home / "current")
     other = _release(tmp_path / "other", release_name="other", command_name="other")
     install_release(other, home / "releases", home / "current")
+    paths = get_paths()
+    ensure_dirs(paths)
+    publish_host_artifacts(paths)
     assert cli.main(["run", "sample", "--token", "abc", "--api-key=def", "DB_PASSWORD=ghi"]) == 0
 
     log = (var / "logs/runs.jsonl").read_text(encoding="utf-8")
     assert '"args": ["--token", "***", "--api-key=***", "DB_PASSWORD=***"]' in log
-
-
-@pytest.mark.parametrize("destination_kind", ["directory", "symlink"])
-def test_sync_release_runner_rejects_non_file_destination(
-    tmp_path: Path,
-    destination_kind: str,
-) -> None:
-    home = tmp_path / destination_kind / "opt/atlas"
-    destination = home / "lib/python/atlas_release_runner.py"
-    destination.parent.mkdir(parents=True)
-    if destination_kind == "directory":
-        destination.mkdir()
-    else:
-        target = tmp_path / destination_kind / "runner.py"
-        target.write_text("# runner\n", encoding="utf-8")
-        destination.symlink_to(target)
-
-    with pytest.raises(ValueError, match="destination must be a regular file"):
-        sync_release_runner(home)
-
-
-@pytest.mark.parametrize("destination_kind", ["directory", "symlink"])
-def test_sync_release_runner_rejects_non_file_helper_destination(
-    tmp_path: Path,
-    destination_kind: str,
-) -> None:
-    home = tmp_path / destination_kind / "opt/atlas"
-    destination = home / "lib/python/atlas_release_runner.py"
-    destination.parent.mkdir(parents=True)
-    destination.write_text("# runner\n", encoding="utf-8")
-    helper = destination.with_name("target_contract.py")
-    if destination_kind == "directory":
-        helper.mkdir()
-    else:
-        target = tmp_path / destination_kind / "target-contract.py"
-        target.write_text("# helper\n", encoding="utf-8")
-        helper.symlink_to(target)
-
-    with pytest.raises(ValueError, match="target contract helper destination"):
-        sync_release_runner(home)
-
-
-@pytest.mark.parametrize("destination_kind", ["directory", "symlink"])
-def test_sync_release_runner_rejects_non_file_supervisor_destination(
-    tmp_path: Path,
-    destination_kind: str,
-) -> None:
-    home = tmp_path / destination_kind / "opt/atlas"
-    destination = home / "lib/python/atlas_release_runner.py"
-    destination.parent.mkdir(parents=True)
-    destination.write_text("# runner\n", encoding="utf-8")
-    supervisor = destination.with_name("atlas_process_supervisor.py")
-    if destination_kind == "directory":
-        supervisor.mkdir()
-    else:
-        target = tmp_path / destination_kind / "supervisor.py"
-        target.write_text("# supervisor\n", encoding="utf-8")
-        supervisor.symlink_to(target)
-
-    with pytest.raises(ValueError, match="process supervisor destination"):
-        sync_release_runner(home)
 
 
 def test_runtime_install_uses_no_extra_requirements_for_release_without_requirements(
@@ -1002,16 +967,167 @@ def test_catalog_rejects_invalid_current_root_and_entries(tmp_path: Path) -> Non
         active_releases(current, releases)
 
 
-def test_regenerate_shims_rejects_command_path_directory(tmp_path: Path) -> None:
-    current = tmp_path / "current"
+def test_publish_host_artifacts_rejects_command_path_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    _set_env(monkeypatch, home, etc, var)
+    paths = get_paths()
+    ensure_dirs(paths)
     release = _release(tmp_path / "release")
-    releases = tmp_path / "releases"
-    install_release(release, releases, current)
-    shims = tmp_path / "shims"
+    install_release(release, paths.releases_root, paths.current_root)
+    shims = paths.shims
     (shims / "sample").mkdir(parents=True)
 
-    with pytest.raises(ValueError, match="shim path is a directory"):
-        regenerate_shims(current, shims, tmp_path / "artifact-runner", releases)
+    with pytest.raises(ValueError, match="duplicate generated shim"):
+        publish_host_artifacts(paths)
+
+
+def test_host_artifact_publication_rejects_unsafe_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    _set_env(monkeypatch, home, etc, var)
+    paths = get_paths()
+    ensure_dirs(paths)
+
+    regular = tmp_path / "regular"
+    regular.write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError, match="active artifact generation must be a symlink"):
+        paths.artifact_current.write_text("x", encoding="utf-8")
+        publish_host_artifacts(paths)
+    paths.artifact_current.unlink()
+
+    external = tmp_path / "external"
+    external.mkdir()
+    paths.artifact_current.symlink_to(external, target_is_directory=True)
+    with pytest.raises(ValueError, match="escapes its root"):
+        publish_host_artifacts(paths)
+    paths.artifact_current.unlink()
+    paths.artifact_current.symlink_to(
+        paths.artifact_root / "generations/missing",
+        target_is_directory=True,
+    )
+    with pytest.raises(ValueError, match="active artifact generation is missing"):
+        publish_host_artifacts(paths)
+    paths.artifact_current.unlink()
+
+    artifact_file = tmp_path / "artifact-file"
+    artifact_file.mkdir()
+    with pytest.raises(ValueError, match="host artifact must be a regular file"):
+        _atomic_write(artifact_file, "new")
+    artifact_target = tmp_path / "artifact-target"
+    artifact_target.write_text("x", encoding="utf-8")
+    artifact_link = tmp_path / "artifact-link"
+    artifact_link.symlink_to(artifact_target)
+    with pytest.raises(ValueError, match="host artifact must be a regular file"):
+        _atomic_write(artifact_link, "new")
+
+    outside_link = tmp_path / "outside-link"
+    outside_link.symlink_to(external, target_is_directory=True)
+    with pytest.raises(ValueError, match="link escapes Atlas home"):
+        _ensure_generation_link(outside_link, Path("inside"))
+    external_python = home / "lib/python"
+    external_python.parent.mkdir(parents=True, exist_ok=True)
+    external_python.symlink_to(external, target_is_directory=True)
+    with pytest.raises(ValueError, match="link escapes Atlas home"):
+        publish_host_artifacts(paths)
+    external_python.unlink()
+    non_directory = tmp_path / "non-directory"
+    non_directory.write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError, match="destination must be a directory"):
+        _ensure_generation_link(non_directory, Path("inside"))
+
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    monkeypatch.setattr(
+        Path,
+        "symlink_to",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("link failed")),
+    )
+    with pytest.raises(OSError, match="link failed"):
+        _ensure_generation_link(legacy, Path("inside"))
+    assert legacy.is_dir()
+    missing_link = tmp_path / "missing-link"
+    with pytest.raises(OSError, match="link failed"):
+        _ensure_generation_link(missing_link, Path("inside"))
+
+
+def test_host_artifact_publication_rolls_back_stable_links(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    _set_env(monkeypatch, home, etc, var)
+    paths = get_paths()
+    ensure_dirs(paths)
+    legacy_python = home / "lib/python"
+    legacy_python.mkdir(parents=True)
+    legacy_shims = paths.shims
+    legacy_shims.mkdir()
+    monkeypatch.setattr(
+        "atlas.launchers._publish_current",
+        lambda paths, generation: (_ for _ in ()).throw(OSError("publish failed")),
+    )
+    with pytest.raises(OSError, match="publish failed"):
+        publish_host_artifacts(paths)
+    assert legacy_python.is_dir()
+    assert legacy_shims.is_dir()
+    assert not paths.artifact_current.exists()
+
+
+def test_host_artifact_publication_rejects_bad_generation_tree(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    _set_env(monkeypatch, home, etc, var)
+    paths = get_paths()
+    generations = paths.artifact_root / "generations"
+    paths.artifact_root.mkdir(parents=True)
+    generations.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(ValueError, match="artifact generations path must be a directory"):
+        ensure_dirs(paths)
+    generations.unlink()
+    ensure_dirs(paths)
+    generations.rmdir()
+    generations.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(ValueError, match="artifact generations path must be a directory"):
+        publish_host_artifacts(paths)
+
+
+def test_host_artifact_staging_rejects_non_regular_runner(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    _set_env(monkeypatch, home, etc, var)
+    paths = get_paths()
+    ensure_dirs(paths)
+    original_copyfile = shutil.copyfile
+
+    def symlink_target(source: Path, destination: Path, *args, **kwargs) -> Path:
+        result = original_copyfile(source, destination)
+        if Path(destination).name == "target_contract.py":
+            Path(destination).unlink()
+            Path(destination).symlink_to(source)
+        return result
+
+    monkeypatch.setattr("atlas.launchers.shutil.copyfile", symlink_target)
+    with pytest.raises(ValueError, match="staged host artifact is not a regular file"):
+        _stage_generation(paths, [])
 
 
 def test_sources_rejects_absolute_archive_members(tmp_path: Path) -> None:

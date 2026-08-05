@@ -27,9 +27,6 @@ dev = [
 [project.scripts]
 atlas = "atlas.cli:main"
 
-[tool.setuptools]
-py-modules = ["atlas_process_supervisor"]
-
 [tool.setuptools.packages.find]
 where = ["src"]
 include = [

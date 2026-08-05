@@ -142,8 +142,14 @@ def test_install_release_supports_multiple_active_releases(tmp_path: Path) -> No
     assert kitsunebi_target.name.startswith("0.2.0-")
     assert (current / "common").resolve() == common_target
     assert (current / "kitsunebi").resolve() == kitsunebi_target
-    assert [release.name for release in active_releases(current)] == ["common", "kitsunebi"]
-    assert sorted(command_index(current)) == ["common-command", "kitsunebi-command"]
+    assert [release.name for release in active_releases(current, releases)] == [
+        "common",
+        "kitsunebi",
+    ]
+    assert sorted(command_index(current, releases)) == [
+        "common-command",
+        "kitsunebi-command",
+    ]
 
 
 def test_install_release_rejects_current_root_symlink(tmp_path: Path) -> None:

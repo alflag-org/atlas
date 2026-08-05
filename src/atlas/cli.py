@@ -50,15 +50,20 @@ def _refresh_host_artifacts(paths: AtlasPaths) -> list[str]:
     atlas_launcher = paths.bin_dir / "atlas"
     ensure_atlas_launcher(atlas_launcher)
     ensure_artifact_runner(paths.artifact_runner, atlas_launcher)
-    return regenerate_shims(paths.current_root, paths.shims, paths.artifact_runner)
+    return regenerate_shims(
+        paths.current_root,
+        paths.shims,
+        paths.artifact_runner,
+        paths.releases_root,
+    )
 
 
 def cmd_status(_: argparse.Namespace) -> int:
     """Print current host and artifact status."""
     paths = get_paths()
     ensure_dirs(paths)
-    releases = active_releases(paths.current_root)
-    commands = command_index(paths.current_root)
+    releases = active_releases(paths.current_root, paths.releases_root)
+    commands = command_index(paths.current_root, paths.releases_root)
     host_file = paths.etc / "host.yml"
     host_name = "unknown"
     if host_file.exists():
@@ -112,7 +117,10 @@ def cmd_runtime_install(_: argparse.Namespace) -> int:
     paths = get_paths()
     ensure_dirs(paths)
     config = load_config(paths.etc / "config.yml")
-    roots = [release.root for release in active_releases(paths.current_root)]
+    roots = [
+        release.root
+        for release in active_releases(paths.current_root, paths.releases_root)
+    ]
     runtime_python = install_runtime(
         paths.runtime,
         config.runtime.python_version,
@@ -155,6 +163,7 @@ def cmd_release_update(args: argparse.Namespace) -> int:
     names = [args.release_name] if args.release_name else [
         name for name, release in config.releases.items() if release.enabled
     ]
+    names.sort()
     with ExitStack() as temporary_sources:
         sources: list[Path] = []
         for name in names:
@@ -199,7 +208,8 @@ def cmd_release_update(args: argparse.Namespace) -> int:
 
 def cmd_release_list(args: argparse.Namespace) -> int:
     """List active releases."""
-    for release in active_releases(get_paths().current_root):
+    paths = get_paths()
+    for release in active_releases(paths.current_root, paths.releases_root):
         if args.verbose:
             print(
                 f"{release.name}\t{release.version}\t{release.root}\t"
@@ -215,7 +225,8 @@ def cmd_release_list(args: argparse.Namespace) -> int:
 
 def cmd_command_list(args: argparse.Namespace) -> int:
     """List public commands."""
-    for name, command in command_index(get_paths().current_root).items():
+    paths = get_paths()
+    for name, command in command_index(paths.current_root, paths.releases_root).items():
         if args.verbose:
             print(
                 f"{name}\t{command.release.name}\t{command.release.version}\t"
@@ -232,7 +243,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     ensure_dirs(p)
     return execute(
         p,
-        resolve_command(p.current_root, args.command_name),
+        resolve_command(p.current_root, p.releases_root, args.command_name),
         args.args,
     )
 
@@ -240,7 +251,10 @@ def cmd_run(args: argparse.Namespace) -> int:
 def cmd_which(args: argparse.Namespace) -> int:
     """Print the target for one command."""
     p = get_paths()
-    print(resolve_command(p.current_root, args.command_name).artifact.target.spec)
+    print(
+        resolve_command(p.current_root, p.releases_root, args.command_name)
+        .artifact.target.spec
+    )
     return 0
 
 
@@ -253,7 +267,7 @@ def cmd_job_list(args: argparse.Namespace) -> int:
 
 def _job_data(release_name: str, job_name: str) -> dict[str, object]:
     paths = get_paths()
-    job = resolve_job(paths.current_root, release_name, job_name)
+    job = resolve_job(paths.current_root, paths.releases_root, release_name, job_name)
     return {
         "release": job.release.name,
         "version": job.release.version,
@@ -279,7 +293,12 @@ def cmd_job_instance_list(_: argparse.Namespace) -> int:
     """List configured job instances whose jobs exist."""
     paths = get_paths()
     for instance in list_job_instances(paths.jobs_dir):
-        resolve_job(paths.current_root, instance.release, instance.job)
+        resolve_job(
+            paths.current_root,
+            paths.releases_root,
+            instance.release,
+            instance.job,
+        )
         print(instance.name)
     return 0
 
@@ -287,7 +306,12 @@ def cmd_job_instance_list(_: argparse.Namespace) -> int:
 def _instance_data(name: str) -> dict[str, object]:
     paths = get_paths()
     instance = load_job_instance(paths.jobs_dir, name)
-    resolve_job(paths.current_root, instance.release, instance.job)
+    resolve_job(
+        paths.current_root,
+        paths.releases_root,
+        instance.release,
+        instance.job,
+    )
     return {
         "schema": "atlas.job-instance/v1",
         "release": instance.release,
@@ -314,7 +338,8 @@ def cmd_job_instance_run(args: argparse.Namespace) -> int:
 
 def cmd_systemd_list(args: argparse.Namespace) -> int:
     """List Atlas-owned systemd services."""
-    releases = release_index(get_paths().current_root)
+    paths = get_paths()
+    releases = release_index(paths.current_root, paths.releases_root)
     if args.release is not None and args.release not in releases:
         raise ValueError(f"unknown release: {args.release}")
     for release in releases.values():
@@ -330,6 +355,7 @@ def cmd_systemd_diff(args: argparse.Namespace) -> int:
     paths = get_paths()
     service = resolve_service(
         paths.current_root,
+        paths.releases_root,
         args.release,
         args.service,
     )
@@ -342,6 +368,7 @@ def cmd_systemd_install(args: argparse.Namespace) -> int:
     paths = get_paths()
     service = resolve_service(
         paths.current_root,
+        paths.releases_root,
         args.release,
         args.service,
     )
@@ -355,6 +382,7 @@ def cmd_systemd_remove(args: argparse.Namespace) -> int:
     paths = get_paths()
     service = resolve_service(
         paths.current_root,
+        paths.releases_root,
         args.release,
         args.service,
     )

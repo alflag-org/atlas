@@ -3,9 +3,12 @@ from __future__ import annotations
 import io
 import os
 import runpy
+import stat
 import subprocess
 import sys
 import tarfile
+import threading
+import time
 import warnings
 import zipfile
 from dataclasses import replace
@@ -238,7 +241,7 @@ def test_release_install_rejects_broken_current_entry(tmp_path: Path) -> None:
         install_release(source, tmp_path / "releases", current)
 
     (current / "default").rmdir()
-    (tmp_path / "releases").mkdir()
+    (tmp_path / "releases").mkdir(exist_ok=True)
     (current / "default").symlink_to(tmp_path / "releases/missing")
     with pytest.raises(ValueError, match="active release target not found"):
         install_release(source, tmp_path / "releases", current)
@@ -306,6 +309,181 @@ def test_install_release_rejects_current_link_outside_release_root(tmp_path: Pat
     with pytest.raises(ValueError, match="escapes releases root"):
         install_release(source, releases, current)
 
+    active = current / "default"
+    active.unlink()
+    active.symlink_to("../releases/default/snapshot")
+    with pytest.raises(ValueError, match="path traversal"):
+        install_release(source, releases, current)
+
+    alias = releases / "alias"
+    alias.symlink_to(external, target_is_directory=True)
+    active.unlink()
+    active.symlink_to(alias, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlink chain"):
+        install_release(source, releases, current)
+
+
+def test_catalog_rejects_wrong_snapshot_names_symlink_chains_and_traversal(
+    tmp_path: Path,
+) -> None:
+    source = _release(tmp_path / "source")
+    releases = tmp_path / "releases"
+    current = tmp_path / "current"
+    target = install_release(source, releases, current)
+    active = current / "default"
+
+    external = tmp_path / "external"
+    external.mkdir()
+    active.unlink()
+    active.symlink_to(external, target_is_directory=True)
+    with pytest.raises(ValueError, match="outside releases root"):
+        active_releases(current, releases)
+    active.unlink()
+    active.symlink_to("../releases/default/" + target.name)
+    with pytest.raises(ValueError, match="path traversal"):
+        active_releases(current, releases)
+
+    alias = releases / "default" / "alias"
+    alias.symlink_to(target, target_is_directory=True)
+    active.unlink()
+    active.symlink_to(alias, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlink chain"):
+        active_releases(current, releases)
+
+    alias.unlink()
+    active.unlink()
+    wrong = releases / "default" / f"wrong-{target.name}"
+    target.rename(wrong)
+    active.symlink_to(wrong, target_is_directory=True)
+    with pytest.raises(ValueError, match="snapshot name mismatch"):
+        active_releases(current, releases)
+
+
+def test_catalog_requires_a_real_releases_root_and_matching_manifest_name(
+    tmp_path: Path,
+) -> None:
+    current = tmp_path / "current"
+    current.mkdir()
+    with pytest.raises(ValueError, match="releases root must be a directory"):
+        active_releases(current, tmp_path / "missing-releases")
+
+    source = _release(tmp_path / "source")
+    releases = tmp_path / "releases"
+    target = install_release(source, releases, current)
+    for item in [*target.rglob("*"), target]:
+        item.chmod(stat.S_IMODE(item.stat().st_mode) | stat.S_IWUSR)
+    (target / "release.yml").write_text(
+        "schema: atlas.release/v1\nname: other\ncommands:\n"
+        "  sample:\n    target: sample:main\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="name mismatch"):
+        active_releases(current, releases)
+
+
+def test_catalog_rejects_mutated_snapshot_and_keeps_direct_snapshot_on_link_swap(
+    tmp_path: Path,
+) -> None:
+    source = _release(tmp_path / "source")
+    releases = tmp_path / "releases"
+    current = tmp_path / "current"
+    target = install_release(source, releases, current)
+    command = resolve_command(current, releases, "sample")
+    external = tmp_path / "external"
+    external.mkdir()
+    active = current / "default"
+    active.unlink()
+    active.symlink_to(external, target_is_directory=True)
+    assert command.release.root == target
+
+    active.unlink()
+    active.symlink_to(target, target_is_directory=True)
+    for item in [*target.rglob("*"), target]:
+        item.chmod(stat.S_IMODE(item.stat().st_mode) | stat.S_IWUSR)
+    (target / "modules/sample.py").write_text(
+        "def main(argv: list[str] | None = None) -> int:\n    return 1\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="snapshot name mismatch"):
+        active_releases(current, releases)
+
+
+def test_concurrent_release_failure_cannot_rollback_a_later_activation(
+    tmp_path: Path,
+) -> None:
+    old = _release(tmp_path / "old", version="0.1.0")
+    failed = _release(tmp_path / "failed", version="0.2.0")
+    winner = _release(tmp_path / "winner", version="0.3.0")
+    releases = tmp_path / "releases"
+    current = tmp_path / "current"
+    old_target = install_release(old, releases, current)
+    failed_activated = threading.Event()
+    allow_failed = threading.Event()
+    winner_done = threading.Event()
+    errors: list[BaseException] = []
+
+    def fail_install() -> None:
+        try:
+            with reversible_release_install(failed, releases, current):
+                failed_activated.set()
+                assert allow_failed.wait(5)
+                raise RuntimeError("failed transaction")
+        except BaseException as exc:
+            errors.append(exc)
+
+    def winner_install() -> None:
+        try:
+            install_release(winner, releases, current)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            winner_done.set()
+
+    first = threading.Thread(target=fail_install)
+    second = threading.Thread(target=winner_install)
+    first.start()
+    assert failed_activated.wait(5)
+    second.start()
+    time.sleep(0.1)
+    assert not winner_done.is_set()
+    allow_failed.set()
+    first.join(5)
+    second.join(5)
+
+    assert errors and isinstance(errors[0], RuntimeError)
+    assert winner_done.is_set()
+    active_target = (current / "default").resolve()
+    assert active_target.name.startswith("0.3.0-")
+    assert old_target.is_dir()
+
+
+def test_concurrent_same_digest_install_is_idempotent(tmp_path: Path) -> None:
+    source = _release(tmp_path / "source")
+    releases = tmp_path / "releases"
+    current = tmp_path / "current"
+    barrier = threading.Barrier(3)
+    results: list[Path] = []
+    errors: list[BaseException] = []
+
+    def install() -> None:
+        try:
+            barrier.wait(5)
+            results.append(install_release(source, releases, current))
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=install) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    barrier.wait(5)
+    for thread in threads:
+        thread.join(5)
+
+    assert not errors
+    assert len(results) == 2
+    assert results[0] == results[1] == (current / "default").resolve()
+    assert list((releases / "default").glob(".*.tmp.*")) == []
+
 
 def test_install_release_rejects_changed_staged_content(
     monkeypatch: pytest.MonkeyPatch,
@@ -325,6 +503,127 @@ def test_install_release_rejects_changed_staged_content(
     monkeypatch.setattr(releases_module, "validate_release", changed_staging)
     with pytest.raises(ValueError, match="staged release content changed"):
         install_release(source, tmp_path / "releases", tmp_path / "current")
+
+
+def test_release_snapshot_rejects_existing_digest_mismatch(tmp_path: Path) -> None:
+    source = _release(tmp_path / "source")
+    different = _release(tmp_path / "different")
+    (different / "modules/sample.py").write_text(
+        "def main(argv: list[str] | None = None) -> int:\n    return 1\n",
+        encoding="utf-8",
+    )
+    releases = tmp_path / "releases"
+    current = tmp_path / "current"
+    validated = validate_release(source)
+    other = validate_release(different)
+    target = releases / "default" / f"{validated.version}-{validated.content_digest}"
+    target.parent.mkdir(parents=True)
+    import shutil
+
+    shutil.copytree(other.root, target)
+    with pytest.raises(ValueError, match="snapshot digest mismatch"):
+        install_release(source, releases, current)
+
+
+def test_release_snapshot_revalidates_after_immutability_transition(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import atlas.releases as releases_module
+
+    source = _release(tmp_path / "source")
+    original_validate = releases_module.validate_release
+    calls = 0
+
+    def mutate_after_read_only(root: Path):
+        nonlocal calls
+        validated = original_validate(root)
+        if ".tmp." in root.name:
+            calls += 1
+            if calls == 2:
+                return replace(validated, content_digest="0" * 64)
+        return validated
+
+    monkeypatch.setattr(releases_module, "validate_release", mutate_after_read_only)
+    with pytest.raises(ValueError, match="staged release content changed"):
+        install_release(source, tmp_path / "releases", tmp_path / "current")
+
+
+def test_release_transient_helpers_reject_links_and_preserve_existing_target(
+    tmp_path: Path,
+) -> None:
+    import atlas.releases as releases_module
+
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.write_text("outside", encoding="utf-8")
+    link = root / "link"
+    link.symlink_to(outside)
+    with pytest.raises(ValueError, match="symlink is not allowed"):
+        releases_module._make_tree_read_only(root)
+    releases_module._make_tree_writable(root)
+
+    source = _release(tmp_path / "source", version="0.1.0")
+    old = _release(tmp_path / "old", version="0.2.0")
+    releases = tmp_path / "releases"
+    current = tmp_path / "current"
+    install_release(source, releases, current)
+    install_release(old, releases, current)
+    old_target = (current / "default").resolve()
+    current_target = releases / "default" / old_target.name
+    assert current_target == old_target
+
+    new = _release(tmp_path / "new", version="0.3.0")
+    install_release(new, releases, current)
+    releases_module._replace_symlink(current / "default", old_target)
+    original_replace = releases_module._replace_symlink
+    try:
+        releases_module._replace_symlink = lambda link, target: (_ for _ in ()).throw(
+            RuntimeError("activation failed")
+        )
+        with pytest.raises(RuntimeError, match="activation failed"):
+            install_release(new, releases, current)
+    finally:
+        releases_module._replace_symlink = original_replace
+    assert (current / "default").resolve() == old_target
+
+
+def test_release_install_rejects_invalid_roots_and_release_directory_symlinks(
+    tmp_path: Path,
+) -> None:
+    source = _release(tmp_path / "source")
+    releases_file = tmp_path / "releases-file"
+    releases_file.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(ValueError, match="releases root must be a directory"):
+        install_release(source, releases_file, tmp_path / "current")
+
+    releases = tmp_path / "releases"
+    releases.mkdir()
+    release_link = releases / "default"
+    release_link.symlink_to(tmp_path / "outside", target_is_directory=True)
+    with pytest.raises(ValueError, match="release directory must not be a symlink"):
+        install_release(source, releases, tmp_path / "current")
+
+
+def test_release_install_cleans_staged_snapshot_after_activation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = _release(tmp_path / "source")
+    releases = tmp_path / "releases"
+    current = tmp_path / "current"
+    original_replace = __import__("atlas.releases").releases._replace_symlink
+
+    def fail_activation(link: Path, target: Path) -> None:
+        raise RuntimeError("activation failed")
+
+    monkeypatch.setattr("atlas.releases._replace_symlink", fail_activation)
+    with pytest.raises(RuntimeError, match="activation failed"):
+        install_release(source, releases, current)
+    assert list((releases / "default").glob(".*.tmp.*")) == []
+    assert not list((releases / "default").glob("0.1.0-*"))
+    assert original_replace is not None
 
 
 def test_reversible_release_install_preserves_existing_snapshot_on_failure(
@@ -407,8 +706,10 @@ def test_install_release_rejects_tampered_existing_snapshot(tmp_path: Path) -> N
     releases = tmp_path / "releases"
     current = tmp_path / "current"
     target = install_release(source, releases, current)
+    for item in [*target.rglob("*"), target]:
+        item.chmod(stat.S_IMODE(item.stat().st_mode) | 0o200)
     (target / "tampered.txt").write_text("tampered\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="release snapshot digest mismatch"):
+    with pytest.raises(ValueError, match="not a validated release snapshot"):
         install_release(source, releases, current)
     assert (current / "default").resolve() == target
 
@@ -475,7 +776,7 @@ def test_install_release_rejects_non_directory_current_root(tmp_path: Path) -> N
 
 def test_runner_resolve_unknown_command(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="unknown command: missing"):
-        resolve_command(tmp_path / "current", "missing")
+        resolve_command(tmp_path / "current", tmp_path / "releases", "missing")
 
 
 def test_runner_redacts_sensitive_arguments(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -536,6 +837,27 @@ def test_sync_release_runner_rejects_non_file_helper_destination(
         helper.symlink_to(target)
 
     with pytest.raises(ValueError, match="target contract helper destination"):
+        sync_release_runner(home)
+
+
+@pytest.mark.parametrize("destination_kind", ["directory", "symlink"])
+def test_sync_release_runner_rejects_non_file_supervisor_destination(
+    tmp_path: Path,
+    destination_kind: str,
+) -> None:
+    home = tmp_path / destination_kind / "opt/atlas"
+    destination = home / "lib/python/atlas_release_runner.py"
+    destination.parent.mkdir(parents=True)
+    destination.write_text("# runner\n", encoding="utf-8")
+    supervisor = destination.with_name("atlas_process_supervisor.py")
+    if destination_kind == "directory":
+        supervisor.mkdir()
+    else:
+        target = tmp_path / destination_kind / "supervisor.py"
+        target.write_text("# supervisor\n", encoding="utf-8")
+        supervisor.symlink_to(target)
+
+    with pytest.raises(ValueError, match="process supervisor destination"):
         sync_release_runner(home)
 
 
@@ -654,40 +976,42 @@ def test_runtime_install_leaves_no_venv_when_final_rename_fails_without_backup(
 
 
 def test_catalog_rejects_invalid_current_root_and_entries(tmp_path: Path) -> None:
-    assert active_releases(tmp_path / "missing") == []
+    releases = tmp_path / "releases"
+    releases.mkdir()
+    assert active_releases(tmp_path / "missing", releases) == []
 
     current = tmp_path / "current"
     current.write_text("not a dir", encoding="utf-8")
     with pytest.raises(ValueError, match="current root must be a directory"):
-        active_releases(current)
+        active_releases(current, releases)
 
     current.unlink()
     current.mkdir()
     (current / "regular").write_text("ignored", encoding="utf-8")
     with pytest.raises(ValueError, match="current entry must be a symlink"):
-        active_releases(current)
+        active_releases(current, releases)
 
     (current / "regular").unlink()
     (current / "Bad").symlink_to(tmp_path / "missing")
     with pytest.raises(ValueError, match="invalid release name"):
-        active_releases(current)
+        active_releases(current, releases)
 
     (current / "Bad").unlink()
     (current / "missing").symlink_to(tmp_path / "missing")
     with pytest.raises(ValueError, match="active release target not found"):
-        active_releases(current)
+        active_releases(current, releases)
 
 
 def test_regenerate_shims_rejects_command_path_directory(tmp_path: Path) -> None:
     current = tmp_path / "current"
     release = _release(tmp_path / "release")
-    current.mkdir()
-    (current / "default").symlink_to(release, target_is_directory=True)
+    releases = tmp_path / "releases"
+    install_release(release, releases, current)
     shims = tmp_path / "shims"
     (shims / "sample").mkdir(parents=True)
 
     with pytest.raises(ValueError, match="shim path is a directory"):
-        regenerate_shims(current, shims, tmp_path / "artifact-runner")
+        regenerate_shims(current, shims, tmp_path / "artifact-runner", releases)
 
 
 def test_sources_rejects_absolute_archive_members(tmp_path: Path) -> None:

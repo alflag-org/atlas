@@ -6,6 +6,7 @@ from pathlib import Path
 
 from atlas.cli import main
 from atlas.launchers import regenerate_shims
+from atlas.releases import install_release
 
 
 def _set_env(monkeypatch, home: Path, etc: Path, var: Path) -> None:
@@ -41,7 +42,7 @@ def test_shims_symlink_to_artifact_runner(monkeypatch, tmp_path: Path) -> None:
 
 def test_regenerate_shims_removes_stale_files_and_preserves_directories(tmp_path: Path) -> None:
     current = tmp_path / "current"
-    release = tmp_path / "releases/sample/0.1.0-sample-digest"
+    release = tmp_path / "source"
     (release / "modules").mkdir(parents=True)
     (release / "VERSION").write_text("0.1.0\n", encoding="utf-8")
     (release / "modules/sample.py").write_text(
@@ -56,8 +57,8 @@ def test_regenerate_shims_removes_stale_files_and_preserves_directories(tmp_path
         "    target: sample:main\n",
         encoding="utf-8",
     )
-    current.mkdir(parents=True)
-    (current / "sample").symlink_to(release, target_is_directory=True)
+    releases = tmp_path / "releases"
+    install_release(release, releases, current)
     shims = tmp_path / "shims"
     shims.mkdir()
     stale = shims / "old-command"
@@ -67,7 +68,7 @@ def test_regenerate_shims_removes_stale_files_and_preserves_directories(tmp_path
     runner = tmp_path / "artifact-runner"
     runner.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
 
-    names = regenerate_shims(current, shims, runner)
+    names = regenerate_shims(current, shims, runner, releases)
 
     assert names == ["sample"]
     assert not stale.exists()

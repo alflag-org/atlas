@@ -12,7 +12,7 @@ from .manifests import (
     load_manifest,
     validate_name,
 )
-from .releases import read_version
+from .releases import read_version, release_digest
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,7 @@ class ActiveRelease:
     version: str
     root: Path
     manifest: ReleaseManifest
+    content_digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,7 @@ def active_releases(current_root: Path) -> list[ActiveRelease]:
                 version=read_version(root),
                 root=root,
                 manifest=manifest,
+                content_digest=release_digest(root),
             )
         )
     return releases

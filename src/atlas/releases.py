@@ -1,13 +1,14 @@
-"""Validation, installation, and activation of Atlas releases."""
+"""Validation, immutable installation, and activation of Atlas releases."""
 
 from __future__ import annotations
 
-import os
+import hashlib
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from .files import remove_path
 from .manifests import ReleaseManifest, load_manifest
@@ -20,6 +21,7 @@ class ValidatedRelease:
     root: Path
     version: str
     manifest: ReleaseManifest
+    content_digest: str
 
 
 def read_version(release_root: Path) -> str:
@@ -35,6 +37,29 @@ def read_version(release_root: Path) -> str:
     return version
 
 
+def release_digest(release_root: Path) -> str:
+    """Hash every regular file and relative path in one release tree."""
+    if release_root.is_symlink() or not release_root.is_dir():
+        raise ValueError(f"release directory not found: {release_root}")
+    root = release_root.resolve()
+    digest = hashlib.sha256()
+    for item in sorted(root.rglob("*"), key=lambda path: path.relative_to(root).as_posix()):
+        if item.is_symlink():
+            raise ValueError(f"symlink is not allowed in release: {item}")
+        if item.is_dir():
+            continue
+        if not item.is_file():
+            raise ValueError(f"release entry must be a regular file: {item}")
+        relative = item.relative_to(root).as_posix().encode("utf-8")
+        digest.update(relative)
+        digest.update(b"\0")
+        with item.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def validate_release(source: Path) -> ValidatedRelease:
     """Validate a release directory and its explicit command manifest."""
     if not source.is_dir() or source.is_symlink():
@@ -42,61 +67,66 @@ def validate_release(source: Path) -> ValidatedRelease:
     for item in source.rglob("*"):
         if item.is_symlink():
             raise ValueError(f"symlink is not allowed in release: {item}")
+    root = source.resolve()
     return ValidatedRelease(
-        root=source.resolve(),
-        version=read_version(source),
-        manifest=load_manifest(source),
+        root=root,
+        version=read_version(root),
+        manifest=load_manifest(root),
+        content_digest=release_digest(root),
     )
 
 
-def _replace_directory(source: Path, target: Path) -> Path | None:
-    pid = os.getpid()
-    staging = target.parent / f"{target.name}.tmp.{pid}"
-    backup = target.parent / f"{target.name}.bak.{pid}"
-    remove_path(staging)
-    remove_path(backup)
-    if target.is_symlink() or (target.exists() and not target.is_dir()):
-        raise ValueError(f"release target must be a directory: {target}")
-    shutil.copytree(source, staging)
-
-    replaced = False
-    if target.exists():
-        target.rename(backup)
-        replaced = True
-    try:
-        staging.rename(target)
-    except Exception:
-        if replaced and backup.exists() and not target.exists():
-            try:
-                backup.rename(target)
-            except Exception as restore_error:
-                raise RuntimeError(
-                    "release installation failed and the previous release could not be "
-                    f"restored; backup retained at {backup}"
-                ) from restore_error
-        raise
-    finally:
-        remove_path(staging)
-    return backup if replaced else None
+def _snapshot_name(release: ValidatedRelease) -> str:
+    return f"{release.version}-{release.content_digest}"
 
 
 def _replace_symlink(current_link: Path, target: Path) -> None:
-    pid = os.getpid()
-    tmp_link = current_link.parent / f"{current_link.name}.tmp.{pid}"
+    tmp_link = current_link.parent / f".{current_link.name}.tmp.{uuid4().hex}"
     remove_path(tmp_link)
     tmp_link.symlink_to(target, target_is_directory=True)
     tmp_link.replace(current_link)
 
 
-def _current_target(link: Path) -> Path | None:
+def _current_target(link: Path, releases_root: Path) -> Path | None:
     if not link.exists() and not link.is_symlink():
         return None
     if not link.is_symlink():
         raise ValueError(f"current entry must be a symlink: {link}")
     target = link.resolve()
+    resolved_releases = releases_root.resolve()
+    if resolved_releases not in target.parents:
+        raise ValueError(f"current entry escapes releases root: {link}")
     if not target.is_dir():
         raise ValueError(f"active release target not found: {link}")
     return target
+
+
+def _stage_snapshot(
+    source: ValidatedRelease,
+    target: Path,
+) -> None:
+    if target.is_symlink() or (target.exists() and not target.is_dir()):
+        raise ValueError(f"release snapshot must be a directory: {target}")
+    if target.exists():
+        existing = validate_release(target)
+        if existing.content_digest != source.content_digest:
+            raise ValueError(f"release snapshot digest mismatch: {target}")
+        return
+
+    staging = target.parent / f".{target.name}.tmp.{uuid4().hex}"
+    remove_path(staging)
+    try:
+        shutil.copytree(source.root, staging)
+        staged = validate_release(staging)
+        if (
+            staged.version != source.version
+            or staged.manifest.name != source.manifest.name
+            or staged.content_digest != source.content_digest
+        ):
+            raise ValueError(f"staged release content changed: {source.manifest.name}")
+        staging.rename(target)
+    finally:
+        remove_path(staging)
 
 
 @contextmanager
@@ -105,15 +135,16 @@ def reversible_release_install(
     releases_root: Path,
     current_root: Path,
 ) -> Iterator[Path]:
-    """Restore the previous release directory and link if surrounding work fails."""
+    """Activate a new digest-addressed snapshot and restore the old link on failure."""
     release = validate_release(source)
     if current_root.exists() and (not current_root.is_dir() or current_root.is_symlink()):
         raise ValueError(f"current root must be a directory: {current_root}")
-    target = releases_root / release.manifest.name / release.version
+    target = releases_root / release.manifest.name / _snapshot_name(release)
     link = current_root / release.manifest.name
-    previous_target = _current_target(link)
+    previous_target = _current_target(link, releases_root)
     target.parent.mkdir(parents=True, exist_ok=True)
-    backup = _replace_directory(release.root, target)
+    target_existed = target.exists()
+    _stage_snapshot(release, target)
     try:
         current_root.mkdir(parents=True, exist_ok=True)
         _replace_symlink(link, target)
@@ -121,24 +152,20 @@ def reversible_release_install(
     except BaseException:
         try:
             remove_path(link)
-            remove_path(target)
-            if backup is not None:
-                backup.rename(target)
             if previous_target is not None:
                 _replace_symlink(link, previous_target)
+            if not target_existed:
+                remove_path(target)
         except Exception as rollback_error:
-            recovery_path = backup if backup is not None and backup.exists() else target
+            recovery_path = previous_target or target
             raise RuntimeError(
                 "release installation failed and rollback failed; "
                 f"recovery path: {recovery_path}"
             ) from rollback_error
         raise
-    else:
-        if backup is not None:
-            remove_path(backup)
 
 
 def install_release(source: Path, releases_root: Path, current_root: Path) -> Path:
-    """Install and atomically activate one manifest-named release."""
+    """Install and atomically activate one immutable manifest-named snapshot."""
     with reversible_release_install(source, releases_root, current_root) as target:
         return target

@@ -345,8 +345,8 @@ def test_runtime_install_falls_back_to_requirements_txt(monkeypatch, tmp_path: P
 def test_runtime_install_includes_requirements_from_all_active_releases(monkeypatch, tmp_path: Path) -> None:
     calls: list[list[str]] = []
     runtime = tmp_path / "runtime"
-    common = tmp_path / "releases/common/0.1.0"
-    kitsunebi = tmp_path / "releases/kitsunebi/0.2.0"
+    common = tmp_path / "releases/common/0.1.0-common-digest"
+    kitsunebi = tmp_path / "releases/kitsunebi/0.2.0-kitsunebi-digest"
     common.mkdir(parents=True)
     kitsunebi.mkdir(parents=True)
     (common / "requirements.lock").write_text("requests==2.32.3\n", encoding="utf-8")

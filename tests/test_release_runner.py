@@ -33,6 +33,15 @@ def selected_release(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
         "def no_args():\n"
         "    return 0\n"
         "\n"
+        "def required_positional(argv, required):\n"
+        "    return 0\n"
+        "\n"
+        "def required_keyword(argv, *, required):\n"
+        "    return 0\n"
+        "\n"
+        "async def async_target(argv):\n"
+        "    return 0\n"
+        "\n"
         "class NotAFunction:\n"
         "    pass\n",
         encoding="utf-8",
@@ -92,6 +101,9 @@ def test_runner_invokes_targets_and_validates_results(selected_release: Path) ->
         ("missing", "target is not a function"),
         ("NotAFunction", "target is not a function"),
         ("no_args", "target callable must accept argv"),
+        ("required_positional", "target callable must accept argv"),
+        ("required_keyword", "target callable must accept argv"),
+        ("async_target", "must be a synchronous function"),
     ],
 )
 def test_runner_rejects_invalid_callables(
@@ -121,6 +133,77 @@ def test_runner_rejects_import_failures_and_unselected_modules(
     importlib.invalidate_caches()
     with pytest.raises(ValueError, match="outside the selected release"):
         release_runner.run_target("runner_outside:main", [])
+
+
+def test_runner_loads_every_dotted_parent_from_selected_release(
+    monkeypatch: pytest.MonkeyPatch,
+    selected_release: Path,
+    tmp_path: Path,
+) -> None:
+    selected_marker = tmp_path / "selected-parent-marker"
+    external_marker = tmp_path / "external-parent-marker"
+    package = selected_release / "modules/pkg/sub"
+    package.mkdir(parents=True)
+    (selected_release / "modules/pkg/__init__.py").write_text(
+        f"from pathlib import Path\nPath({str(selected_marker)!r}).write_text('selected')\n",
+        encoding="utf-8",
+    )
+    (package / "__init__.py").write_text("VALUE = 'selected'\n", encoding="utf-8")
+    (package / "target.py").write_text(
+        "def main(argv):\n    return 0\n",
+        encoding="utf-8",
+    )
+    external = tmp_path / "external"
+    (external / "pkg/sub").mkdir(parents=True)
+    (external / "pkg/__init__.py").write_text(
+        f"from pathlib import Path\nPath({str(external_marker)!r}).write_text('external')\n",
+        encoding="utf-8",
+    )
+    (external / "pkg/sub/__init__.py").write_text("VALUE = 'external'\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(external))
+
+    assert release_runner.run_target("pkg.sub.target:main", []) == 0
+    assert selected_marker.read_text(encoding="utf-8") == "selected"
+    assert not external_marker.exists()
+
+
+def test_invalid_dotted_target_never_executes_external_parent_initializer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    release = tmp_path / "release"
+    modules = release / "modules"
+    modules.mkdir(parents=True)
+    (release / "VERSION").write_text("1.0.0\n", encoding="utf-8")
+    (release / "release.yml").write_text(
+        "schema: atlas.release/v1\n"
+        "name: sample\n"
+        "commands:\n"
+        "  sample:\n"
+        "    target: foreign.child:main\n",
+        encoding="utf-8",
+    )
+    marker = tmp_path / "external-initializer-ran"
+    external = tmp_path / "external"
+    (external / "foreign").mkdir(parents=True)
+    (external / "foreign/__init__.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n",
+        encoding="utf-8",
+    )
+    (external / "foreign/child.py").write_text(
+        "def main(argv):\n    return 0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(external))
+    monkeypatch.setenv("ATLAS_RELEASE_ROOT", str(release))
+
+    from atlas.manifests import load_manifest
+
+    with pytest.raises(ValueError, match="parent package"):
+        load_manifest(release)
+    with pytest.raises(ValueError, match="outside the selected release"):
+        release_runner.run_target("foreign.child:main", [])
+    assert not marker.exists()
 
 
 def test_runner_main_uses_supplied_and_process_arguments(

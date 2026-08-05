@@ -65,8 +65,8 @@ def test_install_overwrites_same_version_atomically(tmp_path: Path) -> None:
 
     releases = tmp_path / "releases"
     current = tmp_path / "current"
-    install_release(source, releases, current)
-    target = releases / "default/2026.05.10-001"
+    target = install_release(source, releases, current)
+    assert target.name.startswith("2026.05.10-001-")
     assert target.exists()
     assert (current / "default").resolve() == target
     assert (target / "modules/sample.py").read_text(encoding="utf-8").endswith("return 1\n")
@@ -75,9 +75,13 @@ def test_install_overwrites_same_version_atomically(tmp_path: Path) -> None:
         "def main(argv: list[str] | None = None) -> int:\n    return 2\n",
         encoding="utf-8",
     )
-    install_release(source, releases, current)
-    assert (current / "default").resolve() == target
-    assert (target / "modules/sample.py").read_text(encoding="utf-8").endswith("return 2\n")
+    replacement = install_release(source, releases, current)
+    assert replacement != target
+    assert (current / "default").resolve() == replacement
+    assert (target / "modules/sample.py").read_text(encoding="utf-8").endswith("return 1\n")
+    assert (replacement / "modules/sample.py").read_text(encoding="utf-8").endswith(
+        "return 2\n"
+    )
 
 
 def test_install_cleans_staging_and_backup_paths(tmp_path: Path) -> None:
@@ -89,6 +93,7 @@ def test_install_cleans_staging_and_backup_paths(tmp_path: Path) -> None:
     install_release(source, releases, current)
 
     assert list((releases / "default").glob("*.tmp.*")) == []
+    assert list((releases / "default").glob(".*.tmp.*")) == []
     assert list((releases / "default").glob("*.bak.*")) == []
 
 
@@ -133,8 +138,8 @@ def test_install_release_supports_multiple_active_releases(tmp_path: Path) -> No
     common_target = install_release(common, releases, current)
     kitsunebi_target = install_release(kitsunebi, releases, current)
 
-    assert common_target == releases / "common/0.1.0"
-    assert kitsunebi_target == releases / "kitsunebi/0.2.0"
+    assert common_target.name.startswith("0.1.0-")
+    assert kitsunebi_target.name.startswith("0.2.0-")
     assert (current / "common").resolve() == common_target
     assert (current / "kitsunebi").resolve() == kitsunebi_target
     assert [release.name for release in active_releases(current)] == ["common", "kitsunebi"]

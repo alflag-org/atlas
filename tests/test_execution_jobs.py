@@ -108,6 +108,98 @@ def test_execute_root_run_has_own_operation_id(atlas_paths, release_factory) -> 
     assert record["operation_id"] == record["run_id"]
 
 
+def test_reinstall_same_version_keeps_running_snapshot_and_correlates_digest(
+    atlas_paths,
+    release_factory,
+) -> None:
+    source = release_factory(name="worker")
+    module = source / "modules/sample_show_entry.py"
+    module.write_text(
+        "import os\n"
+        "import time\n"
+        "from pathlib import Path\n"
+        "MARKER = 'OLD'\n"
+        "var = Path(os.environ['ATLAS_VAR_DIR'])\n"
+        "(var / 'old-import-ready').write_text(MARKER)\n"
+        "while not (var / 'old-import-continue').exists():\n"
+        "    time.sleep(0.01)\n"
+        "def main(argv=None):\n"
+        "    (var / f'executed-{MARKER}').write_text(os.environ['ATLAS_RELEASE_DIGEST'])\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    _activate(atlas_paths, source)
+    old_command = resolve_command(atlas_paths.current_root, "sample-show")
+    atlas_paths.var.mkdir(parents=True)
+    runner = (
+        "from atlas.catalog import resolve_command\n"
+        "from atlas.execution import execute\n"
+        "from atlas.paths import get_paths\n"
+        "paths = get_paths()\n"
+        "command = resolve_command(paths.current_root, 'sample-show')\n"
+        "raise SystemExit(execute(paths, command, []))\n"
+    )
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = os.environ.copy()
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        [str(repo_root / "src"), str(repo_root / "operations/modules")]
+    )
+    old_process = subprocess.Popen(
+        [sys.executable, "-c", runner],
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    ready = atlas_paths.var / "old-import-ready"
+    deadline = time.monotonic() + 5
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ready.exists()
+
+    module.write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "MARKER = 'NEW'\n"
+        "var = Path(os.environ['ATLAS_VAR_DIR'])\n"
+        "def main(argv=None):\n"
+        "    (var / f'executed-{MARKER}').write_text(os.environ['ATLAS_RELEASE_DIGEST'])\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    new_target = install_release(
+        source,
+        atlas_paths.releases_root,
+        atlas_paths.current_root,
+    )
+    new_command = resolve_command(atlas_paths.current_root, "sample-show")
+    assert new_target != old_command.release.root
+    assert new_command.release.root == new_target
+    assert execute(atlas_paths, new_command, []) == 0
+    assert (
+        (atlas_paths.var / "executed-NEW").read_text(encoding="utf-8")
+        == new_command.release.content_digest
+    )
+
+    (atlas_paths.var / "old-import-continue").write_text("continue")
+    stdout, stderr = old_process.communicate(timeout=5)
+    assert old_process.returncode == 0, stderr
+    assert stdout == ""
+    assert (
+        (atlas_paths.var / "executed-OLD").read_text(encoding="utf-8")
+        == old_command.release.content_digest
+    )
+    digests = {
+        record["release_digest"]
+        for record in _all_logs(atlas_paths)
+        if record["artifact"] == "sample-show"
+    }
+    assert digests == {
+        old_command.release.content_digest,
+        new_command.release.content_digest,
+    }
+
+
 def test_execute_handles_empty_caller_path(
     atlas_paths,
     release_factory,
@@ -186,10 +278,10 @@ def test_execute_orders_path_and_preserves_caller_environment(
     assert env["PYTHONPATH"].split(os.pathsep) == [
         str((atlas_paths.current_root / "selected").resolve() / "modules"),
         str(atlas_paths.home / "lib/python"),
-        "/caller/python",
     ]
     assert env["ATLAS_RELEASE_NAME"] == "selected"
     assert env["ATLAS_RELEASE_VERSION"] == "1.0.0"
+    assert env["ATLAS_RELEASE_DIGEST"] == command.release.content_digest
     assert env["ATLAS_RELEASE_ROOT"] == str(
         (atlas_paths.current_root / "selected").resolve()
     )

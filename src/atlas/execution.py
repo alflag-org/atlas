@@ -118,8 +118,6 @@ def _pythonpath(paths: AtlasPaths, executable: ExecutableRef, env: dict[str, str
     if selected_modules.is_dir():
         module_paths.append(str(selected_modules))
     module_paths.append(str(paths.home / "lib/python"))
-    if env.get("PYTHONPATH"):
-        module_paths.append(env["PYTHONPATH"])
     return os.pathsep.join(module_paths)
 
 
@@ -154,6 +152,7 @@ def _environment(
             "ATLAS_ARTIFACT_TYPE": executable.artifact_type,
             "ATLAS_ARTIFACT_NAME": executable.artifact.name,
             "ATLAS_RELEASE_ROOT": str(executable.release.root),
+            "ATLAS_RELEASE_DIGEST": executable.release.content_digest,
             "ATLAS_HOST_FILE": str(paths.etc / "host.yml"),
             "ATLAS_RUN_ID": run_id,
             "ATLAS_PARENT_RUN_ID": parent_run_id or "",
@@ -313,6 +312,7 @@ def execute(
         "artifact": executable.artifact.name,
         "args": redact_args(args),
         "version": executable.release.version,
+        "release_digest": executable.release.content_digest,
         "cwd": str(working_directory),
         "exit_code": exit_code,
         "duration_ms": duration_ms,

@@ -416,6 +416,30 @@ def test_manifest_service_paths_reject_symlink_escape_and_wrong_suffix(
             "no-argv",
             "must accept argv",
         ),
+        (
+            "required-positional",
+            "required positional",
+        ),
+        (
+            "required-keyword",
+            "required keyword-only",
+        ),
+        (
+            "duplicate",
+            "target callable is not a function",
+        ),
+        (
+            "rebind",
+            "target callable is not a function",
+        ),
+        (
+            "async-after-sync",
+            "must be a synchronous function",
+        ),
+        (
+            "bad-return",
+            "return annotation",
+        ),
     ],
 )
 def test_manifest_target_source_and_callable_validation(
@@ -443,6 +467,18 @@ def test_manifest_target_source_and_callable_validation(
             "syntax": "def main(\n",
             "async": "async def main(argv):\n    return 0\n",
             "no-argv": "def main():\n    return 0\n",
+            "required-positional": "def main(argv, required):\n    return 0\n",
+            "required-keyword": "def main(argv, *, required):\n    return 0\n",
+            "duplicate": (
+                "def main(argv):\n    return 0\n\n"
+                "def main(argv):\n    return 1\n"
+            ),
+            "rebind": "def main(argv):\n    return 0\nmain = 1\n",
+            "async-after-sync": (
+                "def main(argv):\n    return 0\n\n"
+                "async def main(argv):\n    return 1\n"
+            ),
+            "bad-return": "def main(argv) -> str:\n    return 'bad'\n",
         }
         (modules / "sample.py").write_text(contents[mutation], encoding="utf-8")
 

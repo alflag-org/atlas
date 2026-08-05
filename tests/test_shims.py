@@ -41,7 +41,7 @@ def test_shims_symlink_to_artifact_runner(monkeypatch, tmp_path: Path) -> None:
 
 def test_regenerate_shims_removes_stale_files_and_preserves_directories(tmp_path: Path) -> None:
     current = tmp_path / "current"
-    release = tmp_path / "releases/sample/0.1.0"
+    release = tmp_path / "releases/sample/0.1.0-sample-digest"
     (release / "modules").mkdir(parents=True)
     (release / "VERSION").write_text("0.1.0\n", encoding="utf-8")
     (release / "modules/sample.py").write_text(

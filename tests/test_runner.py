@@ -123,7 +123,7 @@ def test_run_sets_release_env_and_pythonpath_order(monkeypatch, tmp_path: Path, 
 
     assert main(["run", "alpha"]) == 0
     payload = json.loads((var / "runner-env.json").read_text(encoding="utf-8"))
-    alpha_root = home / "releases/alpha/0.1.0"
+    alpha_root = (home / "current/alpha").resolve()
     assert payload["release"] == "alpha"
     assert payload["release_root"] == str(alpha_root)
     assert payload["artifact"] == "alpha"
@@ -132,7 +132,10 @@ def test_run_sets_release_env_and_pythonpath_order(monkeypatch, tmp_path: Path, 
     assert payload["ident"] == "alpha"
     assert payload["pythonpath"][0] == str(alpha_root / "modules")
     assert payload["pythonpath"][1] == str(home / "lib/python")
-    assert payload["pythonpath"][-1] == "/existing/pythonpath"
+    assert payload["pythonpath"] == [
+        str(alpha_root / "modules"),
+        str(home / "lib/python"),
+    ]
 
 
 def test_run_fails_on_command_collision(monkeypatch, tmp_path: Path, capsys) -> None:

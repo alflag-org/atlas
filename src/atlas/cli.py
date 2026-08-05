@@ -73,7 +73,10 @@ def cmd_status(_: argparse.Namespace) -> int:
     print(f"current root: {paths.current_root}")
     print(f"active releases count: {len(releases)}")
     for release in releases:
-        print(f"release: {release.name} {release.version} {release.root}")
+        print(
+            f"release: {release.name} {release.version} {release.content_digest} "
+            f"{release.root}"
+        )
     print(f"commands count: {len(commands)}")
     print(f"jobs count: {sum(len(release.manifest.jobs) for release in releases)}")
     print(f"services count: {sum(len(release.manifest.services) for release in releases)}")
@@ -200,6 +203,7 @@ def cmd_release_list(args: argparse.Namespace) -> int:
         if args.verbose:
             print(
                 f"{release.name}\t{release.version}\t{release.root}\t"
+                f"digest={release.content_digest}\t"
                 f"commands={len(release.manifest.commands)}\t"
                 f"jobs={len(release.manifest.jobs)}\t"
                 f"services={len(release.manifest.services)}"
@@ -215,7 +219,7 @@ def cmd_command_list(args: argparse.Namespace) -> int:
         if args.verbose:
             print(
                 f"{name}\t{command.release.name}\t{command.release.version}\t"
-                f"{command.artifact.target.spec}"
+                f"digest={command.release.content_digest}\t{command.artifact.target.spec}"
             )
         else:
             print(name)

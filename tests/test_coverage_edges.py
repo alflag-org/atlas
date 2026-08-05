@@ -235,7 +235,8 @@ def test_release_install_rejects_broken_current_entry(tmp_path: Path) -> None:
         install_release(source, tmp_path / "releases", current)
 
     (current / "default").rmdir()
-    (current / "default").symlink_to(tmp_path / "missing")
+    (tmp_path / "releases").mkdir()
+    (current / "default").symlink_to(tmp_path / "releases/missing")
     with pytest.raises(ValueError, match="active release target not found"):
         install_release(source, tmp_path / "releases", current)
 
@@ -277,8 +278,11 @@ def test_install_release_rolls_back_when_replacement_rename_fails(
     source = _release(tmp_path / "source", version="0.1.0")
     releases = tmp_path / "releases"
     current = tmp_path / "current"
-    install_release(source, releases, current)
-    target = releases / "default/0.1.0"
+    target = install_release(source, releases, current)
+    (source / "modules/sample.py").write_text(
+        "def main(argv: list[str] | None = None) -> int:\n    return 2\n",
+        encoding="utf-8",
+    )
     original_rename = Path.rename
 
     def fail_staging_rename(self: Path, target_path: Path):
@@ -311,53 +315,39 @@ def test_install_release_cleans_staging_when_initial_rename_fails(
     with pytest.raises(RuntimeError, match="rename failed"):
         install_release(source, releases, current)
 
-    assert not (releases / "default/0.1.0").exists()
+    assert list((releases / "default").glob(".*.tmp.*")) == []
+    assert not list((releases / "default").iterdir())
 
 
 def test_install_release_rejects_non_directory_release_target(tmp_path: Path) -> None:
     source = _release(tmp_path / "source")
-    target = tmp_path / "releases/default/0.1.0"
+    release = validate_release(source)
+    target = tmp_path / "releases/default" / (
+        f"{release.version}-{release.content_digest}"
+    )
     target.parent.mkdir(parents=True)
     target.write_text("not a directory", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="release target must be a directory"):
+    with pytest.raises(ValueError, match="release snapshot must be a directory"):
         install_release(source, tmp_path / "releases", tmp_path / "current")
 
 
-def test_install_release_retains_backup_when_previous_version_restore_fails(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
+def test_install_release_rejects_tampered_existing_snapshot(tmp_path: Path) -> None:
     source = _release(tmp_path / "source")
     releases = tmp_path / "releases"
     current = tmp_path / "current"
-    install_release(source, releases, current)
-    original_rename = Path.rename
-
-    def fail_install_and_restore(self: Path, target: Path):
-        if ".tmp." in self.name:
-            raise RuntimeError("install failed")
-        if ".bak." in self.name:
-            raise RuntimeError("restore failed")
-        return original_rename(self, target)
-
-    monkeypatch.setattr(Path, "rename", fail_install_and_restore)
-    with pytest.raises(RuntimeError, match="previous release could not be restored"):
+    target = install_release(source, releases, current)
+    (target / "tampered.txt").write_text("tampered\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="release snapshot digest mismatch"):
         install_release(source, releases, current)
-
-    assert list((releases / "default").glob("*.bak.*"))
+    assert (current / "default").resolve() == target
 
 
 def test_reversible_release_install_restores_same_version_contents(tmp_path: Path) -> None:
     source = _release(tmp_path / "source")
     releases = tmp_path / "releases"
     current = tmp_path / "current"
-    install_release(source, releases, current)
-    installed_command = releases / "default/0.1.0/modules/sample.py"
-    installed_command.write_text(
-        "def main(argv: list[str] | None = None) -> int:\n    return 1\n",
-        encoding="utf-8",
-    )
+    old_target = install_release(source, releases, current)
     (source / "modules/sample.py").write_text(
         "def main(argv: list[str] | None = None) -> int:\n    return 2\n",
         encoding="utf-8",
@@ -367,8 +357,11 @@ def test_reversible_release_install_restores_same_version_contents(tmp_path: Pat
         with reversible_release_install(source, releases, current):
             raise RuntimeError("downstream failure")
 
-    assert installed_command.read_text(encoding="utf-8").endswith("return 1\n")
-    assert (current / "default").resolve() == releases / "default/0.1.0"
+    assert (old_target / "modules/sample.py").read_text(encoding="utf-8").endswith(
+        "return 0\n"
+    )
+    assert (current / "default").resolve() == old_target
+    assert len(list((releases / "default").glob("0.1.0-*"))) == 1
 
 
 def test_reversible_release_install_reports_failed_link_restore(
@@ -379,7 +372,7 @@ def test_reversible_release_install_reports_failed_link_restore(
     new = _release(tmp_path / "new", version="0.2.0")
     releases = tmp_path / "releases"
     current = tmp_path / "current"
-    install_release(old, releases, current)
+    old_target = install_release(old, releases, current)
     original_replace = __import__("atlas.releases").releases._replace_symlink
     calls = 0
 
@@ -395,7 +388,7 @@ def test_reversible_release_install_reports_failed_link_restore(
         with reversible_release_install(new, releases, current):
             raise RuntimeError("downstream failure")
 
-    assert (releases / "default/0.1.0").is_dir()
+    assert old_target.is_dir()
     assert not (current / "default").exists()
 
 

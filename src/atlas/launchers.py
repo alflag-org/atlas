@@ -20,13 +20,25 @@ def sync_atlas_core(home: Path) -> None:
 
 
 def sync_release_runner(home: Path) -> None:
-    """Copy the standalone release child runner into the Atlas home."""
+    """Copy the standalone release runner and its pure support helper."""
     source = Path(__file__).with_name("release_runner.py")
     destination = home / "lib/python/atlas_release_runner.py"
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.is_symlink() or (destination.exists() and not destination.is_file()):
         raise ValueError(f"release runner destination must be a regular file: {destination}")
+    helper_destination = destination.with_name("target_contract.py")
+    if helper_destination.is_symlink() or (
+        helper_destination.exists() and not helper_destination.is_file()
+    ):
+        raise ValueError(
+            "target contract helper destination must be a regular file: "
+            f"{helper_destination}"
+        )
     shutil.copyfile(source, destination)
+    shutil.copyfile(
+        Path(__file__).with_name("target_contract.py"),
+        helper_destination,
+    )
 
 
 def ensure_atlas_launcher(path: Path) -> None:

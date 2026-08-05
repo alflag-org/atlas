@@ -98,9 +98,9 @@ The default paths have distinct owners and purposes:
    * - ``/etc/atlas``
      - Operator
      - Host configuration, job instances, and child-process environment files.
-   * - ``/opt/atlas/releases/<release>/<version>``
+   * - ``/opt/atlas/releases/<release>/<version>-<content-digest>``
      - Atlas
-     - Validated, versioned copy of one release source.
+     - Validated, digest-addressed snapshot of one release source; an installed snapshot is never replaced.
    * - ``/opt/atlas/current/<release>``
      - Atlas
      - Symbolic link selecting the active installed release.
@@ -134,9 +134,11 @@ The manifest supplies a release name; ``atlas release install`` has no name over
    atlas release update
    atlas release update operations
 
-Atlas validates every requested source, copies it below ``$ATLAS_HOME/releases``, and then switches
-the link below ``$ATLAS_HOME/current``. Installed release directories, active links, launchers, and
-command shims change as one operation. A failed install or update leaves the active set unchanged.
+Atlas validates every requested source, copies it to a staged digest-addressed snapshot below
+``$ATLAS_HOME/releases``, revalidates the staged tree, and then atomically switches the link below
+``$ATLAS_HOME/current``. Installed snapshots are never replaced, so a running child keeps its
+selected tree while a later install activates a new snapshot. A failed install or update leaves the
+active set unchanged.
 Runtime installation restores the active environment when dependency installation or validation
 fails.
 
@@ -189,13 +191,17 @@ Identifiers use lowercase letters, digits, and single hyphens. Command and job n
 overlap within a release. ``atlas`` and ``artifact-runner`` are reserved command names.
 
 Atlas rejects unknown manifest keys, malformed or missing targets, targets outside the selected
-release, ambiguous module paths, symlinks, malformed service references, invalid unit suffixes, and
-duplicate public command names across active releases. A target uses the
-``package.module:callable`` form. Its module is checked without importing release code; the child
-runner imports that callable only after Atlas starts the isolated release process.
+release, missing dotted parent package initializers, ambiguous module paths, symlinks, malformed
+service references, invalid unit suffixes, and duplicate public command names across active
+releases. A target uses the ``package.module:callable`` form. Atlas resolves the final module and
+every parent package below the selected release's ``modules/`` directory without importing release
+code. The child runner loads those exact source files in order, then checks the same callable
+contract: one unambiguous top-level synchronous function that accepts ``argv`` and returns an
+integer or ``None``. Required arguments beyond ``argv``, duplicate definitions, rebindings, async
+functions, and incompatible return annotations are rejected.
 
 The selected release's ``modules/`` directory is first on ``PYTHONPATH``, followed by Atlas's
-support packages and the incoming ``PYTHONPATH``. Other active releases are not exposed to the
+support packages. The caller's ``PYTHONPATH`` and other active releases are not exposed to the
 child. Release code imports its context from ``atlas_core``:
 
 .. code-block:: python
@@ -299,8 +305,8 @@ The default layout is:
      bin/artifact-runner
      lib/python/atlas_release_runner.py
      runtime/
-     releases/<release>/<version>/
-     current/<release> -> ../releases/<release>/<version>
+     releases/<release>/<version>-<content-digest>/
+     current/<release> -> ../releases/<release>/<version>-<content-digest>
      shims/
      tmp/
 
@@ -333,12 +339,14 @@ caller as its parent while retaining the operation ID. Release code receives the
      - Manifest artifact name
    * - ``ATLAS_RELEASE_ROOT``
      - Installed directory used by the run
+   * - ``ATLAS_RELEASE_DIGEST``
+     - SHA-256 content identity of the installed snapshot used by the run
    * - ``ATLAS_HOST_FILE``
      - Resolved host profile path
 
-``/var/lib/atlas/logs/runs.jsonl`` stores artifact identity, correlation IDs, redacted arguments,
-working directory, Git context, exit status, duration, timeout state, and lock name. Rotate and
-collect it with the host's logging tools.
+``/var/lib/atlas/logs/runs.jsonl`` stores artifact identity, release content digest, correlation IDs,
+redacted arguments, working directory, Git context, exit status, duration, timeout state, and lock
+name. Rotate and collect it with the host's logging tools.
 
 Recover from failures
 ---------------------

@@ -60,9 +60,9 @@ environment: production
 
 `control-01`, `site-a`, and `/srv/atlas/source` are examples. Replace them with values for your
 environment. A release source is separate from the installed copy: Atlas copies validated releases
-to `/opt/atlas/releases/<release>/<version>` and switches
-`/opt/atlas/current/<release>` to the active version. Do not use either Atlas-managed directory as
-a release source.
+to an immutable `/opt/atlas/releases/<release>/<version>-<content-digest>` snapshot and atomically
+switches `/opt/atlas/current/<release>` to that snapshot. A running child keeps the snapshot
+selected when it started. Do not use either Atlas-managed directory as a release source.
 
 Install the releases and shared runtime:
 

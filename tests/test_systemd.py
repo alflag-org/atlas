@@ -137,7 +137,7 @@ def test_systemd_diff_install_and_remove(
             "refresh.service",
             "[Unit]\n[Service]\nUser=ops\n"
             "ExecStart=/opt/atlas/bin/atlas job instance run sample-instance\n"
-            "# /opt/atlas/releases/worker/1.0.0\n",
+            "# /opt/atlas/releases/worker/1.0.0-content-digest\n",
             "versioned release path",
         ),
         ("refresh.timer", "[Unit]\n", r"lacks \[Timer\]"),

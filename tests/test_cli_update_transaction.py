@@ -47,10 +47,9 @@ def test_release_update_rolls_back_all_target_releases_on_collision(
     old_one = _write_release(tmp_path / "old-one", "one", "0.1.0", "one-cmd")
     old_two = _write_release(tmp_path / "old-two", "two", "0.2.0", "two-cmd")
     assert main(["release", "install", str(old_one)]) == 0
+    old_one_target = (home / "current/one").resolve()
     assert main(["release", "install", str(old_two)]) == 0
-
-    old_one_target = home / "releases/one/0.1.0"
-    old_two_target = home / "releases/two/0.2.0"
+    old_two_target = (home / "current/two").resolve()
     assert (home / "current/one").resolve() == old_one_target
     assert (home / "current/two").resolve() == old_two_target
 
@@ -94,10 +93,9 @@ def test_release_update_single_release_rolls_back_on_collision(
     old_one = _write_release(tmp_path / "old-one", "one", "0.1.0", "one-cmd")
     old_two = _write_release(tmp_path / "old-two", "two", "0.2.0", "two-cmd")
     assert main(["release", "install", str(old_one)]) == 0
+    old_one_target = (home / "current/one").resolve()
     assert main(["release", "install", str(old_two)]) == 0
-
-    old_one_target = home / "releases/one/0.1.0"
-    old_two_target = home / "releases/two/0.2.0"
+    old_two_target = (home / "current/two").resolve()
     assert (home / "current/one").resolve() == old_one_target
     assert (home / "current/two").resolve() == old_two_target
 

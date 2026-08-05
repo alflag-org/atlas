@@ -21,7 +21,7 @@ services:
     command: >
       sh -c "atlas status
       && atlas runtime status
-      && set +e; atlas run sample hello --name=docker-check; code=$$?; set -e; test \"$$code\" -eq 125
+      && atlas run sample hello --name=docker-check
       && ruff check src operations tests
       && pytest -q
       && python -m build"

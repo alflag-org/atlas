@@ -17,8 +17,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from atlas_process_supervisor import ContainedProcess, ContainmentError, spawn_contained
-
 from .catalog import ExecutableRef
 from .locks import acquire_lock
 from .paths import AtlasPaths
@@ -26,7 +24,7 @@ from .paths import AtlasPaths
 _SENSITIVE_TOKENS = ("password", "token", "secret", "key")
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TIMEOUT_EXIT_CODE = 124
-_CONTAINMENT_EXIT_CODE = 125
+_TERMINATE_GRACE_SECONDS = 5
 
 
 def redact_args(args: list[str]) -> list[str]:
@@ -162,24 +160,37 @@ def _environment(
             "PATH": os.pathsep.join(path_parts),
             "PYTHONPATH": _pythonpath(paths, executable, env),
             "PYTHONDONTWRITEBYTECODE": "1",
-            "ATLAS_SUPERVISOR_PATH": str(paths.process_supervisor),
         }
     )
     return env
 
 
+def _terminate_process_group(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=_TERMINATE_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        process.wait()
+
+
 @contextmanager
-def _forward_termination_signal(
-    contained: ContainedProcess,
-    errors: list[ContainmentError],
-) -> Iterator[None]:
+def _forward_termination_signal(process: subprocess.Popen[str]) -> Iterator[None]:
     previous_handler = signal.getsignal(signal.SIGTERM)
 
     def forward(signum: int, _frame: object) -> None:
         try:
-            contained.terminate(initial_signal=signum)
-        except ContainmentError as exc:
-            errors.append(exc)
+            os.killpg(process.pid, signum)
+        except ProcessLookupError:
+            pass
 
     signal.signal(signal.SIGTERM, forward)
     try:
@@ -234,10 +245,8 @@ def execute(
         raise ValueError(f"working directory not found: {working_directory}")
     if not paths.runtime_python.is_file():
         raise ValueError(f"runtime python executable not found: {paths.runtime_python}")
-    if paths.release_runner.is_symlink() or not paths.release_runner.is_file():
+    if not paths.release_runner.is_file():
         raise ValueError(f"release runner not found: {paths.release_runner}")
-    if paths.process_supervisor.is_symlink() or not paths.process_supervisor.is_file():
-        raise ValueError(f"process supervisor not found: {paths.process_supervisor}")
     if timeout_seconds is not None and (
         isinstance(timeout_seconds, bool)
         or not isinstance(timeout_seconds, int)
@@ -269,50 +278,29 @@ def execute(
     context = git_context(working_directory)
     timed_out = False
     interrupted = False
-    containment_error: ContainmentError | None = None
-    termination_errors: list[ContainmentError] = []
-    contained: ContainedProcess | None = None
-    exit_code = _CONTAINMENT_EXIT_CODE
     with _lock_context(paths, lock):
         try:
-            contained = spawn_contained(
+            process = subprocess.Popen(
                 command,
-                python_executable=paths.runtime_python,
-                supervisor_path=paths.process_supervisor,
                 cwd=working_directory,
                 env=env,
+                text=True,
+                start_new_session=True,
             )
         except FileNotFoundError as exc:
             raise ValueError(f"runtime executable not found: {paths.runtime_python}") from exc
-        except ContainmentError as exc:
-            containment_error = exc
-        else:
-            with _forward_termination_signal(contained, termination_errors):
-                try:
-                    return_code = contained.process.wait(timeout=timeout_seconds)
-                    exit_code = _normalize_exit_code(return_code)
-                except subprocess.TimeoutExpired:
-                    timed_out = True
-                    try:
-                        contained.terminate()
-                    except ContainmentError as exc:
-                        termination_errors.append(exc)
-                    exit_code = _TIMEOUT_EXIT_CODE
-                except KeyboardInterrupt:
-                    interrupted = True
-                    try:
-                        contained.terminate()
-                    except ContainmentError as exc:
-                        termination_errors.append(exc)
-                    exit_code = 130
-            if termination_errors:
-                containment_error = termination_errors[0]
+        with _forward_termination_signal(process):
             try:
-                contained.cleanup()
-            except ContainmentError as exc:
-                containment_error = containment_error or exc
-            if containment_error is not None:
-                exit_code = _CONTAINMENT_EXIT_CODE
+                return_code = process.wait(timeout=timeout_seconds)
+                exit_code = _normalize_exit_code(return_code)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                _terminate_process_group(process)
+                exit_code = _TIMEOUT_EXIT_CODE
+            except KeyboardInterrupt:
+                interrupted = True
+                _terminate_process_group(process)
+                exit_code = 130
 
     duration_ms = int((time.perf_counter() - started) * 1000)
     record: dict[str, object] = {
@@ -332,10 +320,6 @@ def execute(
         "timeout": timeout_seconds,
         "timed_out": timed_out,
         "lock": lock,
-        "containment": "cgroup-v2",
-        "containment_error": (
-            None if containment_error is None else str(containment_error)
-        ),
         **context,
     }
     _append_run_log(paths, record)

@@ -19,6 +19,7 @@ from atlas.execution import (
     _append_run_log,
     _forward_termination_signal,
     _pythonpath,
+    _terminate_process_group,
     execute,
     git_context,
     redact_args,
@@ -32,7 +33,6 @@ from atlas.launchers import (
 )
 from atlas.locks import acquire_lock
 from atlas.releases import install_release, release_digest
-from atlas_process_supervisor import ContainmentUnavailable
 
 
 def _activate(paths, source: Path) -> None:
@@ -255,30 +255,6 @@ def test_execute_handles_empty_caller_path(
     assert execute(atlas_paths, command, []) == 0
 
 
-def test_execute_containment_failure_is_logged_and_releases_lock(
-    atlas_paths,
-    release_factory,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = release_factory()
-    _activate(atlas_paths, source)
-    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
-    monkeypatch.setattr(
-        "atlas.execution.spawn_contained",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            ContainmentUnavailable("delegation unavailable")
-        ),
-    )
-
-    assert execute(atlas_paths, command, [], lock="sample-run") == 125
-    record = _last_log(atlas_paths)
-    assert record["exit_code"] == 125
-    assert record["containment"] == "cgroup-v2"
-    assert record["containment_error"] == "delegation unavailable"
-    with acquire_lock(atlas_paths.locks, "sample-run"):
-        pass
-
-
 def test_execute_orders_path_and_preserves_caller_environment(
     atlas_paths,
     release_factory,
@@ -310,19 +286,10 @@ def test_execute_orders_path_and_preserves_caller_environment(
         def poll(self):
             return 0
 
-    class FakeContained:
-        process = Finished()
-
-        def terminate(self, **kwargs):
-            return None
-
-        def cleanup(self):
-            return None
-
-    def fake_spawn(command, **kwargs):
+    def fake_popen(command, **kwargs):
         captured["command"] = command
         captured.update(kwargs)
-        return FakeContained()
+        return Finished()
 
     monkeypatch.setattr(
         "atlas.execution.git_context",
@@ -333,7 +300,7 @@ def test_execute_orders_path_and_preserves_caller_environment(
             "git_branch": None,
         },
     )
-    monkeypatch.setattr("atlas.execution.spawn_contained", fake_spawn)
+    monkeypatch.setattr("atlas.execution.subprocess.Popen", fake_popen)
     command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
 
     assert execute(
@@ -370,8 +337,7 @@ def test_execute_orders_path_and_preserves_caller_environment(
         "ATLAS_SCRIPTS_CURRENT_DIR",
     ):
         assert legacy_name not in env
-    assert captured["python_executable"] == atlas_paths.runtime_python
-    assert captured["supervisor_path"] == atlas_paths.process_supervisor
+    assert captured["start_new_session"] is True
 
 
 @pytest.mark.parametrize(
@@ -758,44 +724,6 @@ def test_advisory_lock_rejects_symlinks_and_non_files(atlas_paths, tmp_path: Pat
             pass
 
 
-def test_execute_timeout_terminates_process_group(
-    atlas_paths,
-    release_factory,
-    tmp_path: Path,
-) -> None:
-    source = release_factory(name="worker", commands=(), jobs=("slow-job",))
-    marker = tmp_path / "nested-job-completed"
-    descendant = (
-        "import time; time.sleep(30); from pathlib import Path; "
-        f"Path({str(marker)!r}).write_text('done')"
-    )
-    (source / "modules/slow_job_entry.py").write_text(
-        "def main(argv=None):\n"
-        "    import subprocess, sys, time\n"
-        f"    subprocess.Popen([sys.executable, '-c', {descendant!r}], "
-        "start_new_session=True)\n"
-        "    time.sleep(30)\n",
-        encoding="utf-8",
-    )
-    _activate(atlas_paths, source)
-    job = resolve_job(
-        atlas_paths.current_root,
-        atlas_paths.releases_root,
-        "worker",
-        "slow-job",
-    )
-    started = time.monotonic()
-
-    assert execute(atlas_paths, job, [], timeout_seconds=1) == 124
-
-    assert time.monotonic() - started < 8
-    time.sleep(0.7)
-    assert not marker.exists()
-    record = _last_log(atlas_paths)
-    assert record["timed_out"] is True
-    assert record["timeout"] == 1
-
-
 def test_execute_normalizes_signal_exit(atlas_paths, release_factory) -> None:
     source = release_factory(name="signals", commands=("signal-stop",))
     (source / "modules/signal_stop_entry.py").write_text(
@@ -827,21 +755,6 @@ def test_execute_validates_runtime_cwd_and_timeout(
     atlas_paths.runtime_python.symlink_to(Path(sys.executable))
     atlas_paths.release_runner.unlink()
     with pytest.raises(ValueError, match="release runner not found"):
-        execute(atlas_paths, command, [])
-    atlas_paths.release_runner.symlink_to(Path(sys.executable))
-    with pytest.raises(ValueError, match="release runner not found"):
-        execute(atlas_paths, command, [])
-
-
-def test_execute_requires_process_supervisor(
-    atlas_paths,
-    release_factory,
-) -> None:
-    source = release_factory()
-    _activate(atlas_paths, source)
-    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
-    atlas_paths.process_supervisor.unlink()
-    with pytest.raises(ValueError, match="process supervisor not found"):
         execute(atlas_paths, command, [])
 
 
@@ -880,12 +793,12 @@ def test_execute_reports_popen_missing_after_precheck(
         execute(atlas_paths, command, [])
 
 
-def test_forward_termination_records_containment_failure(
+def test_forward_termination_signal_uses_process_group(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     previous = object()
     handlers: list[object] = []
-    errors = []
+    signals: list[tuple[int, int]] = []
 
     monkeypatch.setattr("atlas.execution.signal.getsignal", lambda signum: previous)
     monkeypatch.setattr(
@@ -893,17 +806,90 @@ def test_forward_termination_records_containment_failure(
         lambda signum, handler: handlers.append(handler),
     )
 
-    class FailingContained:
-        def terminate(self, **kwargs):
-            raise ContainmentUnavailable("cannot signal")
+    monkeypatch.setattr(
+        "atlas.execution.os.killpg",
+        lambda pid, signum: signals.append((pid, signum)),
+    )
 
-    with _forward_termination_signal(FailingContained(), errors):
+    class Process:
+        pid = 123
+
+    with _forward_termination_signal(Process()):
         handlers[-1](signal.SIGTERM, None)
 
-    assert [str(error) for error in errors] == ["cannot signal"]
+    assert signals == [(123, signal.SIGTERM)]
+
+    monkeypatch.setattr(
+        "atlas.execution.os.killpg",
+        lambda pid, signum: (_ for _ in ()).throw(ProcessLookupError),
+    )
+    with _forward_termination_signal(Process()):
+        handlers[-1](signal.SIGTERM, None)
 
 
-def test_execute_timeout_and_cleanup_containment_errors_are_logged(
+def test_terminate_process_group_handles_exit_timeout_and_missing_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        "atlas.execution.os.killpg",
+        lambda pid, signum: signals.append((pid, signum)),
+    )
+
+    class Finished:
+        pid = 1
+
+        def poll(self):
+            return 0
+
+    _terminate_process_group(Finished())
+
+    class Terminated:
+        pid = 2
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+    _terminate_process_group(Terminated())
+
+    class Stubborn:
+        pid = 3
+        waits = 0
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            self.waits += 1
+            if self.waits == 1:
+                raise subprocess.TimeoutExpired("command", timeout)
+            return 0
+
+    _terminate_process_group(Stubborn())
+    assert signals == [
+        (2, signal.SIGTERM),
+        (3, signal.SIGTERM),
+        (3, signal.SIGKILL),
+    ]
+
+    def terminate_then_disappear(pid, signum):
+        if signum == signal.SIGKILL:
+            raise ProcessLookupError
+
+    monkeypatch.setattr("atlas.execution.os.killpg", terminate_then_disappear)
+    _terminate_process_group(Stubborn())
+
+    monkeypatch.setattr(
+        "atlas.execution.os.killpg",
+        lambda pid, signum: (_ for _ in ()).throw(ProcessLookupError),
+    )
+    _terminate_process_group(Terminated())
+
+
+def test_execute_timeout_records_base_process_semantics(
     atlas_paths,
     release_factory,
     monkeypatch: pytest.MonkeyPatch,
@@ -913,48 +899,26 @@ def test_execute_timeout_and_cleanup_containment_errors_are_logged(
     command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
 
     class TimedOut:
-        returncode = None
+        pid = 7
 
         def wait(self, timeout=None):
             raise subprocess.TimeoutExpired("command", timeout)
 
-    class FailingTimeout:
-        process = TimedOut()
-
-        def terminate(self, **kwargs):
-            raise ContainmentUnavailable("cannot terminate")
-
-        def cleanup(self):
-            return None
-
-    monkeypatch.setattr(
-        "atlas.execution.spawn_contained",
-        lambda *args, **kwargs: FailingTimeout(),
-    )
-    assert execute(atlas_paths, command, [], timeout_seconds=1) == 125
-    assert _last_log(atlas_paths)["containment_error"] == "cannot terminate"
-
-    class Finished:
-        returncode = 0
-
-        def wait(self, timeout=None):
+        def poll(self):
             return 0
 
-    class FailingCleanup:
-        process = Finished()
-
-        def terminate(self, **kwargs):
-            return None
-
-        def cleanup(self):
-            raise ContainmentUnavailable("cannot cleanup")
-
+    monkeypatch.setattr("atlas.execution.subprocess.Popen", lambda *args, **kwargs: TimedOut())
     monkeypatch.setattr(
-        "atlas.execution.spawn_contained",
-        lambda *args, **kwargs: FailingCleanup(),
+        "atlas.execution.git_context",
+        lambda cwd: {
+            "git_root": None,
+            "git_commit": None,
+            "git_dirty": None,
+            "git_branch": None,
+        },
     )
-    assert execute(atlas_paths, command, []) == 125
-    assert _last_log(atlas_paths)["containment_error"] == "cannot cleanup"
+    assert execute(atlas_paths, command, [], timeout_seconds=1) == 124
+    assert _last_log(atlas_paths)["timed_out"] is True
 
 
 def test_execute_logs_and_reraises_keyboard_interrupt(
@@ -975,18 +939,9 @@ def test_execute_logs_and_reraises_keyboard_interrupt(
         def poll(self):
             return 0
 
-    class FakeContained:
-        process = Interrupted()
-
-        def terminate(self, **kwargs):
-            return None
-
-        def cleanup(self):
-            return None
-
     monkeypatch.setattr(
-        "atlas.execution.spawn_contained",
-        lambda *args, **kwargs: FakeContained(),
+        "atlas.execution.subprocess.Popen",
+        lambda *args, **kwargs: Interrupted(),
     )
     monkeypatch.setattr(
         "atlas.execution.git_context",
@@ -1000,39 +955,6 @@ def test_execute_logs_and_reraises_keyboard_interrupt(
     with pytest.raises(KeyboardInterrupt):
         execute(atlas_paths, command, [])
     assert _last_log(atlas_paths)["exit_code"] == 130
-
-
-def test_keyboard_interrupt_containment_failure_is_logged(
-    atlas_paths,
-    release_factory,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = release_factory()
-    _activate(atlas_paths, source)
-    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
-
-    class Interrupted:
-        returncode = None
-
-        def wait(self, timeout=None):
-            raise KeyboardInterrupt
-
-    class FailingContained:
-        process = Interrupted()
-
-        def terminate(self, **kwargs):
-            raise ContainmentUnavailable("cannot terminate")
-
-        def cleanup(self):
-            return None
-
-    monkeypatch.setattr(
-        "atlas.execution.spawn_contained",
-        lambda *args, **kwargs: FailingContained(),
-    )
-    with pytest.raises(KeyboardInterrupt):
-        execute(atlas_paths, command, [])
-    assert _last_log(atlas_paths)["exit_code"] == 125
 
 
 def test_cli_job_commands_and_instances(atlas_paths, release_factory, capsys) -> None:

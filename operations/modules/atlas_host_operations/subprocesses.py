@@ -10,10 +10,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from atlas_process_supervisor import ContainmentError, spawn_contained
-
-_CONTAINMENT_EXIT_CODE = 125
-
 
 @dataclass(frozen=True)
 class ChildResult:
@@ -54,84 +50,34 @@ class SubprocessRunner:
             child_env = os.environ.copy()
             child_env.update(env)
         try:
-            contained = spawn_contained(
+            process = subprocess.run(
                 argv,
                 cwd=cwd,
                 env=child_env,
-                stdin=subprocess.PIPE if input_text is not None else None,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            stdout, stderr = contained.process.communicate(
                 input=input_text,
+                text=True,
+                capture_output=True,
                 timeout=timeout_seconds,
+                check=False,
+                shell=False,
             )
         except FileNotFoundError:
             return ChildResult(tuple(argv), 127, stderr=f"{argv[0]} command not found")
-        except ContainmentError as exc:
-            return ChildResult(
-                tuple(argv),
-                _CONTAINMENT_EXIT_CODE,
-                stderr=f"process containment unavailable: {exc}",
-            )
         except subprocess.TimeoutExpired as exc:
-            try:
-                contained.terminate()
-            except ContainmentError as termination_error:
-                stdout = exc.stdout
-                stderr = exc.stderr
-                error_message = termination_error
-                try:
-                    contained.cleanup()
-                except ContainmentError as cleanup_error:
-                    error_message = cleanup_error
-                return ChildResult(
-                    tuple(argv),
-                    _CONTAINMENT_EXIT_CODE,
-                    stdout=_timeout_text(stdout),
-                    stderr=(
-                        f"{_timeout_text(stderr)}\n"
-                        f"process containment failed: {error_message}"
-                    ).strip(),
-                    timed_out=True,
-                )
-            stdout, stderr = contained.process.communicate()
-            try:
-                contained.cleanup()
-            except ContainmentError as containment_error:
-                return ChildResult(
-                    tuple(argv),
-                    _CONTAINMENT_EXIT_CODE,
-                    stdout=_timeout_text(stdout),
-                    stderr=(
-                        f"{_timeout_text(stderr)}\n"
-                        f"process containment failed: {containment_error}"
-                    ).strip(),
-                    timed_out=True,
-                )
             return ChildResult(
                 tuple(argv),
                 124,
-                stdout=_timeout_text(stdout if stdout is not None else exc.stdout),
-                stderr=_timeout_text(stderr if stderr is not None else exc.stderr),
+                stdout=_timeout_text(exc.stdout),
+                stderr=_timeout_text(exc.stderr),
                 timed_out=True,
             )
-        try:
-            contained.cleanup()
-        except ContainmentError as exc:
-            return ChildResult(
-                tuple(argv),
-                _CONTAINMENT_EXIT_CODE,
-                stdout=stdout,
-                stderr=(f"{_timeout_text(stderr)}\nprocess containment failed: {exc}").strip(),
-            )
-        if stderr:
-            print(stderr.rstrip(), file=sys.stderr)
+        if process.stderr:
+            print(process.stderr.rstrip(), file=sys.stderr)
         return ChildResult(
             tuple(argv),
-            contained.process.returncode,
-            stdout=stdout,
-            stderr=stderr,
+            process.returncode,
+            stdout=process.stdout,
+            stderr=process.stderr,
         )
 
 

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
-import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -34,11 +32,8 @@ from atlas_host_operations.subprocesses import (
     ChildResult,
     RecordingRunner,
     SubprocessRunner,
-    _timeout_text,
 )
 from atlas_operations.child import atlas_executable, job_argv
-
-from atlas_process_supervisor import ContainmentUnavailable
 
 from .test_host_operations_support import make_host_fixture
 
@@ -636,132 +631,7 @@ def test_subprocess_and_recording_runners(
         recording.run(["anything"])
 
 
-def test_subprocess_timeout_kills_a_separate_descendant_group(tmp_path: Path) -> None:
-    started = tmp_path / "descendant-started"
-    completed = tmp_path / "descendant-completed"
-    descendant = (
-        "import time\n"
-        "from pathlib import Path\n"
-        f"time.sleep(0.5)\nPath({str(completed)!r}).write_text('done')\n"
-    )
-    parent = (
-        "import subprocess, sys, time\n"
-        "from pathlib import Path\n"
-        f"Path({str(started)!r}).write_text('started')\n"
-        f"subprocess.Popen([sys.executable, '-c', {descendant!r}], start_new_session=True)\n"
-        "time.sleep(30)\n"
-    )
-
-    result = SubprocessRunner().run(
-        [sys.executable, "-c", parent],
-        timeout_seconds=0.1,
-    )
-
-    assert result.timed_out and result.return_code == 124
-    assert started.exists()
-    time.sleep(0.7)
-    assert not completed.exists()
-
-
-def test_subprocess_runner_fails_closed_when_containment_is_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "atlas_host_operations.subprocesses.spawn_contained",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            ContainmentUnavailable("delegation unavailable")
-        ),
-    )
-
-    result = SubprocessRunner().run([sys.executable, "-c", "print('must not run')"])
-
-    assert result.return_code == 125
-    assert "delegation unavailable" in result.stderr
-
-
-def test_subprocess_runner_handles_launch_timeout_and_cleanup_failures(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class Process:
-        returncode = None
-        calls = 0
-
-        def communicate(self, **kwargs):
-            self.calls += 1
-            if self.calls == 1:
-                raise subprocess.TimeoutExpired("command", kwargs["timeout"], output=b"out", stderr=b"err")
-            return b"out", b"err"
-
-    class FailingTerminate:
-        process = Process()
-
-        def terminate(self):
-            raise ContainmentUnavailable("cannot terminate")
-
-        def cleanup(self):
-            raise ContainmentUnavailable("cannot cleanup after terminate")
-
-    monkeypatch.setattr(
-        "atlas_host_operations.subprocesses.spawn_contained",
-        lambda *args, **kwargs: FailingTerminate(),
-    )
-    failed_termination = SubprocessRunner().run(["command"], timeout_seconds=1)
-    assert failed_termination.return_code == 125
-    assert failed_termination.timed_out
-    assert failed_termination.stdout == "out"
-
-    class FailingCleanup:
-        process = Process()
-
-        def terminate(self):
-            return None
-
-        def cleanup(self):
-            raise ContainmentUnavailable("cannot cleanup")
-
-    monkeypatch.setattr(
-        "atlas_host_operations.subprocesses.spawn_contained",
-        lambda *args, **kwargs: FailingCleanup(),
-    )
-    failed_cleanup = SubprocessRunner().run(["command"], timeout_seconds=1)
-    assert failed_cleanup.return_code == 125
-    assert failed_cleanup.timed_out
-    assert failed_cleanup.stderr.endswith("cannot cleanup")
-
-
-def test_subprocess_runner_handles_missing_launch_and_normal_cleanup_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "atlas_host_operations.subprocesses.spawn_contained",
-        lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError("missing")),
-    )
-    missing = SubprocessRunner().run(["missing-command"])
-    assert missing.return_code == 127
-
-    class Process:
-        returncode = 0
-
-        def communicate(self, **kwargs):
-            return "out", "err"
-
-    class FailingCleanup:
-        process = Process()
-
-        def cleanup(self):
-            raise ContainmentUnavailable("cannot cleanup")
-
-    monkeypatch.setattr(
-        "atlas_host_operations.subprocesses.spawn_contained",
-        lambda *args, **kwargs: FailingCleanup(),
-    )
-    failed_cleanup = SubprocessRunner().run(["command"])
-    assert failed_cleanup.return_code == 125
-    assert failed_cleanup.stdout == "out"
-    assert _timeout_text(None) == ""
-
-
-def test_threaded_controller_child_launches_do_not_use_preexec_deadlock(
+def test_threaded_controller_child_launches_do_not_deadlock(
     tmp_path: Path,
 ) -> None:
     def run_one(index: int) -> ChildResult:

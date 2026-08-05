@@ -24,18 +24,6 @@ jobs:
             -e '.[dev]' \
             -r operations/requirements.txt
           python -m pip check
-      - name: Verify delegated cgroup runtime
-        run: |
-          python - <<'PY'
-          from atlas_process_supervisor import ProcessContainment
-
-          containment = ProcessContainment.create()
-          try:
-              if containment.members():
-                  raise SystemExit("new execution cgroup is not empty")
-          finally:
-              containment.path.rmdir()
-          PY
       - run: pytest -q
       - run: python -m build
       - name: Package operations release

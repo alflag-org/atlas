@@ -35,18 +35,6 @@ jobs:
             -r examples/basic-release/requirements.txt \
             -r examples/companion-release/requirements.txt
           python -m pip check
-      - name: Verify delegated cgroup runtime
-        run: |
-          python - <<'PY'
-          from atlas_process_supervisor import ProcessContainment
-
-          containment = ProcessContainment.create()
-          try:
-              if containment.members():
-                  raise SystemExit("new execution cgroup is not empty")
-          finally:
-              containment.path.rmdir()
-          PY
       - name: Validate Ansible fixture
         working-directory: tests/fixtures/provisioning
         run: ansible-playbook --syntax-check playbooks/site.yml

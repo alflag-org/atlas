@@ -477,7 +477,7 @@ def test_handoff_leases_survive_parent_kill_before_child_lease_acquisition(
 
         proceed.write_text("proceed", encoding="utf-8")
         stdout, stderr = parent_process.communicate(timeout=10)
-        assert parent_process.returncode == 0, stderr
+        assert parent_process.returncode == -signal.SIGKILL, stderr
         assert stdout == ""
         assert (atlas_paths.var / "handoff-done").read_text(encoding="utf-8") == "done"
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 import yaml
@@ -14,6 +16,18 @@ from atlas.manifests import (
     validate_name,
 )
 from atlas.releases import read_version, validate_release
+from atlas.target_contract import (
+    TargetResolutionError,
+    TargetSources,
+    _annotation_is_int_or_none,
+    _bound_names,
+    _module_bindings,
+    _selected_path,
+    parse_target_spec,
+    resolve_target_sources,
+    validate_callable_runtime,
+    validate_selected_module,
+)
 
 
 def _release(
@@ -433,6 +447,10 @@ def test_manifest_service_paths_reject_symlink_escape_and_wrong_suffix(
             "target callable is not a function",
         ),
         (
+            "conditional-rebind",
+            "target callable is not a function",
+        ),
+        (
             "async-after-sync",
             "must be a synchronous function",
         ),
@@ -474,6 +492,10 @@ def test_manifest_target_source_and_callable_validation(
                 "def main(argv):\n    return 1\n"
             ),
             "rebind": "def main(argv):\n    return 0\nmain = 1\n",
+            "conditional-rebind": (
+                "def main(argv):\n    return 0\n\n"
+                "if True:\n    main = 1\n"
+            ),
             "async-after-sync": (
                 "def main(argv):\n    return 0\n\n"
                 "async def main(argv):\n    return 1\n"
@@ -484,6 +506,169 @@ def test_manifest_target_source_and_callable_validation(
 
     with pytest.raises(ValueError, match=message):
         load_manifest(release)
+
+
+def test_target_contract_rejects_external_parents_and_accepts_selected_package(
+    tmp_path: Path,
+) -> None:
+    release = _release(tmp_path / "release")
+    modules = release / "modules"
+    package = modules / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (package / "child.py").write_text(
+        "def main(argv):\n    return 0\n",
+        encoding="utf-8",
+    )
+    sources = resolve_target_sources(release, "pkg.child")
+    assert sources.package_sources == (("pkg", (package / "__init__.py").resolve()),)
+    assert sources.source == (package / "child.py").resolve()
+    assert sources.is_package is False
+
+    missing_init = tmp_path / "missing-init"
+    (missing_init / "modules/pkg").mkdir(parents=True)
+    (missing_init / "modules/pkg/child.py").write_text(
+        "def main(argv):\n    return 0\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TargetResolutionError, match="initializer not found"):
+        resolve_target_sources(missing_init, "pkg.child")
+
+    ambiguous_parent = tmp_path / "ambiguous-parent"
+    (ambiguous_parent / "modules/pkg").mkdir(parents=True)
+    (ambiguous_parent / "modules/pkg.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (ambiguous_parent / "modules/pkg/__init__.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
+    (ambiguous_parent / "modules/pkg/child.py").write_text(
+        "def main(argv):\n    return 0\n", encoding="utf-8"
+    )
+    with pytest.raises(TargetResolutionError, match="parent package is ambiguous"):
+        resolve_target_sources(ambiguous_parent, "pkg.child")
+
+
+def test_target_contract_edge_helpers(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"package\.module"):
+        parse_target_spec(" pkg:main")
+    with pytest.raises(ValueError, match=r"package\.module"):
+        parse_target_spec("pkg:main ")
+    with pytest.raises(ValueError, match=r"package\.module"):
+        parse_target_spec("pkg.main")
+
+    modules = tmp_path / "modules"
+    modules.mkdir()
+    with pytest.raises(TargetResolutionError, match="escapes the release root"):
+        _selected_path(tmp_path / "outside.py", modules, "outside")
+    with pytest.raises(TargetResolutionError, match="not a directory"):
+        resolve_target_sources(tmp_path / "missing", "sample")
+
+    assert _bound_names(ast.parse("x = 1").body[0].targets[0]) == ["x"]
+    assert _bound_names(
+        ast.parse("a, *b = value").body[0].targets[0]
+    ) == ["a", "b"]
+    assert _bound_names(ast.parse("obj.value = 1").body[0].targets[0]) == []
+    assert _annotation_is_int_or_none(ast.parse("x: int").body[0].annotation)
+    assert _annotation_is_int_or_none(
+        ast.parse("x: int | None").body[0].annotation
+    )
+    assert _annotation_is_int_or_none(
+        ast.parse("x: Optional[int | None]").body[0].annotation
+    )
+    assert _annotation_is_int_or_none(
+        ast.parse("x: typing.Optional[int]").body[0].annotation
+    )
+    assert _annotation_is_int_or_none(
+        ast.parse("x: typing.Union[int, None]").body[0].annotation
+    )
+    assert not _annotation_is_int_or_none(
+        ast.parse("x: list[int]").body[0].annotation
+    )
+    assert not _annotation_is_int_or_none(
+        ast.parse("x: int | str").body[0].annotation
+    )
+    assert not _annotation_is_int_or_none(
+        ast.parse("x: typing.Any[int]").body[0].annotation
+    )
+    assert not _annotation_is_int_or_none(
+        ast.parse("x: other.Optional[int]").body[0].annotation
+    )
+    assert not _annotation_is_int_or_none(
+        ast.parse("x: factory().Optional[int]").body[0].annotation
+    )
+    assert not _annotation_is_int_or_none(
+        ast.parse('x: "int"').body[0].annotation
+    )
+    assert not _annotation_is_int_or_none(
+        ast.parse("x: factory()").body[0].annotation
+    )
+    assert not _annotation_is_int_or_none(
+        ast.parse("x: Optional[()]").body[0].annotation
+    )
+    assert _module_bindings(ast.parse("del main")).pop()[0] == "main"
+    nested_bindings = _module_bindings(
+        ast.parse(
+            "if True:\n"
+            "    import main\n"
+            "    import package as package_alias\n"
+            "    from package import main as imported\n"
+            "    from package import main\n"
+            "    from package import other\n"
+            "    def main(argv):\n        return 0\n"
+            "    async def main(argv):\n        return 0\n"
+            "    class main:\n        pass\n"
+            "    main = 1\n"
+            "    main\n"
+        )
+    )
+    assert [name for name, _, _ in nested_bindings].count("main") >= 6
+
+
+def test_runtime_target_contract_and_provenance_edges(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = ModuleType("selected")
+    source = tmp_path / "selected.py"
+    source.write_text("", encoding="utf-8")
+    module.__file__ = str(source)
+    sources = TargetSources(
+        modules_root=tmp_path,
+        module_name="selected",
+        package_sources=(),
+        source=source,
+        is_package=False,
+    )
+    assert validate_selected_module(module, sources) is True
+    assert validate_selected_module(ModuleType("missing"), sources) is False
+
+    original_resolve = Path.resolve
+
+    def fail_resolve(path: Path, *args, **kwargs):
+        if path == source:
+            raise OSError("source disappeared")
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fail_resolve)
+    assert validate_selected_module(module, sources) is False
+
+    with pytest.raises(ValueError, match="not a function"):
+        validate_callable_runtime(1, "selected", "main")
+
+    async def async_target(argv):
+        return None
+
+    with pytest.raises(ValueError, match="synchronous"):
+        validate_callable_runtime(async_target, "selected", "main")
+
+    def valid_target(argv):
+        return None
+
+    with pytest.raises(ValueError, match="signature is unavailable"):
+        monkeypatch.setattr(
+            "atlas.target_contract.inspect.signature",
+            lambda target: (_ for _ in ()).throw(TypeError("no signature")),
+        )
+        validate_callable_runtime(valid_target, "selected", "main")
 
 
 @pytest.mark.parametrize(

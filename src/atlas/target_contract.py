@@ -158,6 +158,36 @@ def _bound_names(node: ast.AST) -> list[str]:
     return []
 
 
+class _ModuleRebindingVisitor(ast.NodeVisitor):
+    """Find module-scope rebinding inside compound statements."""
+
+    def __init__(self) -> None:
+        self.bindings: list[tuple[str, str, ast.AST]] = []
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            self.bindings.append((node.id, "rebind", node))
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            name = alias.asname or alias.name.split(".")[0]
+            self.bindings.append((name, "rebind", node))
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        for alias in node.names:
+            name = alias.asname or alias.name
+            self.bindings.append((name, "rebind", node))
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.bindings.append((node.name, "rebind", node))
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.bindings.append((node.name, "rebind", node))
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.bindings.append((node.name, "rebind", node))
+
+
 def _module_bindings(tree: ast.Module) -> list[tuple[str, str, ast.AST]]:
     bindings: list[tuple[str, str, ast.AST]] = []
     for node in tree.body:
@@ -178,6 +208,10 @@ def _module_bindings(tree: ast.Module) -> list[tuple[str, str, ast.AST]]:
         elif isinstance(node, ast.Delete):
             for target in node.targets:
                 bindings.extend((name, "rebind", node) for name in _bound_names(target))
+        else:
+            visitor = _ModuleRebindingVisitor()
+            visitor.visit(node)
+            bindings.extend(visitor.bindings)
     return bindings
 
 

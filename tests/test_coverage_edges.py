@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import io
+import os
 import runpy
 import subprocess
 import sys
 import tarfile
 import warnings
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +21,7 @@ from atlas.manifests import validate_name
 from atlas.releases import (
     install_release,
     read_version,
+    release_digest,
     reversible_release_install,
     validate_release,
 )
@@ -272,6 +275,73 @@ def test_release_validation_rejects_missing_empty_and_invalid_inputs(tmp_path: P
         with pytest.raises(ValueError, match="invalid release name"):
             validate_name(name, kind="release")
 
+
+def test_release_digest_rejects_missing_symlink_and_nonregular_entries(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="release directory not found"):
+        release_digest(tmp_path / "missing")
+
+    release = tmp_path / "release"
+    release.mkdir()
+    regular = release / "regular.txt"
+    regular.write_text("content\n", encoding="utf-8")
+    (release / "link").symlink_to(regular)
+    with pytest.raises(ValueError, match="symlink is not allowed"):
+        release_digest(release)
+
+    (release / "link").unlink()
+    os.mkfifo(release / "pipe")
+    with pytest.raises(ValueError, match="regular file"):
+        release_digest(release)
+
+
+def test_install_release_rejects_current_link_outside_release_root(tmp_path: Path) -> None:
+    source = _release(tmp_path / "source")
+    releases = tmp_path / "releases"
+    current = tmp_path / "current"
+    current.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    (current / "default").symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="escapes releases root"):
+        install_release(source, releases, current)
+
+
+def test_install_release_rejects_changed_staged_content(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import atlas.releases as releases_module
+
+    source = _release(tmp_path / "source")
+    original_validate = releases_module.validate_release
+
+    def changed_staging(root: Path):
+        validated = original_validate(root)
+        if ".tmp." in root.name:
+            return replace(validated, content_digest="0" * 64)
+        return validated
+
+    monkeypatch.setattr(releases_module, "validate_release", changed_staging)
+    with pytest.raises(ValueError, match="staged release content changed"):
+        install_release(source, tmp_path / "releases", tmp_path / "current")
+
+
+def test_reversible_release_install_preserves_existing_snapshot_on_failure(
+    tmp_path: Path,
+) -> None:
+    source = _release(tmp_path / "source")
+    releases = tmp_path / "releases"
+    current = tmp_path / "current"
+    target = install_release(source, releases, current)
+
+    with pytest.raises(RuntimeError, match="downstream failure"):
+        with reversible_release_install(source, releases, current):
+            raise RuntimeError("downstream failure")
+
+    assert (current / "default").resolve() == target
+    assert target.is_dir()
+
 def test_install_release_rolls_back_when_replacement_rename_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -445,6 +515,27 @@ def test_sync_release_runner_rejects_non_file_destination(
         destination.symlink_to(target)
 
     with pytest.raises(ValueError, match="destination must be a regular file"):
+        sync_release_runner(home)
+
+
+@pytest.mark.parametrize("destination_kind", ["directory", "symlink"])
+def test_sync_release_runner_rejects_non_file_helper_destination(
+    tmp_path: Path,
+    destination_kind: str,
+) -> None:
+    home = tmp_path / destination_kind / "opt/atlas"
+    destination = home / "lib/python/atlas_release_runner.py"
+    destination.parent.mkdir(parents=True)
+    destination.write_text("# runner\n", encoding="utf-8")
+    helper = destination.with_name("target_contract.py")
+    if destination_kind == "directory":
+        helper.mkdir()
+    else:
+        target = tmp_path / destination_kind / "target-contract.py"
+        target.write_text("# helper\n", encoding="utf-8")
+        helper.symlink_to(target)
+
+    with pytest.raises(ValueError, match="target contract helper destination"):
         sync_release_runner(home)
 
 

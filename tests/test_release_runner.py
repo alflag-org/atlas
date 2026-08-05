@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib
 import runpy
 import sys
+from importlib import util as importlib_util
+from importlib.machinery import ModuleSpec
 from pathlib import Path
 from re import escape
 from types import ModuleType
@@ -133,6 +135,86 @@ def test_runner_rejects_import_failures_and_unselected_modules(
     importlib.invalidate_caches()
     with pytest.raises(ValueError, match="outside the selected release"):
         release_runner.run_target("runner_outside:main", [])
+
+
+def test_runner_import_and_path_validation_edges(
+    monkeypatch: pytest.MonkeyPatch,
+    selected_release: Path,
+    tmp_path: Path,
+) -> None:
+    source = selected_release / "modules/runner_target.py"
+    original_spec = release_runner.importlib.util.spec_from_file_location
+    monkeypatch.setattr(
+        release_runner.importlib.util,
+        "spec_from_file_location",
+        lambda *args, **kwargs: None,
+    )
+    with pytest.raises(ValueError, match="could not be imported"):
+        release_runner._load_module(source, "runner_target", is_package=False)
+    monkeypatch.setattr(
+        release_runner.importlib.util,
+        "spec_from_file_location",
+        original_spec,
+    )
+
+    class FailingLoader:
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            raise RuntimeError("import failed")
+
+    monkeypatch.setattr(
+        release_runner.importlib.util,
+        "spec_from_file_location",
+        lambda *args, **kwargs: ModuleSpec("runner_target", FailingLoader()),
+    )
+    with pytest.raises(ValueError, match="could not be imported"):
+        release_runner._load_module(source, "runner_target", is_package=False)
+    monkeypatch.setattr(
+        release_runner.importlib.util,
+        "spec_from_file_location",
+        original_spec,
+    )
+
+    monkeypatch.delenv("ATLAS_RELEASE_ROOT", raising=False)
+    with pytest.raises(ValueError, match="selected release root is required"):
+        release_runner._selected_target_sources("runner_target")
+
+    selected_modules = selected_release / "modules"
+    monkeypatch.setattr(sys, "path", ["", str(selected_modules)])
+    assert release_runner._external_target_source_exists(
+        "runner_target", selected_modules
+    ) is False
+
+    broken_root = tmp_path / "broken"
+    original_resolve = Path.resolve
+
+    def fail_external_resolve(path: Path, *args, **kwargs):
+        if path == broken_root:
+            raise OSError("path disappeared")
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fail_external_resolve)
+    monkeypatch.setattr(sys, "path", [str(broken_root)])
+    assert release_runner._external_target_source_exists(
+        "runner_target", selected_modules
+    ) is False
+
+    monkeypatch.setenv("ATLAS_RELEASE_ROOT", str(selected_release))
+    monkeypatch.setattr(release_runner, "validate_selected_module", lambda *args: False)
+    with pytest.raises(ValueError, match="outside the selected release"):
+        release_runner._load_callable("runner_target", "returns_int")
+
+
+def test_standalone_runner_fails_closed_when_contract_helper_cannot_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_spec = importlib_util.spec_from_file_location
+    monkeypatch.setattr(importlib_util, "spec_from_file_location", lambda *args, **kwargs: None)
+    with pytest.raises(RuntimeError, match="contract helper is unavailable"):
+        runpy.run_path(str(Path(release_runner.__file__)), run_name="__main__")
+    monkeypatch.setattr(importlib_util, "spec_from_file_location", original_spec)
 
 
 def test_runner_loads_every_dotted_parent_from_selected_release(

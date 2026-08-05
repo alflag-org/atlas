@@ -160,7 +160,7 @@ def _bound_names(node: ast.AST) -> list[str]:
 
 
 class _ModuleRebindingVisitor(ast.NodeVisitor):
-    """Find module-scope rebinding inside compound statements."""
+    """Find module-scope binding sites inside executable statements."""
 
     def __init__(self) -> None:
         self.bindings: list[tuple[str, str, ast.AST]] = []
@@ -168,6 +168,16 @@ class _ModuleRebindingVisitor(ast.NodeVisitor):
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, (ast.Store, ast.Del)):
             self.bindings.append((node.id, "rebind", node))
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            self.bindings.append(("<attribute>", "dynamic", node))
+        self.generic_visit(node)
+
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            self.bindings.append(("<subscript>", "dynamic", node))
+        self.generic_visit(node)
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -189,32 +199,38 @@ class _ModuleRebindingVisitor(ast.NodeVisitor):
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self.bindings.append((node.name, "rebind", node))
 
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.name is not None:
+            self.bindings.append((node.name, "rebind", node))
+        self.generic_visit(node)
+
+    def visit_Match(self, node: ast.Match) -> None:
+        self.visit(node.subject)
+        for case in node.cases:
+            for pattern_node in ast.walk(case.pattern):
+                for attribute in ("name", "rest"):
+                    name = getattr(pattern_node, attribute, None)
+                    if isinstance(name, str):
+                        self.bindings.append((name, "rebind", pattern_node))
+            if case.guard is not None:
+                self.visit(case.guard)
+            for statement in case.body:
+                self.visit(statement)
+
 
 def _module_bindings(tree: ast.Module) -> list[tuple[str, str, ast.AST]]:
     bindings: list[tuple[str, str, ast.AST]] = []
+    visitor = _ModuleRebindingVisitor()
     for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            kind = "async" if isinstance(node, ast.AsyncFunctionDef) else "function"
-            if isinstance(node, ast.ClassDef):
-                kind = "other"
-            bindings.append((node.name, kind, node))
-        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for target in targets:
-                bindings.extend((name, "rebind", node) for name in _bound_names(target))
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            aliases = node.names
-            for alias in aliases:
-                name = alias.asname or alias.name.split(".")[0]
-                kind = "wildcard" if alias.name == "*" else "rebind"
-                bindings.append((name, kind, node))
-        elif isinstance(node, ast.Delete):
-            for target in node.targets:
-                bindings.extend((name, "rebind", node) for name in _bound_names(target))
+        if isinstance(node, ast.FunctionDef):
+            bindings.append((node.name, "function", node))
+        elif isinstance(node, ast.AsyncFunctionDef):
+            bindings.append((node.name, "async", node))
+        elif isinstance(node, ast.ClassDef):
+            bindings.append((node.name, "other", node))
         else:
-            visitor = _ModuleRebindingVisitor()
             visitor.visit(node)
-            bindings.extend(visitor.bindings)
+    bindings.extend(visitor.bindings)
     return bindings
 
 

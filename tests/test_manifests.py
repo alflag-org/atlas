@@ -8,6 +8,7 @@ from types import ModuleType
 import pytest
 import yaml
 
+from atlas import release_runner
 from atlas.catalog import active_releases, command_index, resolve_service
 from atlas.manifests import (
     ExecutableArtifact,
@@ -587,6 +588,67 @@ def test_manifest_rejects_dynamic_module_binding(
     )
     with pytest.raises(ValueError, match=r"(dynamic binding|wildcard import)"):
         load_manifest(release)
+
+
+@pytest.mark.parametrize(
+    "binding_site",
+    [
+        "sys.modules[__name__].main = lambda argv: 73",
+        "del sys.modules[__name__].main",
+        "values[0] = 73",
+        "del values[0]",
+        "match (lambda argv: 74):\n    case main:\n        pass",
+        "match (lambda argv: 74):\n    case main if main is not None:\n        pass",
+        "match {'value': 0}:\n    case {'value': main}:\n        pass",
+        "match [0]:\n    case [*main]:\n        pass",
+        "try:\n    raise RuntimeError\nexcept RuntimeError as main:\n    pass",
+    ],
+)
+def test_module_binding_sites_are_rejected_at_install_and_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    binding_site: str,
+) -> None:
+    release = _release(tmp_path / "binding-site")
+    (release / "modules/sample.py").write_text(
+        "import sys\n"
+        "values = [0]\n"
+        "def main(argv):\n"
+        "    return 0\n"
+        f"{binding_site}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"(rebind|dynamic binding|not a function)"):
+        load_manifest(release)
+
+    monkeypatch.setenv("ATLAS_RELEASE_ROOT", str(release))
+    with pytest.raises(ValueError, match=r"(rebind|dynamic binding|not a function)"):
+        release_runner.run_target("sample:main", [])
+
+
+def test_direct_function_and_explicit_import_remain_valid_at_install_and_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    release = _release(tmp_path / "valid-binding")
+    (release / "modules/sample.py").write_text(
+        "import sys\n"
+        "import math as math_alias\n"
+        "from pathlib import Path as PathAlias\n"
+        "values = [0]\n"
+        "observed = sys.modules\n"
+        "first_value = values[0]\n"
+        "try:\n"
+        "    pass\n"
+        "except RuntimeError:\n"
+        "    pass\n"
+        "def main(argv):\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    assert load_manifest(release).commands["sample"].target.callable_name == "main"
+    monkeypatch.setenv("ATLAS_RELEASE_ROOT", str(release))
+    assert release_runner.run_target("sample:main", []) == 0
 
 
 def test_target_contract_rejects_external_parents_and_accepts_selected_package(

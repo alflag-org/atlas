@@ -114,7 +114,7 @@ The default paths have distinct owners and purposes:
      - Shared Python runtime for active releases.
    * - ``/var/lib/atlas``
      - Atlas
-     - Execution records, release transaction locks, and source or build caches.
+     - Execution records, host-artifact and job locks, and source or build caches.
 
 Do not configure ``/opt/atlas/releases`` or ``/opt/atlas/current`` as a release source. Atlas
 replaces content below those directories during installation and activation. The bundled systemd
@@ -124,7 +124,9 @@ them must keep the default ``ATLAS_HOME=/opt/atlas``.
 Install and update releases
 ---------------------------
 
-The manifest supplies a release name; ``atlas release install`` has no name override.
+The manifest supplies a release name; ``atlas release install`` has no name override. Each release
+transaction uses ``$ATLAS_HOME/releases/.locks/<release>.lock``. The
+``$ATLAS_VAR_DIR/locks`` directory contains the global host-artifact lock and job locks.
 
 .. code-block:: bash
 

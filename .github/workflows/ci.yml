@@ -39,15 +39,18 @@ jobs:
         run: |
           ci_python="$(python -c 'import sys; print(sys.executable)')"
           echo "ATLAS_CI_PYTHON=$ci_python" >> "$GITHUB_ENV"
+          echo "ATLAS_CI_PYTHON_VERSION=${{ matrix.python-version }}" >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/atlas-bin"
           cat > "$RUNNER_TEMP/atlas-bin/pyenv" <<'PYENV'
           #!/usr/bin/env bash
           set -euo pipefail
           case "${1:-}" in
             install)
+              [[ "${2:-}" == "-s" && "${3:-}" == "$ATLAS_CI_PYTHON_VERSION" ]]
               exit 0
               ;;
             prefix)
+              [[ "${2:-}" == "$ATLAS_CI_PYTHON_VERSION" ]]
               exec "$ATLAS_CI_PYTHON" -c 'from pathlib import Path; import sys; print(Path(sys.executable).parent.parent)'
               ;;
             *)

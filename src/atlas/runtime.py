@@ -13,8 +13,36 @@ from pathlib import Path
 from uuid import uuid4
 
 from .files import remove_path
+from .generations import active_generation
 
 RUNTIME_PROVIDER = "pyenv"
+_PIP_INDEX_URL = "https://pypi.org/simple"
+_RUNTIME_ENVIRONMENT_KEYS = frozenset(
+    {
+        "ALL_PROXY",
+        "HOME",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "NO_PROXY",
+        "PATH",
+        "PYENV_ROOT",
+        "PYTHON_BUILD_CACHE_PATH",
+        "PYTHON_BUILD_MIRROR_URL",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "TMPDIR",
+    }
+)
+_ATLAS_PATH_ENVIRONMENT_KEYS = (
+    "ATLAS_HOME",
+    "ATLAS_ETC_DIR",
+    "ATLAS_VAR_DIR",
+    "ATLAS_RUNTIME_DIR",
+    "ATLAS_TMP_DIR",
+)
 
 
 @dataclass(frozen=True)
@@ -91,7 +119,16 @@ def _normalize_roots(release_roots: Iterable[Path] | Path | None) -> list[Path] 
 
 
 def _runtime_requirements(release_roots: Iterable[Path] | None) -> list[str]:
-    requirements = ["PyYAML"]
+    support_requirements = Path(__file__).with_name("support-requirements.txt")
+    if not support_requirements.is_file() or support_requirements.is_symlink():
+        raise ValueError(f"Atlas support requirements are unavailable: {support_requirements}")
+    requirements = [
+        line.strip()
+        for line in support_requirements.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if not requirements:
+        raise ValueError(f"Atlas support requirements are empty: {support_requirements}")
     normalized = _normalize_roots(release_roots)
     if normalized is None:
         return requirements
@@ -130,9 +167,57 @@ def _install_atlas_core(python: Path, environment: dict[str, str]) -> None:
     shutil.copytree(source, destination)
 
 
+def _strict_runtime_environment() -> dict[str, str]:
+    """Return only host inputs required by pyenv and child Python processes."""
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key in _RUNTIME_ENVIRONMENT_KEYS and not key.startswith("PIP_")
+    }
+    environment.setdefault("PATH", os.defpath)
+    # ``--isolated`` ignores pip environment variables, and this also prevents
+    # accidental config discovery if a future pip call omits that flag.
+    environment["PIP_CONFIG_FILE"] = os.devnull
+    return environment
+
+
+def runtime_child_environment() -> dict[str, str]:
+    """Build the sanitized environment used by validate-only release children."""
+    environment = _strict_runtime_environment()
+    for key in _ATLAS_PATH_ENVIRONMENT_KEYS:
+        value = os.environ.get(key)
+        if value is not None:
+            environment[key] = value
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["PYTHONNOUSERSITE"] = "1"
+    return environment
+
+
+def _pip_install_command(python: Path, requirements: list[str]) -> list[str]:
+    return [
+        str(python),
+        "-m",
+        "pip",
+        "install",
+        "--isolated",
+        "--disable-pip-version-check",
+        "--no-input",
+        "--no-user",
+        "--index-url",
+        _PIP_INDEX_URL,
+        *requirements,
+    ]
+
+
+def _pip_upgrade_command(python: Path) -> list[str]:
+    return _pip_install_command(python, ["--upgrade", "pip"])
+
+
 def _runtime_generations(runtime_root: Path) -> tuple[Path, Path]:
     environments = runtime_root / "python" / "envs"
     generations = environments / "generations"
+    if generations.is_symlink() or (generations.exists() and not generations.is_dir()):
+        raise ValueError(f"runtime generations path must be a directory: {generations}")
     generations.mkdir(parents=True, exist_ok=True)
     return environments, generations
 
@@ -153,19 +238,6 @@ def _prepare_runtime(
     candidate_root = generations / f"scripts.{uuid4().hex}"
     remove_path(candidate_root)
     environment = _runtime_install_env(runtime_root, tmp_dir, python_build_cache_path)
-    environment = {
-        key: value
-        for key, value in environment.items()
-        if key
-        not in {
-            "PYTHONPATH",
-            "PYTHONHOME",
-            "VIRTUAL_ENV",
-            "PIP_PREFIX",
-            "PIP_TARGET",
-            "PIP_USER",
-        }
-    }
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["PYTHONNOUSERSITE"] = "1"
     python = base_python or _ensure_pyenv_runtime(python_version, env=environment)
@@ -174,28 +246,15 @@ def _prepare_runtime(
         candidate_python = python_bin(candidate_root)
         _install_atlas_core(candidate_python, environment)
         if upgrade_pip:
-            _run_checked(
-                [
-                    str(candidate_python),
-                    "-m",
-                    "pip",
-                    "install",
-                    "--upgrade",
-                    "pip",
-                ],
-                env=environment,
-            )
+            _run_checked(_pip_upgrade_command(candidate_python), env=environment)
         _run_checked(
-            [
-                str(candidate_python),
-                "-m",
-                "pip",
-                "install",
-                *_runtime_requirements(release_roots),
-            ],
+            _pip_install_command(candidate_python, _runtime_requirements(release_roots)),
             env=environment,
         )
-        _run_checked([str(candidate_python), "-m", "pip", "check"], env=environment)
+        _run_checked(
+            [str(candidate_python), "-m", "pip", "--isolated", "check"],
+            env=environment,
+        )
         yield RuntimeCandidate(root=candidate_root, python=candidate_python)
     except BaseException:
         remove_path(candidate_root)
@@ -207,12 +266,17 @@ def _runtime_link_target(active: Path, generations: Path) -> tuple[Path, bool] |
         return None
     if active.is_symlink():
         raw = os.readlink(active)
-        if any(part == ".." for part in Path(raw).parts):
+        raw_path = Path(raw)
+        if raw_path.is_absolute() or any(part == ".." for part in raw_path.parts):
             raise ValueError(f"runtime link contains path traversal: {active}")
-        target = (active.parent / raw).resolve()
-        if target.parent != generations.resolve() or target.is_symlink() or not target.is_dir():
+        raw_target = active.parent / raw_path
+        if (
+            raw_target.parent.resolve() != generations.resolve()
+            or raw_target.is_symlink()
+            or not raw_target.is_dir()
+        ):
             raise ValueError(f"runtime link target is not a generation: {active}")
-        return target, False
+        return raw_target.resolve(), False
     if not active.is_dir():
         raise ValueError(f"runtime environment must be a directory or symlink: {active}")
     return active, True
@@ -253,9 +317,8 @@ def activate_runtime(runtime_root: Path, candidate: RuntimeCandidate) -> Iterato
             else:
                 _replace_runtime_link(active, Path("generations") / previous_root.name)
         raise
-    else:
-        if previous_root is not None:
-            remove_path(previous_root)
+    # The candidate is now owned by the active link. Previous generations stay
+    # available until lease-aware garbage collection can remove them.
 
 
 @contextmanager
@@ -288,12 +351,10 @@ def _runtime_install_env(
     python_build_cache_path: Path | None,
 ) -> dict[str, str]:
     default_tmp_dir = runtime_root.parent / "tmp"
-    default_build_cache = (
-        Path(os.environ.get("ATLAS_VAR_DIR", str(runtime_root.parent / "var"))) / "cache" / "python-build"
-    )
-    env = os.environ.copy()
-    env.setdefault("TMPDIR", str(tmp_dir or default_tmp_dir))
-    env.setdefault("PYTHON_BUILD_CACHE_PATH", str(python_build_cache_path or default_build_cache))
+    default_build_cache = runtime_root.parent / "var" / "cache" / "python-build"
+    env = _strict_runtime_environment()
+    env["TMPDIR"] = str(tmp_dir or default_tmp_dir)
+    env["PYTHON_BUILD_CACHE_PATH"] = str(python_build_cache_path or default_build_cache)
     Path(env["TMPDIR"]).mkdir(parents=True, exist_ok=True)
     Path(env["PYTHON_BUILD_CACHE_PATH"]).mkdir(parents=True, exist_ok=True)
     return env
@@ -310,6 +371,16 @@ def _ensure_pyenv_runtime(version: str, env: dict[str, str] | None = None) -> Pa
     if not python.exists():
         raise ValueError(f"pyenv Python executable not found: {python}")
     return python
+
+
+def active_runtime_generation(runtime_root: Path) -> Path:
+    """Resolve the concrete generation selected by ``scripts``."""
+    environments, generations = _runtime_generations(runtime_root)
+    return active_generation(
+        environments / "scripts",
+        generations,
+        label="runtime generation",
+    )
 
 
 def _executable_shebang(path: Path) -> str | None:

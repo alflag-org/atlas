@@ -112,7 +112,10 @@ The default paths have distinct owners and purposes:
      - Stable launchers and public command shims.
    * - ``/opt/atlas/runtime``
      - Atlas
-     - Shared Python runtime for active releases; ``python/envs/scripts`` points to a generation below ``python/envs/generations``.
+     - Shared Python runtime; ``python/envs/scripts`` points to one immutable generation below ``python/envs/generations`` and child leases are stored under ``python/envs/leases``.
+   * - ``/opt/atlas/artifacts``
+     - Atlas
+     - Immutable host-artifact generations, the ``artifacts/current`` link used by child processes, and leases under ``artifacts/leases``.
    * - ``/var/lib/atlas``
      - Atlas
      - Execution records, host-artifact and job locks, and source or build caches.
@@ -140,16 +143,23 @@ transaction uses ``$ATLAS_HOME/releases/.locks/<release>.lock``. The
 Atlas validates every requested source, copies it to a staged content-addressed snapshot below
 ``$ATLAS_HOME/releases``, revalidates the staged tree, and then atomically switches the link below
 ``$ATLAS_HOME/current``. Installed snapshots are never replaced, so a running child keeps its
-selected tree while a later install activates a new snapshot. Snapshot modes are read-only after
-staging for the normal runtime path, and the child forces ``PYTHONDONTWRITEBYTECODE=1``. The
+selected tree while a later install activates a new snapshot. Runtime and host-artifact generations
+are also never replaced. A child captures concrete runtime and artifact generation paths before
+spawning and holds leases on both until it exits. Snapshot modes are read-only after staging for the
+normal runtime path, and the child forces ``PYTHONDONTWRITEBYTECODE=1``. The
 runtime account can still change its own modes; this is a release-selection correctness boundary,
 not a hostile same-UID sandbox. Atlas rechecks the selected snapshot's path and content digest
 before importing release code. A per-release lock serializes installs. Host artifact publication
 uses a separate global lock, acquired before release locks; update acquires release locks in sorted
 manifest-name order. Activation rollback restores the previous link only when it still points to the
-failed transaction's target. Atlas does not remove installed snapshots automatically.
+failed transaction's target. Command and job execution takes that global lock while resolving and
+spawning, then releases it while the leased child runs. Candidate ownership transfers to the active
+link only after activation succeeds; previous generations remain available until lease-aware garbage
+collection. Garbage collection runs after child completion, is best-effort, and leaves a generation
+in place when cleanup fails. Atlas does not remove installed release snapshots automatically.
 Candidate runtime publication restores the active generation when dependency installation or release
-validation fails.
+validation fails, and host-artifact publication restores the previous generation and stable launchers
+if a later publication step fails.
 
 ``atlas runtime install`` reads ``requirements.lock`` when a release provides it, otherwise
 ``requirements.txt``. Only manifest commands receive shims below ``/opt/atlas/shims``. Jobs remain
@@ -157,8 +167,9 @@ available through ``atlas job``.
 
 Release installation and update do not require the shared runtime to exist first. Atlas selects the
 configured ``pyenv`` Python and builds a clean candidate venv without system-site packages. It copies
-the Atlas core support package into that venv, installs PyYAML and the requirements from every intended
-active release, and runs ``pip check``. The validate-only child then imports each target from the exact
+the Atlas core support package into that venv, installs Atlas's declared support requirements and the
+requirements from every intended active release, and runs isolated ``pip check``. The validate-only
+child uses the same sanitized environment boundary and then imports each target from the exact
 staged snapshot using that candidate runtime. Only after dependency installation, digest checks, and
 callable validation succeed does Atlas publish the candidate runtime generation and switch the requested
 release links; host-artifact publication is part of the same transaction. A failure restores the

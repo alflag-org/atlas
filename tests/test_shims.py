@@ -137,6 +137,8 @@ def test_release_shims_fails_on_collision(monkeypatch, tmp_path: Path, capsys) -
     etc.mkdir(parents=True, exist_ok=True)
     (etc / "host.yml").write_text("name: t1\n", encoding="utf-8")
     _set_env(monkeypatch, home, etc, var)
+    atlas_launcher = home / "bin/atlas"
+    artifact_runner = home / "bin/artifact-runner"
 
     for name in ["one", "two"]:
         release = tmp_path / name
@@ -156,9 +158,13 @@ def test_release_shims_fails_on_collision(monkeypatch, tmp_path: Path, capsys) -
         )
         if name == "one":
             assert main(["release", "install", str(release)]) == 0
+            old_atlas_launcher = atlas_launcher.read_bytes()
+            old_artifact_runner = artifact_runner.read_bytes()
             continue
         assert main(["release", "install", str(release)]) == 2
         assert "command name collision: dup found in releases: one, two" in capsys.readouterr().err
+        assert atlas_launcher.read_bytes() == old_atlas_launcher
+        assert artifact_runner.read_bytes() == old_artifact_runner
 
 
 def test_concurrent_release_refreshes_publish_complete_generations(

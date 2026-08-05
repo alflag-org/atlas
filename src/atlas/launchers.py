@@ -6,13 +6,21 @@ import os
 import shutil
 import sys
 from contextlib import nullcontext
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
 from .catalog import command_index
 from .files import remove_path
+from .generations import active_generation
 from .locks import acquire_lock
 from .paths import AtlasPaths
+
+
+@dataclass(frozen=True)
+class _LauncherState:
+    content: bytes
+    mode: int
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -24,6 +32,28 @@ def _atomic_write(path: Path, content: str) -> None:
     try:
         temporary.write_text(content, encoding="utf-8")
         temporary.chmod(0o755)
+        temporary.replace(path)
+    finally:
+        remove_path(temporary)
+
+
+def _capture_launcher(path: Path) -> _LauncherState | None:
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise ValueError(f"host artifact must be a regular file: {path}")
+    if not path.exists():
+        return None
+    return _LauncherState(content=path.read_bytes(), mode=path.stat().st_mode & 0o777)
+
+
+def _restore_launcher(path: Path, state: _LauncherState | None) -> None:
+    if state is None:
+        remove_path(path)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.parent / f".{path.name}.restore.{uuid4().hex}"
+    try:
+        temporary.write_bytes(state.content)
+        temporary.chmod(state.mode)
         temporary.replace(path)
     finally:
         remove_path(temporary)
@@ -52,13 +82,17 @@ def _validate_artifact_current(paths: AtlasPaths) -> None:
         return
     if not current.is_symlink():
         raise ValueError(f"active artifact generation must be a symlink: {current}")
-    raw = os.readlink(current)
-    target = (current.parent / raw).resolve(strict=False)
     generations = (paths.artifact_root / "generations").resolve()
-    if generations not in target.parents:
-        raise ValueError(f"artifact generation escapes its root: {current}")
-    if not target.is_dir():
-        raise ValueError(f"active artifact generation is missing: {current}")
+    active_generation(current, generations, label="artifact generation")
+
+
+def active_artifact_generation(paths: AtlasPaths) -> Path:
+    """Resolve the concrete generation selected by ``artifacts/current``."""
+    return active_generation(
+        paths.artifact_current,
+        paths.artifact_root / "generations",
+        label="artifact generation",
+    )
 
 
 def _ensure_generation_link(
@@ -138,7 +172,21 @@ def _publish_current(paths: AtlasPaths, generation: Path) -> None:
     current = paths.artifact_current
     temporary = current.parent / f".{current.name}.tmp.{uuid4().hex}"
     try:
-        temporary.symlink_to(generation, target_is_directory=True)
+        temporary.symlink_to(Path("generations") / generation.name, target_is_directory=True)
+        temporary.replace(current)
+    finally:
+        remove_path(temporary)
+
+
+def _restore_current(paths: AtlasPaths, previous_target: str | None) -> None:
+    """Restore the exact previously published artifact link target."""
+    current = paths.artifact_current
+    if previous_target is None:
+        remove_path(current)
+        return
+    temporary = current.parent / f".{current.name}.restore.{uuid4().hex}"
+    try:
+        temporary.symlink_to(previous_target, target_is_directory=True)
         temporary.replace(current)
     finally:
         remove_path(temporary)
@@ -164,14 +212,18 @@ def _publish_host_artifacts(paths: AtlasPaths) -> list[str]:
     _validate_artifact_current(paths)
 
     atlas_launcher = paths.bin_dir / "atlas"
-    _atomic_write(atlas_launcher, _atlas_launcher_content())
-    _atomic_write(
-        paths.artifact_runner,
-        _artifact_runner_content(atlas_launcher),
-    )
+    launcher_states = {
+        atlas_launcher: _capture_launcher(atlas_launcher),
+        paths.artifact_runner: _capture_launcher(paths.artifact_runner),
+    }
     paths.home.joinpath("lib").mkdir(parents=True, exist_ok=True)
     names = list(command_index(paths.current_root, paths.releases_root))
     generation = _stage_generation(paths, names)
+    previous_current = (
+        os.readlink(paths.artifact_current)
+        if paths.artifact_current.is_symlink()
+        else None
+    )
     backups: list[tuple[Path, Path]] = []
     try:
         for path, relative_target in (
@@ -185,11 +237,35 @@ def _publish_host_artifacts(paths: AtlasPaths) -> list[str]:
             if backup is not None:
                 backups.append((path, backup))
         _publish_current(paths, generation)
+        _atomic_write(atlas_launcher, _atlas_launcher_content())
+        _atomic_write(
+            paths.artifact_runner,
+            _artifact_runner_content(atlas_launcher),
+        )
     except BaseException:
+        rollback_error: BaseException | None = None
+        try:
+            _restore_current(paths, previous_current)
+        except BaseException as exc:
+            rollback_error = exc
         for path, backup in reversed(backups):
-            path.unlink()
-            backup.rename(path)
-        remove_path(generation)
+            try:
+                remove_path(path)
+                backup.rename(path)
+            except BaseException as exc:
+                rollback_error = rollback_error or exc
+        for path, state in launcher_states.items():
+            try:
+                _restore_launcher(path, state)
+            except BaseException as exc:
+                rollback_error = rollback_error or exc
+        try:
+            remove_path(generation)
+        except OSError:
+            # The unreferenced candidate can be collected on a later pass.
+            pass
+        if rollback_error is not None:
+            raise RuntimeError("host artifact publication rollback failed") from rollback_error
         raise
     for _, backup in backups:
         remove_path(backup)

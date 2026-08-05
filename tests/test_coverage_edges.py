@@ -19,11 +19,22 @@ from types import SimpleNamespace
 
 import pytest
 
+import atlas.generations as generations_module
+import atlas.runtime as runtime_module
 from atlas import cli
 from atlas.catalog import active_releases, resolve_command
+from atlas.execution import _selected_executable
+from atlas.generations import (
+    _generation_lease,
+    _leased_names,
+    active_generation,
+    collect_generation_garbage,
+)
 from atlas.launchers import (
     _atomic_write,
+    _capture_launcher,
     _ensure_generation_link,
+    _restore_launcher,
     _stage_generation,
     publish_host_artifacts,
 )
@@ -43,7 +54,9 @@ from atlas.runtime import (
     RuntimeCandidate,
     RuntimeStatus,
     _install_atlas_core,
+    _runtime_generations,
     _runtime_link_target,
+    _runtime_requirements,
     _site_packages,
     install_runtime,
 )
@@ -346,6 +359,18 @@ def test_release_validation_rejects_missing_empty_and_invalid_inputs(tmp_path: P
     (empty / "VERSION").write_text("\n", encoding="utf-8")
     with pytest.raises(ValueError, match="VERSION is empty"):
         read_version(empty)
+
+    invalid_version = tmp_path / "invalid-version"
+    invalid_version.mkdir()
+    (invalid_version / "VERSION").write_text("1/2\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid release version"):
+        read_version(invalid_version)
+
+    symlinked = _release(tmp_path / "symlinked")
+    (symlinked / "external").mkdir()
+    (symlinked / "modules/linked").symlink_to(symlinked / "external")
+    with pytest.raises(ValueError, match="symlink is not allowed"):
+        validate_release(symlinked, validate_targets=False)
 
     with pytest.raises(ValueError, match="release directory not found"):
         validate_release(tmp_path / "missing")
@@ -1098,7 +1123,18 @@ def test_runtime_install_uses_no_extra_requirements_for_release_without_requirem
 
     install_runtime(tmp_path / "runtime", "3.12.3", [release_root])
 
-    assert calls[-2][1:] == ["-m", "pip", "install", "PyYAML"]
+    assert calls[-2][1:] == [
+        "-m",
+        "pip",
+        "install",
+        "--isolated",
+        "--disable-pip-version-check",
+        "--no-input",
+        "--no-user",
+        "--index-url",
+        "https://pypi.org/simple",
+        "PyYAML==6.0.3",
+    ]
 
 
 def test_runtime_helpers_report_subprocess_failures(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1182,6 +1218,43 @@ def test_runtime_site_package_and_support_package_edges(
         _install_atlas_core(python, {})
 
 
+def test_runtime_requirements_and_generation_root_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    missing_package = tmp_path / "missing-package"
+    missing_package.mkdir()
+    monkeypatch.setattr(runtime_module, "__file__", str(missing_package / "runtime.py"))
+    with pytest.raises(ValueError, match="support requirements are unavailable"):
+        _runtime_requirements(None)
+
+    support = missing_package / "support-requirements.txt"
+    support.write_text("\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="support requirements are empty"):
+        _runtime_requirements(None)
+
+    invalid_runtime = tmp_path / "invalid-runtime"
+    invalid_runtime.mkdir()
+    (invalid_runtime / "python").mkdir()
+    (invalid_runtime / "python/envs").mkdir()
+    generations = invalid_runtime / "python/envs/generations"
+    generations.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(ValueError, match="runtime generations path must be a directory"):
+        _runtime_generations(invalid_runtime)
+
+    generations.unlink()
+    external = tmp_path / "external-generations"
+    external.mkdir()
+    generations.symlink_to(external, target_is_directory=True)
+    with pytest.raises(ValueError, match="runtime generations path must be a directory"):
+        _runtime_generations(invalid_runtime)
+
+
+def test_selected_executable_rejects_invalid_resolver_result() -> None:
+    with pytest.raises(TypeError, match="must return an ExecutableRef"):
+        _selected_executable(lambda: object())
+
+
 def test_runtime_support_package_rejects_existing_destination(tmp_path: Path) -> None:
     venv = tmp_path / "venv"
     site_packages = venv / "lib/python3.14/site-packages"
@@ -1206,16 +1279,258 @@ def test_runtime_link_target_rejects_traversal_external_and_regular_entries(
         _runtime_link_target(active, generations)
 
     active.unlink()
+    active.symlink_to(Path("generations/missing"), target_is_directory=True)
+    with pytest.raises(ValueError, match="not a generation"):
+        _runtime_link_target(active, generations)
+
+    active.unlink()
     external = tmp_path / "external"
     external.mkdir()
     active.symlink_to(external, target_is_directory=True)
-    with pytest.raises(ValueError, match="not a generation"):
+    with pytest.raises(ValueError, match="path traversal"):
         _runtime_link_target(active, generations)
 
     active.unlink()
     active.write_text("not a runtime", encoding="utf-8")
     with pytest.raises(ValueError, match="must be a directory or symlink"):
         _runtime_link_target(active, generations)
+
+
+def test_generation_links_reject_invalid_targets_and_collect_old_generations(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "artifacts"
+    generations = root / "generations"
+    active = root / "current"
+    generations.mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="active artifact is missing"):
+        active_generation(active, generations, label="artifact")
+
+    active.write_text("not a link", encoding="utf-8")
+    with pytest.raises(ValueError, match="must be a symlink"):
+        active_generation(active, generations, label="artifact")
+    active.unlink()
+
+    external = tmp_path / "external"
+    external.mkdir()
+    active.symlink_to(external, target_is_directory=True)
+    with pytest.raises(ValueError, match="path traversal"):
+        active_generation(active, generations, label="artifact")
+    active.unlink()
+
+    (generations / "chain").symlink_to(external, target_is_directory=True)
+    active.symlink_to(Path("generations") / "chain", target_is_directory=True)
+    with pytest.raises(ValueError, match="not a generation"):
+        active_generation(active, generations, label="artifact")
+    active.unlink()
+
+    active.symlink_to(Path("../external"), target_is_directory=True)
+    with pytest.raises(ValueError, match="path traversal"):
+        active_generation(active, generations, label="artifact")
+    active.unlink()
+
+    new = generations / "new"
+    old = generations / "old"
+    new.mkdir()
+    old.mkdir()
+    active.symlink_to(Path("generations") / "new", target_is_directory=True)
+    assert active_generation(active, generations, label="artifact") == new
+    collect_generation_garbage(generations, active, label="artifact")
+    assert new.is_dir()
+    assert not old.exists()
+
+
+def test_generation_gc_fails_closed_for_stale_or_unknown_lease_entries(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "artifacts"
+    generations = root / "generations"
+    active = root / "current"
+    generations.mkdir(parents=True)
+    new = generations / "new"
+    old = generations / "old"
+    new.mkdir()
+    old.mkdir()
+    active.symlink_to(Path("generations") / "new", target_is_directory=True)
+    leases = root / "leases"
+    leases.mkdir()
+
+    (leases / "stale.lease").write_text("old\n", encoding="utf-8")
+    collect_generation_garbage(generations, active, label="artifact")
+    assert not (leases / "stale.lease").exists()
+    assert not old.exists()
+
+    old.mkdir()
+    (leases / "malformed.lease").write_text("\n", encoding="utf-8")
+    collect_generation_garbage(generations, active, label="artifact")
+    assert old.exists()
+    assert (leases / "malformed.lease").exists()
+
+    (leases / "malformed.lease").unlink()
+    (leases / "unknown").write_text("old\n", encoding="utf-8")
+    collect_generation_garbage(generations, active, label="artifact")
+    assert old.exists()
+    (leases / "unknown").unlink()
+    collect_generation_garbage(generations, active, label="artifact")
+    assert not old.exists()
+
+
+def test_generation_lease_rejects_collisions_and_tolerates_cleanup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    generations = tmp_path / "generations"
+    generations.mkdir()
+    generation = generations / "one"
+    generation.mkdir()
+    leases = tmp_path / "leases"
+    leases.mkdir()
+    existing = leases / "lease-id.lease"
+    existing.write_text("one\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="regular file"):
+        with _generation_lease(generations, generation, "lease-id"):
+            pass
+
+    existing.unlink()
+    original_remove = __import__("atlas.generations").generations.remove_path
+
+    def fail_lease_cleanup(path: Path) -> None:
+        if path.suffix == ".lease":
+            raise OSError("lease cleanup failed")
+        original_remove(path)
+
+    monkeypatch.setattr("atlas.generations.remove_path", fail_lease_cleanup)
+    with _generation_lease(generations, generation, "lease-id"):
+        assert (leases / "lease-id.lease").exists()
+    assert (leases / "lease-id.lease").exists()
+
+
+def test_generation_helpers_fail_closed_on_invalid_roots_targets_and_lease_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    active = tmp_path / "current"
+    invalid_root = tmp_path / "invalid-generations"
+    invalid_root.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(ValueError, match="generations path must be a directory"):
+        active_generation(active, invalid_root, label="artifact")
+    with pytest.raises(ValueError, match="generation path must be a directory"):
+        with _generation_lease(invalid_root, invalid_root, "invalid-root"):
+            pass
+
+    generations = tmp_path / "generations"
+    generations.mkdir()
+    generation = generations / "valid"
+    generation.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    with pytest.raises(ValueError, match="not a generation"):
+        with _generation_lease(generations, outside, "invalid-target"):
+            pass
+
+    leases = tmp_path / "leases"
+    leases.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(ValueError, match="generation leases path must be a directory"):
+        _leased_names(generations)
+    with pytest.raises(ValueError, match="leases path must be a directory"):
+        with _generation_lease(generations, generation, "invalid-leases"):
+            pass
+
+    leases.unlink()
+    leases.mkdir()
+    lease = leases / "locked.lease"
+    lease.write_text("\n", encoding="utf-8")
+    original_flock = generations_module.fcntl.flock
+
+    def report_locked(_descriptor: int, flags: int) -> None:
+        if flags & generations_module.fcntl.LOCK_NB:
+            raise BlockingIOError
+        original_flock(_descriptor, flags)
+
+    monkeypatch.setattr(generations_module.fcntl, "flock", report_locked)
+    names, safe = _leased_names(generations)
+    assert names == set()
+    assert safe is False
+
+    lease.write_text("missing\n", encoding="utf-8")
+    names, safe = _leased_names(generations)
+    assert names == set()
+    assert safe is False
+
+    monkeypatch.setattr(
+        generations_module.os,
+        "open",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("open failed")),
+    )
+    lease.write_text("old\n", encoding="utf-8")
+    names, safe = _leased_names(generations)
+    assert names == set()
+    assert safe is False
+
+
+def test_generation_gc_marks_lease_cleanup_failure_unsafe(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    generations = tmp_path / "generations"
+    generations.mkdir()
+    leases = tmp_path / "leases"
+    leases.mkdir()
+    stale = leases / "stale.lease"
+    stale.write_text("old\n", encoding="utf-8")
+    original_remove = generations_module.remove_path
+
+    def fail_lease_remove(path: Path) -> None:
+        if path == stale:
+            raise OSError("stale lease cleanup failed")
+        original_remove(path)
+
+    monkeypatch.setattr(generations_module, "remove_path", fail_lease_remove)
+    names, safe = _leased_names(generations)
+    assert names == set()
+    assert safe is False
+    assert stale.exists()
+
+
+def test_generation_gc_handles_missing_roots_and_ignored_entries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "missing-generations"
+    collect_generation_garbage(missing, tmp_path / "current", label="artifact")
+
+    regular = tmp_path / "regular-generations"
+    regular.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(ValueError, match="generations path must be a directory"):
+        collect_generation_garbage(regular, tmp_path / "current", label="artifact")
+
+    generations = tmp_path / "generations"
+    generations.mkdir()
+    active = tmp_path / "current"
+    selected = generations / "selected"
+    selected.mkdir()
+    (generations / ".temporary").mkdir()
+    (generations / "file").write_text("ignored", encoding="utf-8")
+    external = tmp_path / "external"
+    external.mkdir()
+    (generations / "link").symlink_to(external, target_is_directory=True)
+    active.symlink_to(Path("generations") / "selected", target_is_directory=True)
+    collect_generation_garbage(generations, active, label="artifact")
+    assert selected.is_dir()
+    assert (generations / ".temporary").is_dir()
+    assert (generations / "file").is_file()
+    assert (generations / "link").is_symlink()
+
+    monkeypatch.setattr(
+        generations_module,
+        "remove_path",
+        lambda path: (_ for _ in ()).throw(OSError("cleanup failed")),
+    )
+    old = generations / "old"
+    old.mkdir()
+    collect_generation_garbage(generations, active, label="artifact")
+    assert old.is_dir()
 
 
 def test_failed_transaction_cleanup_skips_removed_created_snapshot(
@@ -1338,14 +1653,14 @@ def test_host_artifact_publication_rejects_unsafe_paths(
     external = tmp_path / "external"
     external.mkdir()
     paths.artifact_current.symlink_to(external, target_is_directory=True)
-    with pytest.raises(ValueError, match="escapes its root"):
+    with pytest.raises(ValueError, match="path traversal"):
         publish_host_artifacts(paths)
     paths.artifact_current.unlink()
     paths.artifact_current.symlink_to(
-        paths.artifact_root / "generations/missing",
+        Path("generations/missing"),
         target_is_directory=True,
     )
-    with pytest.raises(ValueError, match="active artifact generation is missing"):
+    with pytest.raises(ValueError, match="target is not a generation"):
         publish_host_artifacts(paths)
     paths.artifact_current.unlink()
 
@@ -1413,6 +1728,159 @@ def test_host_artifact_publication_rolls_back_stable_links(
     assert legacy_python.is_dir()
     assert legacy_shims.is_dir()
     assert not paths.artifact_current.exists()
+
+
+def test_host_artifact_publication_restores_previous_generation_and_launchers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    _set_env(monkeypatch, home, etc, var)
+    paths = get_paths()
+    ensure_dirs(paths)
+    publish_host_artifacts(paths)
+    previous_target = os.readlink(paths.artifact_current)
+    previous_atlas = (paths.bin_dir / "atlas").read_bytes()
+    previous_runner = paths.artifact_runner.read_bytes()
+
+    def fail_launcher_write(*args, **kwargs) -> None:
+        raise OSError("launcher write failed")
+
+    monkeypatch.setattr("atlas.launchers._atomic_write", fail_launcher_write)
+    with pytest.raises(OSError, match="launcher write failed"):
+        publish_host_artifacts(paths)
+
+    assert os.readlink(paths.artifact_current) == previous_target
+    assert (paths.bin_dir / "atlas").read_bytes() == previous_atlas
+    assert paths.artifact_runner.read_bytes() == previous_runner
+
+
+def test_launcher_capture_and_restore_reject_unsafe_paths(tmp_path: Path) -> None:
+    directory = tmp_path / "directory"
+    directory.mkdir()
+    with pytest.raises(ValueError, match="host artifact must be a regular file"):
+        _capture_launcher(directory)
+
+    launcher = tmp_path / "launcher"
+    launcher.write_bytes(b"old")
+    state = _capture_launcher(launcher)
+    assert state is not None
+    launcher.write_bytes(b"new")
+    _restore_launcher(launcher, state)
+    assert launcher.read_bytes() == b"old"
+    _restore_launcher(launcher, None)
+    assert not launcher.exists()
+
+
+def test_host_artifact_publication_reports_rollback_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    _set_env(monkeypatch, home, etc, var)
+    paths = get_paths()
+    ensure_dirs(paths)
+    publish_host_artifacts(paths)
+
+    monkeypatch.setattr(
+        "atlas.launchers._atomic_write",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("launcher write failed")),
+    )
+    monkeypatch.setattr(
+        "atlas.launchers._restore_current",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("current restore failed")),
+    )
+    with pytest.raises(RuntimeError, match="publication rollback failed"):
+        publish_host_artifacts(paths)
+
+
+def test_host_artifact_publication_continues_after_rollback_cleanup_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    _set_env(monkeypatch, home, etc, var)
+    paths = get_paths()
+    ensure_dirs(paths)
+    (home / "lib/python").mkdir(parents=True)
+    paths.shims.mkdir()
+
+    original_remove = __import__("atlas.launchers").launchers.remove_path
+
+    def fail_stable_restore(path: Path) -> None:
+        if path in {home / "lib/python", paths.shims}:
+            raise OSError("stable link restore failed")
+        original_remove(path)
+
+    monkeypatch.setattr("atlas.launchers.remove_path", fail_stable_restore)
+    monkeypatch.setattr(
+        "atlas.launchers._atomic_write",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("launcher write failed")),
+    )
+    with pytest.raises(RuntimeError, match="publication rollback failed"):
+        publish_host_artifacts(paths)
+
+
+def test_host_artifact_publication_leaves_candidate_when_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    _set_env(monkeypatch, home, etc, var)
+    paths = get_paths()
+    ensure_dirs(paths)
+    original_remove = __import__("atlas.launchers").launchers.remove_path
+
+    def fail_candidate_cleanup(path: Path) -> None:
+        if path.parent == paths.artifact_root / "generations" and not path.name.startswith("."):
+            raise OSError("candidate cleanup failed")
+        original_remove(path)
+
+    monkeypatch.setattr("atlas.launchers.remove_path", fail_candidate_cleanup)
+    monkeypatch.setattr(
+        "atlas.launchers._atomic_write",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("launcher write failed")),
+    )
+    with pytest.raises(OSError, match="launcher write failed"):
+        publish_host_artifacts(paths)
+    candidates = [
+        path
+        for path in (paths.artifact_root / "generations").iterdir()
+        if not path.name.startswith(".")
+    ]
+    assert candidates
+
+
+def test_host_artifact_publication_reports_launcher_restore_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    _set_env(monkeypatch, home, etc, var)
+    paths = get_paths()
+    ensure_dirs(paths)
+    publish_host_artifacts(paths)
+
+    monkeypatch.setattr(
+        "atlas.launchers._atomic_write",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("launcher write failed")),
+    )
+    monkeypatch.setattr(
+        "atlas.launchers._restore_launcher",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("launcher restore failed")),
+    )
+    with pytest.raises(RuntimeError, match="publication rollback failed"):
+        publish_host_artifacts(paths)
 
 
 def test_host_artifact_publication_rejects_bad_generation_tree(

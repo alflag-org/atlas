@@ -24,6 +24,7 @@ from atlas.execution import (
     git_context,
     redact_args,
 )
+from atlas.generations import collect_generation_garbage
 from atlas.job_instances import list_job_instances, load_job_instance
 from atlas.jobs import list_jobs, run_job, run_job_instance
 from atlas.launchers import publish_host_artifacts
@@ -203,6 +204,89 @@ def test_reinstall_same_version_keeps_running_snapshot_and_correlates_digest(
     }
 
 
+def test_in_flight_child_keeps_concrete_runtime_and_artifact_generations(
+    atlas_paths,
+    release_factory,
+) -> None:
+    source = release_factory(name="lazy")
+    lazy_module = source / "modules/sample_show_entry.py"
+    lazy_module.write_text(
+        "import os\n"
+        "import time\n"
+        "from pathlib import Path\n"
+        "def main(argv=None):\n"
+        "    var = Path(os.environ['ATLAS_VAR_DIR'])\n"
+        "    (var / 'lazy-ready').write_text('ready')\n"
+        "    while not (var / 'lazy-continue').exists():\n"
+        "        time.sleep(0.01)\n"
+        "    import yaml\n"
+        "    (var / 'lazy-value').write_text(yaml.__version__)\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    _activate(atlas_paths, source)
+    publish_host_artifacts(atlas_paths)
+    old_runtime = (atlas_paths.runtime / "python/envs/scripts").resolve()
+    old_artifacts = atlas_paths.artifact_current.resolve()
+
+    runner = (
+        "from atlas.catalog import resolve_command\n"
+        "from atlas.execution import execute\n"
+        "from atlas.paths import get_paths\n"
+        "paths = get_paths()\n"
+        "command = resolve_command(paths.current_root, paths.releases_root, 'sample-show')\n"
+        "raise SystemExit(execute(paths, command, []))\n"
+    )
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = os.environ.copy()
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        [str(repo_root / "src"), str(repo_root / "operations/modules")]
+    )
+    old_process = subprocess.Popen(
+        [sys.executable, "-c", runner],
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    ready = atlas_paths.var / "lazy-ready"
+    deadline = time.monotonic() + 10
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ready.exists()
+
+    replacement = release_factory(name="lazy", version="2.0.0")
+    replacement_module = replacement / "modules/sample_show_entry.py"
+    replacement_module.write_text(lazy_module.read_text(encoding="utf-8"), encoding="utf-8")
+    _activate(atlas_paths, replacement)
+    publish_host_artifacts(atlas_paths)
+    new_runtime = (atlas_paths.runtime / "python/envs/scripts").resolve()
+    new_artifacts = atlas_paths.artifact_current.resolve()
+    assert new_runtime != old_runtime
+    assert new_artifacts != old_artifacts
+
+    collect_generation_garbage(
+        old_runtime.parent,
+        atlas_paths.runtime / "python/envs/scripts",
+        label="runtime generation",
+    )
+    collect_generation_garbage(
+        old_artifacts.parent,
+        atlas_paths.artifact_current,
+        label="artifact generation",
+    )
+    assert old_runtime.is_dir()
+    assert old_artifacts.is_dir()
+
+    (atlas_paths.var / "lazy-continue").write_text("continue", encoding="utf-8")
+    stdout, stderr = old_process.communicate(timeout=10)
+    assert old_process.returncode == 0, stderr
+    assert stdout == ""
+    assert (atlas_paths.var / "lazy-value").read_text(encoding="utf-8") == "6.0.3"
+    assert not old_runtime.exists()
+    assert not old_artifacts.exists()
+
+
 def test_executed_snapshot_stays_unchanged_and_digest_stable(
     atlas_paths,
     release_factory,
@@ -311,15 +395,19 @@ def test_execute_orders_path_and_preserves_caller_environment(
 
     env = captured["env"]
     assert isinstance(env, dict)
+    runtime_generation = (atlas_paths.runtime / "python/envs/scripts").resolve()
+    artifact_generation = atlas_paths.artifact_current.resolve()
     assert env["PATH"].split(os.pathsep) == [
-        str(atlas_paths.shims),
-        str(atlas_paths.runtime_python.parent),
+        str(artifact_generation / "shims"),
+        str(runtime_generation / "bin"),
         "/caller/bin",
     ]
     assert env["PYTHONPATH"].split(os.pathsep) == [
         str((atlas_paths.current_root / "selected").resolve() / "modules"),
-        str(atlas_paths.home / "lib/python"),
+        str(artifact_generation / "python"),
     ]
+    assert env["ATLAS_RUNTIME_GENERATION"] == str(runtime_generation)
+    assert env["ATLAS_ARTIFACT_GENERATION"] == str(artifact_generation)
     assert env["ATLAS_RELEASE_NAME"] == "selected"
     assert env["ATLAS_RELEASE_VERSION"] == "1.0.0"
     assert env["ATLAS_RELEASE_DIGEST"] == command.release.content_digest
@@ -524,7 +612,9 @@ def test_job_instance_uses_job_default_timeout(
 
     monkeypatch.setattr("atlas.jobs.execute", fake_execute)
     assert run_job_instance(atlas_paths, "default-timeout") == 0
-    assert calls[0]["timeout_seconds"] == 42
+    timeout = calls[0]["timeout_seconds"]
+    assert callable(timeout)
+    assert timeout(resolve_job(atlas_paths.current_root, atlas_paths.releases_root, "worker", "collect")) == 42
     assert calls[0]["lock"] == "default-timeout"
 
 

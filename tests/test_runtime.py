@@ -65,9 +65,32 @@ def test_runtime_install_recreates_venv_and_installs_base_packages(monkeypatch, 
     ]
     assert calls[2][:3] == [str(pyenv_python), "-m", "venv"]
     pip_calls = [call for call in calls if len(call) > 2 and call[1:3] == ["-m", "pip"]]
-    assert pip_calls[0][1:] == ["-m", "pip", "install", "--upgrade", "pip"]
-    assert pip_calls[1][1:] == ["-m", "pip", "install", "PyYAML"]
-    assert pip_calls[2][1:] == ["-m", "pip", "check"]
+    assert pip_calls[0][1:] == [
+        "-m",
+        "pip",
+        "install",
+        "--isolated",
+        "--disable-pip-version-check",
+        "--no-input",
+        "--no-user",
+        "--index-url",
+        "https://pypi.org/simple",
+        "--upgrade",
+        "pip",
+    ]
+    assert pip_calls[1][1:] == [
+        "-m",
+        "pip",
+        "install",
+        "--isolated",
+        "--disable-pip-version-check",
+        "--no-input",
+        "--no-user",
+        "--index-url",
+        "https://pypi.org/simple",
+        "PyYAML==6.0.3",
+    ]
+    assert pip_calls[2][1:] == ["-m", "pip", "--isolated", "check"]
 
 
 def test_runtime_install_sets_default_temp_environment(monkeypatch, tmp_path: Path) -> None:
@@ -131,6 +154,7 @@ def test_runtime_install_sets_default_temp_environment(monkeypatch, tmp_path: Pa
             "PIP_USER",
         )
     )
+    assert all(env["PIP_CONFIG_FILE"] == os.devnull for env in envs)
     assert atlas_tmp.is_dir()
     assert build_cache.is_dir()
 
@@ -174,9 +198,9 @@ def test_runtime_install_respects_explicit_tmpdir(monkeypatch, tmp_path: Path) -
     install_runtime(runtime, "3.12.3", tmp_dir=atlas_tmp, python_build_cache_path=build_cache)
 
     assert envs
-    assert all(env["TMPDIR"] == str(explicit_tmp) for env in envs)
-    assert explicit_tmp.is_dir()
-    assert not atlas_tmp.exists()
+    assert all(env["TMPDIR"] == str(atlas_tmp) for env in envs)
+    assert atlas_tmp.is_dir()
+    assert not explicit_tmp.exists()
 
 
 def test_runtime_install_keeps_console_scripts_relocatable_and_executable(
@@ -207,7 +231,7 @@ def test_runtime_install_keeps_console_scripts_relocatable_and_executable(
             runtime_python = Path(cmd[3]) / "bin/python"
             runtime_python.parent.mkdir(parents=True, exist_ok=True)
             runtime_python.symlink_to(sys.executable)
-        if cmd[1:] == ["-m", "pip", "install", "PyYAML"]:
+        if "PyYAML==6.0.3" in cmd:
             console_script = Path(cmd[0]).parent / "atlas-sample"
             console_script.write_text(f"#!{cmd[0]}\nprint('console ok')\n", encoding="utf-8")
             console_script.chmod(console_script.stat().st_mode | stat.S_IXUSR)
@@ -250,7 +274,7 @@ def test_runtime_install_rejects_stale_temp_shebang(monkeypatch: pytest.MonkeyPa
             runtime_python = Path(cmd[3]) / "bin/python"
             runtime_python.parent.mkdir(parents=True, exist_ok=True)
             runtime_python.write_text("", encoding="utf-8")
-        if cmd[1:] == ["-m", "pip", "install", "PyYAML"]:
+        if "PyYAML==6.0.3" in cmd:
             stale_python = runtime / "python/envs" / f"scripts.tmp.{os.getpid()}" / "bin/python"
             console_script = Path(cmd[0]).parent / "atlas-stale"
             console_script.write_text(f"#!{stale_python}\nprint('stale')\n", encoding="utf-8")
@@ -308,7 +332,13 @@ def test_runtime_install_prefers_requirements_lock(monkeypatch, tmp_path: Path) 
         "-m",
         "pip",
         "install",
-        "PyYAML",
+        "--isolated",
+        "--disable-pip-version-check",
+        "--no-input",
+        "--no-user",
+        "--index-url",
+        "https://pypi.org/simple",
+        "PyYAML==6.0.3",
         "-r",
         str(release_root / "requirements.lock"),
     ]
@@ -356,7 +386,13 @@ def test_runtime_install_falls_back_to_requirements_txt(monkeypatch, tmp_path: P
         "-m",
         "pip",
         "install",
-        "PyYAML",
+        "--isolated",
+        "--disable-pip-version-check",
+        "--no-input",
+        "--no-user",
+        "--index-url",
+        "https://pypi.org/simple",
+        "PyYAML==6.0.3",
         "-r",
         str(release_root / "requirements.txt"),
     ]
@@ -407,7 +443,13 @@ def test_runtime_install_includes_requirements_from_all_active_releases(monkeypa
         "-m",
         "pip",
         "install",
-        "PyYAML",
+        "--isolated",
+        "--disable-pip-version-check",
+        "--no-input",
+        "--no-user",
+        "--index-url",
+        "https://pypi.org/simple",
+        "PyYAML==6.0.3",
         "-r",
         str(common / "requirements.lock"),
         "-r",

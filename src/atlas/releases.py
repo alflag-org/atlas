@@ -17,7 +17,7 @@ from uuid import uuid4
 from .files import remove_path
 from .locks import acquire_lock
 from .manifests import ReleaseManifest, Target, load_manifest
-from .runtime import activate_runtime, prepared_runtime
+from .runtime import activate_runtime, prepared_runtime, runtime_child_environment
 
 
 @dataclass(frozen=True)
@@ -86,20 +86,8 @@ def _validate_targets_in_child(
         if runner_path is not None and runner_path.is_file()
         else Path(__file__).with_name("release_runner.py")
     )
-    environment = os.environ.copy()
-    for key in (
-        "PYTHONHOME",
-        "PYTHONPATH",
-        "PYTHONUSERBASE",
-        "VIRTUAL_ENV",
-        "PIP_PREFIX",
-        "PIP_TARGET",
-        "PIP_USER",
-    ):
-        environment.pop(key, None)
+    environment = runtime_child_environment()
     environment["ATLAS_RELEASE_ROOT"] = str(release.root)
-    environment["PYTHONDONTWRITEBYTECODE"] = "1"
-    environment["PYTHONNOUSERSITE"] = "1"
     if release.root.name == _snapshot_name(release):
         environment["ATLAS_RELEASE_DIGEST"] = release.content_digest
     else:

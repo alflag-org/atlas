@@ -138,10 +138,10 @@ def test_run_sets_release_env_and_pythonpath_order(monkeypatch, tmp_path: Path, 
     assert payload["legacy_present"] is False
     assert payload["ident"] == "alpha"
     assert payload["pythonpath"][0] == str(alpha_root / "modules")
-    assert payload["pythonpath"][1] == str(home / "lib/python")
+    assert payload["pythonpath"][1] == str((home / "artifacts/current").resolve() / "python")
     assert payload["pythonpath"] == [
         str(alpha_root / "modules"),
-        str(home / "lib/python"),
+        str((home / "artifacts/current").resolve() / "python"),
     ]
 
 

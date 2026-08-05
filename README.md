@@ -84,13 +84,21 @@ atlas status
 
 Release installation and update do not require an existing shared runtime. Atlas selects the configured
 `pyenv` Python, builds a clean candidate venv without system-site packages, copies the Atlas core
-support package into it, installs PyYAML and the requirements of every intended active release, and
-runs `pip check`. It validates the exact staged snapshots with that candidate before publishing the
-runtime generation and switching release links. Host artifacts are published under the same
-transaction; a failed dependency install or validation restores the previous runtime, releases, and
-artifacts. The parent Atlas process only bootstraps the configured interpreter and never imports release
-code. `atlas runtime install` can be used to rebuild the runtime for the currently active snapshots
-without changing release links.
+support package into it, installs Atlas's declared support requirements and the requirements of every
+intended active release, and runs `pip check`. Candidate pip calls use an isolated environment,
+explicit PyPI input, and no ambient pip configuration or `PIP_*` settings. It validates the exact staged
+snapshots with that candidate before publishing the runtime generation and switching release links.
+Host artifacts are published under the same transaction; a failed dependency install, callable
+validation, or artifact publication restores the previous runtime, releases, artifacts, and stable
+launcher bytes. The parent Atlas process only bootstraps the configured interpreter and never imports
+release code. `atlas runtime install` can be used to rebuild the runtime for the currently active
+snapshots without changing release links.
+
+Runtime and host-artifact generations are immutable after publication. The active links select one
+concrete generation, and each child captures both selections before it starts. Prior generations are
+retained while a child holds a lease, so a lazy import cannot lose its dependencies during a release
+replacement. After the child exits Atlas performs lease-aware best-effort garbage collection; a failed
+cleanup leaves that generation for a later pass and does not change the active state.
 
 The first-party release exposes three commands:
 

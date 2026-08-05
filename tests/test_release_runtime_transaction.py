@@ -63,6 +63,9 @@ def _install_atlas_wheel(python: Path, destination: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     distribution = "atlas-2.0.0"
     dist_info = f"{distribution}.dist-info"
+    support_requirement = (root / "src/atlas/support-requirements.txt").read_text(
+        encoding="utf-8"
+    ).strip()
     wheel = destination / f"{distribution}-py3-none-any.whl"
     files: list[str] = []
     with zipfile.ZipFile(wheel, "w") as archive:
@@ -72,13 +75,19 @@ def _install_atlas_wheel(python: Path, destination: Path) -> None:
                 relative = source.relative_to(root / "src").as_posix()
                 archive.write(source, relative)
                 files.append(relative)
+        support_requirements = root / "src/atlas/support-requirements.txt"
+        archive.write(
+            support_requirements,
+            support_requirements.relative_to(root / "src").as_posix(),
+        )
+        files.append("atlas/support-requirements.txt")
         archive.writestr(
             f"{dist_info}/METADATA",
             "Metadata-Version: 2.1\n"
             "Name: atlas\n"
             "Version: 2.0.0\n"
             "Requires-Python: >=3.11\n"
-            "Requires-Dist: PyYAML==6.0.3\n",
+            f"Requires-Dist: {support_requirement}\n",
         )
         files.append(f"{dist_info}/METADATA")
         archive.writestr(
@@ -264,6 +273,62 @@ def test_atlas_installed_in_outer_venv_does_not_leak_outer_dependency(
     assert not list((home / "releases/default").glob("1.0.0-*"))
 
 
+def test_candidate_runtime_ignores_hostile_pip_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    marker = outside / "marker"
+    marker.write_text("untouched", encoding="utf-8")
+    pip_config = tmp_path / "pip.conf"
+    pip_config.write_text(
+        "[global]\n"
+        f"target = {outside}\n"
+        "no-index = true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PIP_CONFIG_FILE", str(pip_config))
+    monkeypatch.setenv("PIP_TARGET", str(outside))
+    monkeypatch.setenv("PIP_PREFIX", str(outside / "prefix"))
+    monkeypatch.setenv("PIP_USER", "1")
+    monkeypatch.setenv("PIP_NO_INDEX", "1")
+    monkeypatch.setenv("PIP_INDEX_URL", "file:///outside/index")
+    monkeypatch.setenv("TMPDIR", str(outside / "tmp"))
+
+    source = _release(tmp_path / "source")
+    (source / "modules/sample.py").write_text(
+        "import yaml\n"
+        "def main(argv: list[str] | None = None) -> int:\n"
+        "    return 0 if yaml.__version__ == '6.0.3' else 1\n",
+        encoding="utf-8",
+    )
+    runtime = tmp_path / "runtime"
+
+    install_release(
+        source,
+        tmp_path / "releases",
+        tmp_path / "current",
+        runtime_root=runtime,
+        python_version=f"{sys.version_info.major}.{sys.version_info.minor}",
+        runtime_python=Path(sys.executable),
+    )
+
+    assert marker.read_text(encoding="utf-8") == "untouched"
+    assert list(outside.iterdir()) == [marker]
+    completed = subprocess.run(
+        [
+            str(_runtime_python(runtime)),
+            "-c",
+            "import yaml; print(yaml.__version__)",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.stdout.strip() == "6.0.3"
+
+
 def test_failed_candidate_preserves_active_release_and_runtime(tmp_path: Path) -> None:
     dependency = _wheel(tmp_path, "preserved_dependency", "1.0.0", "old")
     source = _release(tmp_path / "old")
@@ -292,6 +357,40 @@ def test_failed_candidate_preserves_active_release_and_runtime(tmp_path: Path) -
     assert _runtime_python(runtime).resolve() == old_runtime
     assert _runtime_value(runtime, "preserved_dependency") == "old"
     assert not list((releases / "default").glob("2.0.0-*"))
+
+
+def test_runtime_replacement_keeps_previous_generation_when_gc_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    old = _release(tmp_path / "old", version="1.0.0")
+    releases = tmp_path / "releases"
+    current = tmp_path / "current"
+    runtime = tmp_path / "runtime"
+    _install_with_current_bootstrap(old, releases, current, runtime)
+    old_generation = (runtime / "python/envs/scripts").resolve()
+
+    new = _release(tmp_path / "new", version="2.0.0")
+    _install_with_current_bootstrap(new, releases, current, runtime)
+    active_generation = (runtime / "python/envs/scripts").resolve()
+    assert active_generation != old_generation
+    assert old_generation.is_dir()
+
+    def fail_old_cleanup(path: Path) -> None:
+        if path == old_generation:
+            raise OSError("simulated old-generation cleanup failure")
+        path.unlink() if path.is_file() or path.is_symlink() else shutil.rmtree(path)
+
+    monkeypatch.setattr("atlas.generations.remove_path", fail_old_cleanup)
+    from atlas.generations import collect_generation_garbage
+
+    collect_generation_garbage(
+        old_generation.parent,
+        runtime / "python/envs/scripts",
+        label="runtime generation",
+    )
+    assert (runtime / "python/envs/scripts").resolve() == active_generation
+    assert old_generation.is_dir()
 
 
 def test_conflicting_active_release_requirements_preserve_previous_runtime(
@@ -353,6 +452,7 @@ def test_existing_matching_snapshot_is_callable_validated_before_activation(
 def test_existing_invalid_snapshot_does_not_publish_cli_artifacts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys,
 ) -> None:
     home = tmp_path / "opt/atlas"
     etc = tmp_path / "etc/atlas"
@@ -369,8 +469,18 @@ def test_existing_invalid_snapshot_does_not_publish_cli_artifacts(
     monkeypatch.setenv("ATLAS_ETC_DIR", str(etc))
     monkeypatch.setenv("ATLAS_VAR_DIR", str(var))
     monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
+    monkeypatch.setattr(
+        "atlas.runtime._ensure_pyenv_runtime",
+        lambda version, env=None: Path(sys.executable),
+    )
 
-    source = _release(tmp_path / "source")
+    old_source = _release(tmp_path / "old-source", version="0.9.0")
+    assert main(["release", "install", str(old_source)]) == 0
+    old_target = (home / "current/default").resolve()
+    old_runtime = (home / "runtime/python/envs/scripts").resolve()
+    old_artifacts = (home / "artifacts/current").resolve()
+
+    source = _release(tmp_path / "source", version="1.0.0")
     (source / "modules/sample.py").write_text(
         "def main(argv, required):\n"
         "    return 0\n",
@@ -380,37 +490,44 @@ def test_existing_invalid_snapshot_does_not_publish_cli_artifacts(
     target = home / "releases/default" / (
         f"{validated.version}-{validated.content_digest}"
     )
-    target.parent.mkdir(parents=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source, target)
     for item in [*target.rglob("*"), target]:
         item.chmod(stat.S_IMODE(item.stat().st_mode) & ~0o222)
 
     assert main(["release", "install", str(source)]) == 2
-    assert not (home / "current/default").exists()
-    assert not (home / "artifacts/current").exists()
+    error = capsys.readouterr().err
+    assert "atlas: release target validation failed for sample:main:" in error
+    assert (
+        "ValueError: target callable has required positional arguments beyond argv: sample:main"
+        in error
+    )
+    assert (home / "current/default").resolve() == old_target
+    assert (home / "runtime/python/envs/scripts").resolve() == old_runtime
+    assert (home / "artifacts/current").resolve() == old_artifacts
     assert target.is_dir()
 
 
-def _pyenv_version_available(version: str) -> bool:
-    if shutil.which("pyenv") is None:
-        return False
-    try:
-        subprocess.run(
-            ["pyenv", "prefix", version],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except (OSError, subprocess.CalledProcessError):
-        return False
-    return True
-
-
-@pytest.mark.skipif(
-    not _pyenv_version_available("3.12.3"),
-    reason="configured pyenv Python 3.12.3 is unavailable",
-)
-def test_release_install_uses_configured_pyenv_python(tmp_path: Path) -> None:
+def test_release_install_uses_configured_pyenv_python(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    pyenv = tmp_path / "pyenv-bin/pyenv"
+    pyenv.parent.mkdir()
+    prefix = Path(sys.executable).parent.parent
+    pyenv.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "case \"${1:-}\" in\n"
+        f"  install) [ \"${{2:-}}\" = '-s' ] && [ \"${{3:-}}\" = '{version}' ] ;;\n"
+        f"  prefix) [ \"${{2:-}}\" = '{version}' ] && printf '%s\\n' '{prefix}' ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    pyenv.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{pyenv.parent}{os.pathsep}{os.environ['PATH']}")
     source = _release(tmp_path / "source")
     runtime = tmp_path / "runtime"
     install_release(
@@ -418,7 +535,7 @@ def test_release_install_uses_configured_pyenv_python(tmp_path: Path) -> None:
         tmp_path / "releases",
         tmp_path / "current",
         runtime_root=runtime,
-        python_version="3.12.3",
+        python_version=version,
     )
 
     completed = subprocess.run(
@@ -431,4 +548,4 @@ def test_release_install_uses_configured_pyenv_python(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
     )
-    assert completed.stdout.strip() == "3.12"
+    assert completed.stdout.strip() == version

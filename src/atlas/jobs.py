@@ -30,12 +30,11 @@ def list_jobs(paths: AtlasPaths, release_name: str | None = None) -> list[Execut
 
 def run_job(paths: AtlasPaths, release_name: str, job_name: str, args: list[str]) -> int:
     """Run one direct job in the caller's current working directory."""
-    job = resolve_job(paths.current_root, paths.releases_root, release_name, job_name)
     return execute(
         paths,
-        job,
+        lambda: resolve_job(paths.current_root, paths.releases_root, release_name, job_name),
         args,
-        timeout_seconds=job.artifact.default_timeout_seconds,
+        timeout_seconds=lambda job: job.artifact.default_timeout_seconds,
     )
 
 
@@ -52,23 +51,25 @@ def run_job_instance(paths: AtlasPaths, name: str) -> int:
     """Resolve and execute one ``jobs.d`` instance."""
     instance = load_job_instance(paths.jobs_dir, name)
     _validate_caller_user(instance)
-    job = resolve_job(
-        paths.current_root,
-        paths.releases_root,
-        instance.release,
-        instance.job,
-    )
-    timeout = (
-        instance.timeout_seconds
-        if instance.timeout_seconds is not None
-        else job.artifact.default_timeout_seconds
-    )
+    def resolve_instance_job():
+        job = resolve_job(
+            paths.current_root,
+            paths.releases_root,
+            instance.release,
+            instance.job,
+        )
+        return job
+
     return execute(
         paths,
-        job,
+        resolve_instance_job,
         list(instance.arguments),
         cwd=instance.working_directory,
         environment_files=instance.environment_files,
-        timeout_seconds=timeout,
+        timeout_seconds=lambda job: (
+            instance.timeout_seconds
+            if instance.timeout_seconds is not None
+            else job.artifact.default_timeout_seconds
+        ),
         lock=instance.lock,
     )

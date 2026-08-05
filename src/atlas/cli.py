@@ -258,7 +258,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     ensure_dirs(p)
     return execute(
         p,
-        resolve_command(p.current_root, p.releases_root, args.command_name),
+        lambda: resolve_command(p.current_root, p.releases_root, args.command_name),
         args.args,
     )
 

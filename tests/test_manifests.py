@@ -23,6 +23,7 @@ from atlas.target_contract import (
     _annotation_is_int_or_none,
     _bound_names,
     _module_bindings,
+    _ModuleDynamicBindingVisitor,
     _selected_path,
     parse_target_spec,
     resolve_target_sources,
@@ -553,6 +554,41 @@ def test_manifest_target_source_and_callable_validation(
         load_manifest(release)
 
 
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "setattr(object(), 'main', lambda argv: 0)",
+        "delattr(object(), 'main')",
+        "getattr(object(), 'main', None)",
+        "globals()['main'] = main",
+        "locals()['main'] = main",
+        "vars()['main'] = main",
+        "importlib.import_module('dependency')",
+        "importlib.make('dependency')",
+        "from builtins import setattr as mutate\nmutate(object(), 'main', main)",
+        "import importlib as loader\nloader.util.spec_from_file_location('x', 'x')",
+        "from importlib import import_module as load\nload('dependency')",
+        "from importlib import *",
+        "from builtins import len, setattr\nsetattr(object(), 'main', main)",
+        "__builtins__['setattr'](object(), 'main', main)",
+    ],
+)
+def test_manifest_rejects_dynamic_module_binding(
+    tmp_path: Path,
+    expression: str,
+) -> None:
+    release = _release(tmp_path / "dynamic-binding")
+    (release / "modules/sample.py").write_text(
+        "import importlib\n"
+        f"{expression}\n"
+        "def main(argv):\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"(dynamic binding|wildcard import)"):
+        load_manifest(release)
+
+
 def test_target_contract_rejects_external_parents_and_accepts_selected_package(
     tmp_path: Path,
 ) -> None:
@@ -657,6 +693,12 @@ def test_target_contract_edge_helpers(tmp_path: Path) -> None:
     assert not _annotation_is_int_or_none(
         ast.parse("x: Optional[()]").body[0].annotation
     )
+    assert not _annotation_is_int_or_none(
+        ast.parse("x: Optional[int, None]").body[0].annotation
+    )
+    dynamic = _ModuleDynamicBindingVisitor()
+    dynamic.visit(ast.parse("other.make()"))
+    assert dynamic.bindings == []
     assert _module_bindings(ast.parse("del main")).pop()[0] == "main"
     nested_bindings = _module_bindings(
         ast.parse(

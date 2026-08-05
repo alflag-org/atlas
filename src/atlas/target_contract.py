@@ -218,7 +218,24 @@ def _module_bindings(tree: ast.Module) -> list[tuple[str, str, ast.AST]]:
     return bindings
 
 
-_DYNAMIC_BINDING_CALLS = {"__import__", "eval", "exec", "globals", "locals"}
+_DYNAMIC_BINDING_CALLS = {
+    "__import__",
+    "delattr",
+    "eval",
+    "exec",
+    "getattr",
+    "globals",
+    "import_module",
+    "locals",
+    "reload",
+    "setattr",
+    "vars",
+}
+_DYNAMIC_ATTRIBUTE_CALLS = _DYNAMIC_BINDING_CALLS | {
+    "__delattr__",
+    "__getattribute__",
+    "__setattr__",
+}
 
 
 class _ModuleDynamicBindingVisitor(ast.NodeVisitor):
@@ -226,14 +243,49 @@ class _ModuleDynamicBindingVisitor(ast.NodeVisitor):
 
     def __init__(self) -> None:
         self.bindings: list[tuple[str, str, ast.AST]] = []
+        self._dynamic_module_aliases: set[str] = set()
+        self._dynamic_callable_aliases: set[str] = set()
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            if alias.name.split(".", 1)[0] in {"builtins", "importlib"}:
+                self._dynamic_module_aliases.add(alias.asname or alias.name.split(".", 1)[0])
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        if any(alias.name == "*" for alias in node.names):
+        if node.module in {"builtins", "importlib"}:
+            for alias in node.names:
+                if alias.name == "*":
+                    self.bindings.append(("*", "wildcard", node))
+                else:
+                    alias_name = alias.asname or alias.name
+                    self._dynamic_module_aliases.add(alias_name)
+                    if node.module == "importlib" or alias.name in _DYNAMIC_BINDING_CALLS:
+                        self._dynamic_callable_aliases.add(alias_name)
+        elif any(alias.name == "*" for alias in node.names):
             self.bindings.append(("*", "wildcard", node))
 
+    @staticmethod
+    def _attribute_root(node: ast.AST) -> str | None:
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        return node.id if isinstance(node, ast.Name) else None
+
     def visit_Call(self, node: ast.Call) -> None:
-        if isinstance(node.func, ast.Name) and node.func.id in _DYNAMIC_BINDING_CALLS:
-            self.bindings.append((node.func.id, "dynamic", node))
+        dynamic_name: str | None = None
+        if isinstance(node.func, ast.Name) and (
+            node.func.id in _DYNAMIC_BINDING_CALLS
+            or node.func.id in self._dynamic_callable_aliases
+        ):
+            dynamic_name = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            if node.func.attr in _DYNAMIC_ATTRIBUTE_CALLS:
+                dynamic_name = node.func.attr
+            elif self._attribute_root(node.func) in self._dynamic_module_aliases:
+                dynamic_name = node.func.attr
+        elif isinstance(node.func, ast.Subscript):
+            dynamic_name = "subscript callable"
+        if dynamic_name is not None:
+            self.bindings.append((dynamic_name, "dynamic", node))
         self.generic_visit(node)
 
 
@@ -258,6 +310,8 @@ def _annotation_is_int_or_none(annotation: ast.expr) -> bool:
             return False
         slice_node = annotation.slice
         elements = slice_node.elts if isinstance(slice_node, ast.Tuple) else [slice_node]
+        if name in {"Optional", "typing.Optional"} and len(elements) != 1:
+            return False
         return bool(elements) and all(_annotation_is_int_or_none(item) for item in elements)
     return False
 

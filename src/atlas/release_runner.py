@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import os
+import re
 import sys
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -43,6 +45,46 @@ def _target_parts(spec: str) -> tuple[str, str] | None:
         return parse_target_spec(spec)
     except ValueError:
         return None
+
+
+def _snapshot_digest(root: Path) -> str:
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("selected release root is not a directory")
+    resolved = root.resolve()
+    digest = hashlib.sha256()
+    for item in sorted(
+        resolved.rglob("*"),
+        key=lambda path: path.relative_to(resolved).as_posix(),
+    ):
+        if item.is_symlink():
+            raise ValueError(f"selected release contains a symlink: {item}")
+        if item.is_dir():
+            continue
+        if not item.is_file():
+            raise ValueError(f"selected release entry is not a regular file: {item}")
+        digest.update(item.relative_to(resolved).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        with item.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _verify_release_provenance() -> None:
+    """Recheck the selected snapshot before any release source is imported."""
+    release_root = os.environ.get("ATLAS_RELEASE_ROOT")
+    expected = os.environ.get("ATLAS_RELEASE_DIGEST")
+    if not release_root or expected is None:
+        return
+    if re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+        raise ValueError("selected release digest is invalid")
+    root = Path(release_root)
+    if not root.name.endswith(f"-{expected}"):
+        raise ValueError("selected release snapshot name does not match its digest")
+    actual = _snapshot_digest(root)
+    if actual != expected:
+        raise ValueError("selected release content digest changed")
 
 
 def _module_is_selected(module: ModuleType) -> bool:
@@ -173,6 +215,7 @@ def _load_callable(module_name: str, callable_name: str) -> Callable[[list[str]]
 
 def run_target(spec: str, args: list[str]) -> int:
     """Import a selected release function and invoke it with ``args``."""
+    _verify_release_provenance()
     parts = _target_parts(spec)
     if parts is None:
         raise ValueError(f"target must be package.module:callable: {spec}")

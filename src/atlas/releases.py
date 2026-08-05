@@ -1,4 +1,4 @@
-"""Validation, immutable installation, and activation of Atlas releases."""
+"""Validation, content-addressed installation, and activation of Atlas releases."""
 
 from __future__ import annotations
 
@@ -163,8 +163,8 @@ def _stage_snapshot(
         ):
             raise ValueError(f"staged release content changed: {source.manifest.name}")
         _make_tree_read_only(staging)
-        immutable = validate_release(staging)
-        if immutable.content_digest != source.content_digest:
+        verified = validate_release(staging)
+        if verified.content_digest != source.content_digest:
             raise ValueError(f"staged release content changed: {source.manifest.name}")
         staging.rename(target)
     finally:
@@ -179,7 +179,7 @@ def reversible_release_install(
     releases_root: Path,
     current_root: Path,
 ) -> Iterator[Path]:
-    """Activate one immutable snapshot under a per-release transaction lock."""
+    """Activate one never-replaced snapshot under a per-release transaction lock."""
     release = validate_release(source)
     if releases_root.is_symlink() or (
         releases_root.exists() and not releases_root.is_dir()
@@ -229,6 +229,6 @@ def reversible_release_install(
 
 
 def install_release(source: Path, releases_root: Path, current_root: Path) -> Path:
-    """Install and atomically activate one immutable manifest-named snapshot."""
+    """Install and atomically activate one content-addressed snapshot."""
     with reversible_release_install(source, releases_root, current_root) as target:
         return target

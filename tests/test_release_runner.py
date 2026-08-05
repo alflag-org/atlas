@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib
+import os
 import runpy
+import shutil
 import sys
 from importlib import util as importlib_util
 from importlib.machinery import ModuleSpec
@@ -12,6 +14,7 @@ from types import ModuleType
 import pytest
 
 from atlas import release_runner
+from atlas.releases import release_digest
 
 
 @pytest.fixture
@@ -95,6 +98,66 @@ def test_runner_invokes_targets_and_validates_results(selected_release: Path) ->
         release_runner.run_target("runner_target:returns_bool", [])
     with pytest.raises(TypeError, match="target must return int or None"):
         release_runner.run_target("runner_target:returns_text", [])
+
+
+def test_runner_rechecks_selected_snapshot_digest(
+    monkeypatch: pytest.MonkeyPatch,
+    selected_release: Path,
+    tmp_path: Path,
+) -> None:
+    digest = release_digest(selected_release)
+    snapshot = tmp_path / f"release-{digest}"
+    shutil.copytree(selected_release, snapshot)
+    monkeypatch.setenv("ATLAS_RELEASE_ROOT", str(snapshot))
+    monkeypatch.setenv("ATLAS_RELEASE_DIGEST", digest)
+
+    assert release_runner.run_target("runner_target:returns_int", []) == 6
+    (snapshot / "modules/runner_target.py").write_text(
+        (snapshot / "modules/runner_target.py").read_text(encoding="utf-8")
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="content digest changed"):
+        release_runner.run_target("runner_target:returns_int", [])
+
+    monkeypatch.setenv("ATLAS_RELEASE_DIGEST", "bad")
+    with pytest.raises(ValueError, match="digest is invalid"):
+        release_runner.run_target("runner_target:returns_int", [])
+
+
+def test_snapshot_digest_rejects_symlinks_and_non_regular_entries(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "snapshot"
+    root.mkdir()
+    (root / "module.py").write_text("x = 1\n", encoding="utf-8")
+    assert len(release_runner._snapshot_digest(root)) == 64
+
+    root_link = tmp_path / "snapshot-link"
+    root_link.symlink_to(root, target_is_directory=True)
+    with pytest.raises(ValueError, match="selected release root"):
+        release_runner._snapshot_digest(root_link)
+
+    symlink = root / "link"
+    symlink.symlink_to(root / "module.py")
+    with pytest.raises(ValueError, match="contains a symlink"):
+        release_runner._snapshot_digest(root)
+    symlink.unlink()
+
+    fifo = root / "fifo"
+    os.mkfifo(fifo)
+    with pytest.raises(ValueError, match="not a regular file"):
+        release_runner._snapshot_digest(root)
+
+
+def test_runner_rejects_digest_named_for_another_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    selected_release: Path,
+) -> None:
+    digest = release_digest(selected_release)
+    monkeypatch.setenv("ATLAS_RELEASE_DIGEST", digest)
+    with pytest.raises(ValueError, match="snapshot name"):
+        release_runner.run_target("runner_target:returns_int", [])
 
 
 @pytest.mark.parametrize(
@@ -234,54 +297,6 @@ def test_runner_import_and_path_validation_edges(
     monkeypatch.setattr(release_runner, "validate_selected_module", lambda *args: False)
     with pytest.raises(ValueError, match="outside the selected release"):
         release_runner._load_callable("runner_target", "returns_int")
-
-
-def test_runner_loads_the_trusted_process_supervisor_before_release_code(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delitem(sys.modules, "atlas_process_supervisor", raising=False)
-    release_runner._load_process_supervisor_helper()
-    helper = sys.modules["atlas_process_supervisor"]
-    assert Path(helper.__file__).resolve() == (
-        Path(release_runner.__file__).resolve().parents[1]
-        / "atlas_process_supervisor.py"
-    )
-
-
-def test_runner_process_supervisor_helper_fails_closed_when_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delitem(sys.modules, "atlas_process_supervisor", raising=False)
-    monkeypatch.setattr(Path, "is_file", lambda _path: False)
-    with pytest.raises(ValueError, match="helper is unavailable"):
-        release_runner._load_process_supervisor_helper()
-
-
-@pytest.mark.parametrize("spec_shape", ["missing-loader", "loader-error"])
-def test_runner_process_supervisor_helper_rejects_invalid_loader(
-    monkeypatch: pytest.MonkeyPatch,
-    spec_shape: str,
-) -> None:
-    monkeypatch.delitem(sys.modules, "atlas_process_supervisor", raising=False)
-
-    class FailingLoader:
-        def create_module(self, spec):
-            return None
-
-        def exec_module(self, module):
-            raise RuntimeError("helper import failed")
-
-    if spec_shape == "missing-loader":
-        spec = ModuleSpec("atlas_process_supervisor", None)
-    else:
-        spec = ModuleSpec("atlas_process_supervisor", FailingLoader())
-    monkeypatch.setattr(
-        release_runner.importlib.util,
-        "spec_from_file_location",
-        lambda *args, **kwargs: spec,
-    )
-    with pytest.raises(ValueError, match="could not be imported"):
-        release_runner._load_process_supervisor_helper()
 
 
 def test_standalone_runner_fails_closed_when_contract_helper_cannot_load(

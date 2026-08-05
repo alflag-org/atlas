@@ -142,6 +142,22 @@ def validate_release(
     return release
 
 
+def validate_release_targets(
+    release_roots: Iterable[Path],
+    *,
+    runtime_python: Path,
+    runner_path: Path | None = None,
+) -> None:
+    """Validate every command and job in the supplied snapshots."""
+    for root in release_roots:
+        release = validate_release(root, validate_targets=False)
+        _validate_targets_in_child(
+            release,
+            runtime_python=runtime_python,
+            runner_path=runner_path,
+        )
+
+
 def _snapshot_name(release: ValidatedRelease) -> str:
     return f"{release.version}-{release.content_digest}"
 

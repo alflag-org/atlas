@@ -145,8 +145,11 @@ Atlas validates every requested source, copies it to a staged content-addressed 
 ``$ATLAS_HOME/current``. Installed snapshots are never replaced, so a running child keeps its
 selected tree while a later install activates a new snapshot. Runtime and host-artifact generations
 are also never replaced. A child captures concrete runtime and artifact generation paths before
-spawning and holds leases on both until it exits. Snapshot modes are read-only after staging for the
-normal runtime path, and the child forces ``PYTHONDONTWRITEBYTECODE=1``. The
+spawning, and the release child holds leases on both until it exits. The child-owned leases keep
+in-flight generations protected even if the waiting Atlas parent is hard-killed. Nested private jobs
+inherit the parent release snapshot and generation paths instead of resolving current links again.
+Snapshot modes are read-only after staging for the normal runtime path, and the child forces
+``PYTHONDONTWRITEBYTECODE=1``. The
 runtime account can still change its own modes; this is a release-selection correctness boundary,
 not a hostile same-UID sandbox. Atlas rechecks the selected snapshot's path and content digest
 before importing release code. A per-release lock serializes installs. Host artifact publication
@@ -175,7 +178,8 @@ callable validation succeed does Atlas publish the candidate runtime generation 
 release links; host-artifact publication is part of the same transaction. A failure restores the
 previous runtime, release links, and host artifacts. The Atlas process bootstraps the configured
 interpreter but never imports release code. ``atlas runtime install`` separately rebuilds the runtime
-for the current active snapshots without changing release links.
+for every current active snapshot, validates every command and job with the candidate Python before
+switching the runtime link, and does not change release links.
 
 Write a release manifest
 ------------------------
@@ -355,9 +359,11 @@ The default layout is:
      runtime/python/envs/generations/<generation>/
      runtime/python/envs/scripts -> generations/<generation>
      releases/<release>/<version>-<content-digest>/
-     current/<release> -> ../releases/<release>/<version>-<content-digest>
+     current/<release> -> /opt/atlas/releases/<release>/<version>-<content-digest>
      releases/.locks/<release>.lock
      shims -> artifacts/current/shims
+     runtime/python/envs/leases/<lease>.lease
+     artifacts/leases/<lease>.lease
      tmp/
 
    /var/lib/atlas/

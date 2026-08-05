@@ -6,7 +6,7 @@ import os
 import shutil
 import stat
 import subprocess
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -209,10 +209,6 @@ def _pip_install_command(python: Path, requirements: list[str]) -> list[str]:
     ]
 
 
-def _pip_upgrade_command(python: Path) -> list[str]:
-    return _pip_install_command(python, ["--upgrade", "pip"])
-
-
 def _runtime_generations(runtime_root: Path) -> tuple[Path, Path]:
     environments = runtime_root / "python" / "envs"
     generations = environments / "generations"
@@ -231,7 +227,6 @@ def _prepare_runtime(
     tmp_dir: Path | None = None,
     python_build_cache_path: Path | None = None,
     base_python: Path | None = None,
-    upgrade_pip: bool = False,
 ) -> Iterator[RuntimeCandidate]:
     """Build one clean, dependency-complete runtime generation."""
     _, generations = _runtime_generations(runtime_root)
@@ -245,8 +240,6 @@ def _prepare_runtime(
         _run_checked([str(python), "-m", "venv", str(candidate_root)], env=environment)
         candidate_python = python_bin(candidate_root)
         _install_atlas_core(candidate_python, environment)
-        if upgrade_pip:
-            _run_checked(_pip_upgrade_command(candidate_python), env=environment)
         _run_checked(
             _pip_install_command(candidate_python, _runtime_requirements(release_roots)),
             env=environment,
@@ -330,7 +323,6 @@ def prepared_runtime(
     tmp_dir: Path | None = None,
     python_build_cache_path: Path | None = None,
     base_python: Path | None = None,
-    upgrade_pip: bool = False,
 ) -> Iterator[RuntimeCandidate]:
     """Build a candidate runtime without changing the active generation."""
     with _prepare_runtime(
@@ -340,7 +332,6 @@ def prepared_runtime(
         tmp_dir=tmp_dir,
         python_build_cache_path=python_build_cache_path,
         base_python=base_python,
-        upgrade_pip=upgrade_pip,
     ) as candidate:
         yield candidate
 
@@ -418,6 +409,7 @@ def install_runtime(
     *,
     tmp_dir: Path | None = None,
     python_build_cache_path: Path | None = None,
+    validate_candidate: Callable[[RuntimeCandidate], None] | None = None,
 ) -> Path:
     """Build and atomically publish the shared artifact runtime generation."""
     with prepared_runtime(
@@ -426,9 +418,10 @@ def install_runtime(
         release_roots,
         tmp_dir=tmp_dir,
         python_build_cache_path=python_build_cache_path,
-        upgrade_pip=True,
     ) as candidate:
         _validate_console_script_shebangs(candidate.root, candidate.python)
+        if validate_candidate is not None:
+            validate_candidate(candidate)
         with activate_runtime(runtime_root, candidate) as runtime_python:
             return runtime_python
 

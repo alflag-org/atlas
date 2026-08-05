@@ -13,6 +13,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+from atlas_core.generations import generation_lease_from_environment
+
 _RELEASE_MODULE_NAMES: set[str] = set()
 
 if __package__:
@@ -241,18 +243,19 @@ def _load_callable(module_name: str, callable_name: str) -> Callable[[list[str]]
 
 def run_target(spec: str, args: list[str]) -> int:
     """Import a selected release function and invoke it with ``args``."""
-    _verify_release_provenance()
-    parts = _target_parts(spec)
-    if parts is None:
-        raise ValueError(f"target must be package.module:callable: {spec}")
-    module_name, callable_name = parts
-    target = _load_callable(module_name, callable_name)
-    result = target(args)
-    if result is None:
-        return 0
-    if isinstance(result, bool) or not isinstance(result, int):
-        raise TypeError(f"target must return int or None: {spec}")
-    return result
+    with generation_lease_from_environment():
+        _verify_release_provenance()
+        parts = _target_parts(spec)
+        if parts is None:
+            raise ValueError(f"target must be package.module:callable: {spec}")
+        module_name, callable_name = parts
+        target = _load_callable(module_name, callable_name)
+        result = target(args)
+        if result is None:
+            return 0
+        if isinstance(result, bool) or not isinstance(result, int):
+            raise TypeError(f"target must return int or None: {spec}")
+        return result
 
 
 def validate_target(spec: str) -> None:

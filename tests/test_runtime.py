@@ -75,22 +75,9 @@ def test_runtime_install_recreates_venv_and_installs_base_packages(monkeypatch, 
         "--no-user",
         "--index-url",
         "https://pypi.org/simple",
-        "--upgrade",
-        "pip",
-    ]
-    assert pip_calls[1][1:] == [
-        "-m",
-        "pip",
-        "install",
-        "--isolated",
-        "--disable-pip-version-check",
-        "--no-input",
-        "--no-user",
-        "--index-url",
-        "https://pypi.org/simple",
         "PyYAML==6.0.3",
     ]
-    assert pip_calls[2][1:] == ["-m", "pip", "--isolated", "check"]
+    assert pip_calls[1][1:] == ["-m", "pip", "--isolated", "check"]
 
 
 def test_runtime_install_sets_default_temp_environment(monkeypatch, tmp_path: Path) -> None:

@@ -20,10 +20,17 @@ from types import SimpleNamespace
 import pytest
 
 import atlas.generations as generations_module
+import atlas.jobs as jobs_module
 import atlas.runtime as runtime_module
+import atlas_core.generations as artifact_generations_module
 from atlas import cli
-from atlas.catalog import active_releases, resolve_command
-from atlas.execution import _selected_executable
+from atlas.catalog import active_releases, release_from_snapshot, resolve_command
+from atlas.execution import (
+    _capture_generation_snapshot,
+    _selected_executable,
+    pinned_execution_selection,
+    resolve_command_for_execution,
+)
 from atlas.generations import (
     _generation_lease,
     _leased_names,
@@ -33,6 +40,7 @@ from atlas.generations import (
 from atlas.launchers import (
     _atomic_write,
     _capture_launcher,
+    _copy_state_entry,
     _ensure_generation_link,
     _restore_launcher,
     _stage_generation,
@@ -49,6 +57,7 @@ from atlas.releases import (
     reversible_release_install,
     reversible_release_transaction,
     validate_release,
+    validate_release_targets,
 )
 from atlas.runtime import (
     RuntimeCandidate,
@@ -67,6 +76,12 @@ from atlas.sources import (
     resolve_source,
 )
 from atlas.yamlutil import dump_yaml_file, load_yaml_file
+from atlas_core.generations import (
+    _generation_lease as artifact_generation_lease,
+)
+from atlas_core.generations import (
+    generation_lease_from_environment,
+)
 
 
 def _set_env(monkeypatch: pytest.MonkeyPatch, home: Path, etc: Path, var: Path) -> None:
@@ -269,7 +284,8 @@ def test_cli_runtime_install_prints_result(monkeypatch: pytest.MonkeyPatch, tmp_
     monkeypatch.setattr(
         cli,
         "install_runtime",
-        lambda runtime, version, roots, tmp_dir=None, python_build_cache_path=None: home / "runtime/bin/python",
+        lambda runtime, version, roots, tmp_dir=None, python_build_cache_path=None, validate_candidate=None: home
+        / "runtime/bin/python",
     )
 
     assert cli.main(["runtime", "install"]) == 0
@@ -1406,6 +1422,102 @@ def test_generation_lease_rejects_collisions_and_tolerates_cleanup_failure(
     assert (leases / "lease-id.lease").exists()
 
 
+def test_child_generation_leases_follow_the_execution_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("ATLAS_RUNTIME_GENERATION", raising=False)
+    monkeypatch.delenv("ATLAS_ARTIFACT_GENERATION", raising=False)
+    with generation_lease_from_environment():
+        pass
+
+    runtime_generations = tmp_path / "runtime/python/envs/generations"
+    artifact_generations = tmp_path / "artifacts/generations"
+    runtime_generation = runtime_generations / "scripts.old"
+    artifact_generation = artifact_generations / "artifact.old"
+    runtime_generation.mkdir(parents=True)
+    artifact_generation.mkdir(parents=True)
+    monkeypatch.setenv("ATLAS_RUNTIME_GENERATION", str(runtime_generation))
+    monkeypatch.setenv("ATLAS_ARTIFACT_GENERATION", str(artifact_generation))
+
+    with generation_lease_from_environment():
+        runtime_leases = runtime_generations.parent / "leases"
+        artifact_leases = artifact_generations.parent / "leases"
+        assert list(runtime_leases.glob("*.lease"))
+        assert list(artifact_leases.glob("*.lease"))
+    assert not list(runtime_leases.glob("*.lease"))
+    assert not list(artifact_leases.glob("*.lease"))
+
+    monkeypatch.delenv("ATLAS_ARTIFACT_GENERATION")
+    with pytest.raises(ValueError, match="both required"):
+        with generation_lease_from_environment():
+            pass
+
+
+def test_child_generation_leases_fail_closed_and_preserve_lease_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    relative_generations = Path("relative/generations")
+    with pytest.raises(ValueError, match="paths must be absolute"):
+        with artifact_generation_lease(
+            relative_generations,
+            relative_generations / "one",
+            "relative",
+        ):
+            pass
+
+    invalid_root = tmp_path / "invalid-generations"
+    invalid_root.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(ValueError, match="must be a directory"):
+        with artifact_generation_lease(invalid_root, invalid_root, "invalid-root"):
+            pass
+
+    generations = tmp_path / "generations"
+    generations.mkdir()
+    generation = generations / "valid"
+    generation.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    with pytest.raises(ValueError, match="not a generation"):
+        with artifact_generation_lease(generations, outside, "outside"):
+            pass
+    linked_generation = generations / "linked"
+    linked_generation.symlink_to(generation, target_is_directory=True)
+    with pytest.raises(ValueError, match="not a generation"):
+        with artifact_generation_lease(generations, linked_generation, "linked"):
+            pass
+
+    leases = generations.parent / "leases"
+    leases.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(ValueError, match="leases path must be a directory"):
+        with artifact_generation_lease(generations, generation, "bad-leases"):
+            pass
+    leases.unlink()
+    leases.mkdir()
+    collision = leases / "collision.lease"
+    collision.write_text("valid\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="regular file"):
+        with artifact_generation_lease(generations, generation, "collision"):
+            pass
+    collision.unlink()
+
+    with artifact_generation_lease(generations, generation, "missing"):
+        (leases / "missing.lease").unlink()
+
+    original_unlink = artifact_generations_module.Path.unlink
+
+    def fail_lease_unlink(path: Path, *args, **kwargs) -> None:
+        if path.suffix == ".lease":
+            raise OSError("lease cleanup failed")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(artifact_generations_module.Path, "unlink", fail_lease_unlink)
+    with artifact_generation_lease(generations, generation, "stale"):
+        pass
+    assert (leases / "stale.lease").exists()
+
+
 def test_generation_helpers_fail_closed_on_invalid_roots_targets_and_lease_files(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1586,6 +1698,10 @@ def test_runtime_install_leaves_no_venv_when_final_rename_fails_without_backup(
     assert not (runtime / "python/envs/scripts").exists()
 
 
+def test_validate_release_targets_accepts_no_active_releases(tmp_path: Path) -> None:
+    validate_release_targets([], runtime_python=tmp_path / "python")
+
+
 def test_catalog_rejects_invalid_current_root_and_entries(tmp_path: Path) -> None:
     releases = tmp_path / "releases"
     releases.mkdir()
@@ -1611,6 +1727,259 @@ def test_catalog_rejects_invalid_current_root_and_entries(tmp_path: Path) -> Non
     (current / "missing").symlink_to(tmp_path / "missing")
     with pytest.raises(ValueError, match="active release target not found"):
         active_releases(current, releases)
+
+
+def test_internal_execution_selection_is_snapshot_and_generation_bound(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    _set_env(monkeypatch, home, etc, var)
+    paths = get_paths()
+    ensure_dirs(paths)
+
+    source = _release(tmp_path / "source", release_name="pinned")
+    release = validate_release(source, validate_targets=False)
+    snapshot = paths.releases_root / release.manifest.name / (
+        f"{release.version}-{release.content_digest}"
+    )
+    snapshot.parent.mkdir(parents=True)
+    shutil.copytree(source, snapshot)
+    runtime_generation = paths.runtime / "python/envs/generations/scripts.old"
+    artifact_generation = paths.artifact_root / "generations/artifact.old"
+    (runtime_generation / "bin").mkdir(parents=True)
+    (runtime_generation / "bin/python").write_text("python", encoding="utf-8")
+    (artifact_generation / "python").mkdir(parents=True)
+    (artifact_generation / "python/atlas_release_runner.py").write_text(
+        "runner", encoding="utf-8"
+    )
+    pinned_values = {
+        "ATLAS_EXECUTION_RELEASE_NAME": release.manifest.name,
+        "ATLAS_EXECUTION_RELEASE_VERSION": release.version,
+        "ATLAS_EXECUTION_RELEASE_DIGEST": release.content_digest,
+        "ATLAS_EXECUTION_RELEASE_ROOT": str(snapshot),
+        "ATLAS_EXECUTION_RUNTIME_GENERATION": str(runtime_generation),
+        "ATLAS_EXECUTION_ARTIFACT_GENERATION": str(artifact_generation),
+    }
+    for name, value in pinned_values.items():
+        monkeypatch.setenv(name, value)
+
+    selected = pinned_execution_selection(paths)
+    assert selected is not None
+    assert selected.release.root == snapshot
+    assert selected.runtime_generation == runtime_generation
+    assert selected.artifact_generation == artifact_generation
+    command = resolve_command_for_execution(paths, "sample")
+    assert command.release == selected.release
+    with pytest.raises(ValueError, match="unknown command"):
+        resolve_command_for_execution(paths, "missing")
+    snapshot_selection = _capture_generation_snapshot(paths, command, selected)
+    assert snapshot_selection.runtime_generation == runtime_generation
+    mismatched_release = replace(selected.release, name="other")
+    with pytest.raises(ValueError, match="selection changed"):
+        _capture_generation_snapshot(
+            paths,
+            command,
+            replace(selected, release=mismatched_release),
+        )
+
+    monkeypatch.delenv("ATLAS_EXECUTION_RELEASE_DIGEST")
+    with pytest.raises(ValueError, match="selection is incomplete"):
+        pinned_execution_selection(paths)
+
+    monkeypatch.setenv("ATLAS_EXECUTION_RELEASE_DIGEST", release.content_digest)
+    monkeypatch.setenv("ATLAS_EXECUTION_RUNTIME_GENERATION", "relative-runtime")
+    with pytest.raises(ValueError, match="not a concrete generation"):
+        pinned_execution_selection(paths)
+
+    monkeypatch.setenv("ATLAS_EXECUTION_RUNTIME_GENERATION", str(runtime_generation))
+    runtime_link = paths.runtime / "python/envs/runtime-link"
+    runtime_link.symlink_to(runtime_generation, target_is_directory=True)
+    monkeypatch.setenv("ATLAS_EXECUTION_RUNTIME_GENERATION", str(runtime_link))
+    with pytest.raises(ValueError, match="not a concrete generation"):
+        pinned_execution_selection(paths)
+    runtime_link.unlink()
+
+    outside_runtime = tmp_path / "outside-runtime"
+    (outside_runtime / "bin").mkdir(parents=True)
+    monkeypatch.setenv("ATLAS_EXECUTION_RUNTIME_GENERATION", str(outside_runtime))
+    with pytest.raises(ValueError, match="outside its generations directory"):
+        pinned_execution_selection(paths)
+
+    monkeypatch.setenv("ATLAS_EXECUTION_RUNTIME_GENERATION", str(runtime_generation))
+    monkeypatch.setenv("ATLAS_EXECUTION_ARTIFACT_GENERATION", "relative-artifacts")
+    with pytest.raises(ValueError, match="not a concrete generation"):
+        pinned_execution_selection(paths)
+
+    artifact_link = paths.artifact_root / "artifact-link"
+    artifact_link.symlink_to(artifact_generation, target_is_directory=True)
+    monkeypatch.setenv("ATLAS_EXECUTION_ARTIFACT_GENERATION", str(artifact_link))
+    with pytest.raises(ValueError, match="not a concrete generation"):
+        pinned_execution_selection(paths)
+    artifact_link.unlink()
+
+    outside_artifact = tmp_path / "outside-artifact"
+    outside_artifact.mkdir()
+    monkeypatch.setenv("ATLAS_EXECUTION_ARTIFACT_GENERATION", str(outside_artifact))
+    with pytest.raises(ValueError, match="outside its generations directory"):
+        pinned_execution_selection(paths)
+
+
+def test_snapshot_catalog_rejects_untrusted_selection_metadata(tmp_path: Path) -> None:
+    source = _release(tmp_path / "source", release_name="selected")
+    release = validate_release(source, validate_targets=False)
+    releases = tmp_path / "releases"
+    snapshot = releases / "selected" / f"{release.version}-{release.content_digest}"
+    snapshot.parent.mkdir(parents=True)
+    shutil.copytree(source, snapshot)
+    expected = {
+        "expected_name": "selected",
+        "expected_version": release.version,
+        "expected_digest": release.content_digest,
+    }
+    assert release_from_snapshot(snapshot, releases, **expected).root == snapshot
+
+    with pytest.raises(ValueError, match="paths must be absolute"):
+        release_from_snapshot(Path("relative"), releases, **expected)
+    with pytest.raises(ValueError, match="paths must be absolute"):
+        release_from_snapshot(snapshot, Path("relative"), **expected)
+    missing = tmp_path / "missing"
+    with pytest.raises(ValueError, match="not a directory"):
+        release_from_snapshot(missing, releases, **expected)
+    snapshot_link = tmp_path / "snapshot-link"
+    snapshot_link.symlink_to(snapshot, target_is_directory=True)
+    with pytest.raises(ValueError, match="not a directory"):
+        release_from_snapshot(snapshot_link, releases, **expected)
+    releases_file = tmp_path / "releases-file"
+    releases_file.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(ValueError, match="releases root"):
+        release_from_snapshot(snapshot, releases_file, **expected)
+    releases_link = tmp_path / "releases-link"
+    releases_link.symlink_to(releases, target_is_directory=True)
+    with pytest.raises(ValueError, match="releases root"):
+        release_from_snapshot(snapshot, releases_link, **expected)
+
+    outside = tmp_path / "outside/selected" / snapshot.name
+    outside.parent.mkdir(parents=True)
+    shutil.copytree(source, outside)
+    with pytest.raises(ValueError, match="outside its release directory"):
+        release_from_snapshot(outside, releases, **expected)
+
+    with pytest.raises(ValueError, match="identity changed"):
+        release_from_snapshot(
+            snapshot,
+            releases,
+            expected_name="selected",
+            expected_version="9.9.9",
+            expected_digest=release.content_digest,
+        )
+    wrong_snapshot = snapshot.parent / "wrong-name"
+    shutil.copytree(source, wrong_snapshot)
+    with pytest.raises(ValueError, match="snapshot name"):
+        release_from_snapshot(
+            wrong_snapshot,
+            releases,
+            **expected,
+        )
+
+    other_source = _release(tmp_path / "other-source", release_name="other")
+    other = validate_release(other_source, validate_targets=False)
+    manifest_mismatch = releases / "selected" / f"{other.version}-{other.content_digest}"
+    shutil.copytree(other_source, manifest_mismatch)
+    with pytest.raises(ValueError, match="does not match its manifest"):
+        release_from_snapshot(
+            manifest_mismatch,
+            releases,
+            expected_name="selected",
+            expected_version=other.version,
+            expected_digest=other.content_digest,
+        )
+
+
+def test_private_job_resolution_inherits_the_pinned_release(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    _set_env(monkeypatch, home, etc, var)
+    paths = get_paths()
+    ensure_dirs(paths)
+    source = _release(tmp_path / "source", release_name="pinned-jobs")
+    (source / "modules/collect.py").write_text(
+        "def main(argv):\n    return 0\n",
+        encoding="utf-8",
+    )
+    (source / "release.yml").write_text(
+        "schema: atlas.release/v1\n"
+        "name: pinned-jobs\n"
+        "commands:\n"
+        "  sample:\n"
+        "    target: sample:main\n"
+        "jobs:\n"
+        "  collect:\n"
+        "    target: collect:main\n",
+        encoding="utf-8",
+    )
+    release = validate_release(source, validate_targets=False)
+    snapshot = paths.releases_root / release.manifest.name / (
+        f"{release.version}-{release.content_digest}"
+    )
+    snapshot.parent.mkdir(parents=True)
+    shutil.copytree(source, snapshot)
+    runtime_generation = paths.runtime / "python/envs/generations/scripts.old"
+    artifact_generation = paths.artifact_root / "generations/artifact.old"
+    runtime_generation.mkdir(parents=True)
+    artifact_generation.mkdir(parents=True)
+    for name, value in {
+        "ATLAS_EXECUTION_RELEASE_NAME": release.manifest.name,
+        "ATLAS_EXECUTION_RELEASE_VERSION": release.version,
+        "ATLAS_EXECUTION_RELEASE_DIGEST": release.content_digest,
+        "ATLAS_EXECUTION_RELEASE_ROOT": str(snapshot),
+        "ATLAS_EXECUTION_RUNTIME_GENERATION": str(runtime_generation),
+        "ATLAS_EXECUTION_ARTIFACT_GENERATION": str(artifact_generation),
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    calls: list[object] = []
+
+    def fake_execute(paths_arg, resolver, args, **kwargs):
+        calls.append(resolver())
+        assert paths_arg == paths
+        assert args == ["one"]
+        return 37
+
+    monkeypatch.setattr(jobs_module, "execute", fake_execute)
+    assert jobs_module.run_job(paths, "pinned-jobs", "collect", ["one"]) == 37
+    assert calls[0].release.root == snapshot
+    with pytest.raises(ValueError, match="cannot change the selected release"):
+        jobs_module.run_job(paths, "other", "collect", [])
+    with pytest.raises(ValueError, match="unknown job"):
+        jobs_module.run_job(paths, "pinned-jobs", "missing", [])
+
+    paths.jobs_dir.mkdir(parents=True)
+    (paths.jobs_dir / "pinned.yml").write_text(
+        "schema: atlas.job-instance/v1\n"
+        "release: pinned-jobs\n"
+        "job: collect\n"
+        "user: test\n"
+        f"working_directory: {tmp_path}\n"
+        "arguments: [one]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(jobs_module, "_validate_caller_user", lambda instance: None)
+    assert jobs_module.run_job_instance(paths, "pinned") == 37
+    (paths.jobs_dir / "other.yml").write_text(
+        (paths.jobs_dir / "pinned.yml").read_text(encoding="utf-8").replace(
+            "release: pinned-jobs", "release: other"
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="cannot change the selected release"):
+        jobs_module.run_job_instance(paths, "other")
 
 
 def test_publish_host_artifacts_rejects_command_path_directory(
@@ -1772,6 +2141,13 @@ def test_launcher_capture_and_restore_reject_unsafe_paths(tmp_path: Path) -> Non
     assert launcher.read_bytes() == b"old"
     _restore_launcher(launcher, None)
     assert not launcher.exists()
+
+
+def test_host_artifact_state_copy_rejects_special_files(tmp_path: Path) -> None:
+    source = tmp_path / "fifo"
+    os.mkfifo(source)
+    with pytest.raises(ValueError, match="not a regular path"):
+        _copy_state_entry(source, tmp_path / "backup/fifo")
 
 
 def test_host_artifact_publication_reports_rollback_errors(

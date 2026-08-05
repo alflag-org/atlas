@@ -5,9 +5,11 @@ from __future__ import annotations
 import os
 import shutil
 import sys
-from contextlib import nullcontext
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from uuid import uuid4
 
 from .catalog import command_index
@@ -21,6 +23,14 @@ from .paths import AtlasPaths
 class _LauncherState:
     content: bytes
     mode: int
+
+
+@dataclass(frozen=True)
+class HostArtifactState:
+    """A filesystem snapshot used to roll back one outer publication transaction."""
+
+    backup_root: Path
+    entries: tuple[tuple[Path, Path], ...]
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -57,6 +67,63 @@ def _restore_launcher(path: Path, state: _LauncherState | None) -> None:
         temporary.replace(path)
     finally:
         remove_path(temporary)
+
+
+def _copy_state_entry(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_symlink():
+        destination.symlink_to(os.readlink(source), target_is_directory=source.is_dir())
+    elif source.is_dir():
+        shutil.copytree(source, destination, symlinks=True, copy_function=shutil.copy2)
+    elif source.is_file():
+        shutil.copy2(source, destination)
+    else:
+        raise ValueError(f"host artifact state entry is not a regular path: {source}")
+
+
+def _artifact_state_paths(paths: AtlasPaths) -> tuple[Path, ...]:
+    legacy_paths = sorted(paths.home.glob(".shims.legacy.*"))
+    return (
+        paths.artifact_root,
+        paths.home / "lib",
+        paths.shims,
+        paths.bin_dir / "atlas",
+        paths.artifact_runner,
+        *legacy_paths,
+    )
+
+
+@contextmanager
+def capture_host_artifact_state(paths: AtlasPaths) -> Iterator[HostArtifactState]:
+    """Capture all Atlas-owned host-artifact state before a larger transaction."""
+    with TemporaryDirectory(prefix="artifact-state.", dir=paths.tmp) as temporary:
+        backup_root = Path(temporary)
+        entries: list[tuple[Path, Path]] = []
+        for index, path in enumerate(_artifact_state_paths(paths)):
+            if not path.exists() and not path.is_symlink():
+                continue
+            backup = backup_root / str(index)
+            _copy_state_entry(path, backup)
+            entries.append((path, backup))
+        yield HostArtifactState(backup_root=backup_root, entries=tuple(entries))
+
+
+def _legacy_state_paths(paths: AtlasPaths) -> tuple[Path, ...]:
+    return tuple(sorted(paths.home.glob(".shims.legacy.*")))
+
+
+def restore_host_artifact_state(paths: AtlasPaths, state: HostArtifactState) -> None:
+    """Restore a captured host-artifact state without publishing a new generation."""
+    current_paths = {
+        path
+        for path, _ in state.entries
+    }
+    current_paths.update(_artifact_state_paths(paths))
+    current_paths.update(_legacy_state_paths(paths))
+    for path in sorted(current_paths, key=lambda item: len(item.parts), reverse=True):
+        remove_path(path)
+    for path, backup in sorted(state.entries, key=lambda item: len(item[0].parts)):
+        _copy_state_entry(backup, path)
 
 
 def _atlas_launcher_content() -> str:

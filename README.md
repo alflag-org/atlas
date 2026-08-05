@@ -92,13 +92,16 @@ Host artifacts are published under the same transaction; a failed dependency ins
 validation, or artifact publication restores the previous runtime, releases, artifacts, and stable
 launcher bytes. The parent Atlas process only bootstraps the configured interpreter and never imports
 release code. `atlas runtime install` can be used to rebuild the runtime for the currently active
-snapshots without changing release links.
+snapshots; it validates every command and job with the candidate Python before switching the runtime
+link and does not change release links.
 
 Runtime and host-artifact generations are immutable after publication. The active links select one
-concrete generation, and each child captures both selections before it starts. Prior generations are
-retained while a child holds a lease, so a lazy import cannot lose its dependencies during a release
-replacement. After the child exits Atlas performs lease-aware best-effort garbage collection; a failed
-cleanup leaves that generation for a later pass and does not change the active state.
+concrete generation, and each release child captures both selections before it starts and owns the
+leases until it exits. Prior generations are retained while a child holds a lease, so a lazy import
+cannot lose its dependencies during a release replacement or a hard-killed waiting Atlas parent.
+Nested private jobs inherit the parent release snapshot and generation selections. After the child
+exits Atlas performs lease-aware best-effort garbage collection; a failed cleanup leaves that
+generation for a later pass and does not change the active state.
 
 The first-party release exposes three commands:
 

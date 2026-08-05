@@ -18,7 +18,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from .catalog import ExecutableRef
+from .catalog import (
+    ActiveRelease,
+    ExecutableRef,
+    release_from_snapshot,
+    resolve_command,
+    resolve_command_from_release,
+)
 from .generations import collect_generation_garbage, generation_lease
 from .launchers import active_artifact_generation
 from .locks import acquire_lock
@@ -39,6 +45,25 @@ class _ExecutionSnapshot:
     runtime_python: Path
     artifact_generation: Path
     release_runner: Path
+
+
+@dataclass(frozen=True)
+class PinnedExecution:
+    """Immutable release and generation selection inherited by nested work."""
+
+    release: ActiveRelease
+    runtime_generation: Path
+    artifact_generation: Path
+
+
+_PINNED_EXECUTION_ENVIRONMENT_KEYS = (
+    "ATLAS_EXECUTION_RELEASE_NAME",
+    "ATLAS_EXECUTION_RELEASE_VERSION",
+    "ATLAS_EXECUTION_RELEASE_DIGEST",
+    "ATLAS_EXECUTION_RELEASE_ROOT",
+    "ATLAS_EXECUTION_RUNTIME_GENERATION",
+    "ATLAS_EXECUTION_ARTIFACT_GENERATION",
+)
 
 
 def redact_args(args: list[str]) -> list[str]:
@@ -188,6 +213,16 @@ def _environment(
             "ATLAS_RUN_ID": run_id,
             "ATLAS_PARENT_RUN_ID": parent_run_id or "",
             "ATLAS_OPERATION_ID": operation_id,
+            "ATLAS_EXECUTION_RELEASE_NAME": executable.release.name,
+            "ATLAS_EXECUTION_RELEASE_VERSION": executable.release.version,
+            "ATLAS_EXECUTION_RELEASE_DIGEST": executable.release.content_digest,
+            "ATLAS_EXECUTION_RELEASE_ROOT": str(executable.release.root),
+            "ATLAS_EXECUTION_RUNTIME_GENERATION": str(
+                runtime_generation or paths.runtime_python.parent.parent
+            ),
+            "ATLAS_EXECUTION_ARTIFACT_GENERATION": str(
+                artifact_generation or paths.artifact_current.resolve()
+            ),
             "PATH": os.pathsep.join(path_parts),
             "PYTHONPATH": _pythonpath(
                 paths,
@@ -201,9 +236,73 @@ def _environment(
     return env
 
 
-def _capture_generation_snapshot(paths: AtlasPaths) -> _ExecutionSnapshot:
-    runtime_generation = active_runtime_generation(paths.runtime)
-    artifact_generation = active_artifact_generation(paths)
+def _validated_generation(
+    path: Path,
+    generations: Path,
+    *,
+    label: str,
+) -> Path:
+    if not path.is_absolute() or path.is_symlink() or not path.is_dir():
+        raise ValueError(f"selected {label} is not a concrete generation: {path}")
+    if path.parent.resolve() != generations.resolve():
+        raise ValueError(f"selected {label} is outside its generations directory: {path}")
+    return path
+
+
+def pinned_execution_selection(paths: AtlasPaths) -> PinnedExecution | None:
+    """Read and validate the internal immutable selection, if one was inherited."""
+    values = {key: os.environ.get(key) for key in _PINNED_EXECUTION_ENVIRONMENT_KEYS}
+    present = [value is not None for value in values.values()]
+    if not any(present):
+        return None
+    if not all(present):
+        raise ValueError("nested execution selection is incomplete")
+    assert all(value is not None for value in values.values())
+    release = release_from_snapshot(
+        Path(values["ATLAS_EXECUTION_RELEASE_ROOT"]),
+        paths.releases_root,
+        expected_name=values["ATLAS_EXECUTION_RELEASE_NAME"],
+        expected_version=values["ATLAS_EXECUTION_RELEASE_VERSION"],
+        expected_digest=values["ATLAS_EXECUTION_RELEASE_DIGEST"],
+    )
+    runtime_generation = _validated_generation(
+        Path(values["ATLAS_EXECUTION_RUNTIME_GENERATION"]),
+        paths.runtime / "python/envs/generations",
+        label="runtime generation",
+    )
+    artifact_generation = _validated_generation(
+        Path(values["ATLAS_EXECUTION_ARTIFACT_GENERATION"]),
+        paths.artifact_root / "generations",
+        label="artifact generation",
+    )
+    return PinnedExecution(
+        release=release,
+        runtime_generation=runtime_generation,
+        artifact_generation=artifact_generation,
+    )
+
+
+def resolve_command_for_execution(paths: AtlasPaths, name: str) -> ExecutableRef:
+    """Resolve a command from the inherited snapshot or current selection."""
+    pinned = pinned_execution_selection(paths)
+    if pinned is not None:
+        return resolve_command_from_release(pinned.release, name)
+    return resolve_command(paths.current_root, paths.releases_root, name)
+
+
+def _capture_generation_snapshot(
+    paths: AtlasPaths,
+    selected: ExecutableRef,
+    pinned: PinnedExecution | None,
+) -> _ExecutionSnapshot:
+    if pinned is None:
+        runtime_generation = active_runtime_generation(paths.runtime)
+        artifact_generation = active_artifact_generation(paths)
+    else:
+        if selected.release != pinned.release:
+            raise ValueError("nested execution release selection changed")
+        runtime_generation = pinned.runtime_generation
+        artifact_generation = pinned.artifact_generation
     runtime_python = runtime_generation / "bin/python"
     release_runner = artifact_generation / "python/atlas_release_runner.py"
     if not runtime_python.is_file():
@@ -332,7 +431,8 @@ def execute(
                 or selected_timeout <= 0
             ):
                 raise ValueError("timeout must be a positive integer")
-            snapshot = _capture_generation_snapshot(paths)
+            pinned = pinned_execution_selection(paths)
+            snapshot = _capture_generation_snapshot(paths, selected, pinned)
             env = _environment(
                 paths,
                 selected,

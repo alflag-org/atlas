@@ -126,6 +126,14 @@ def resolve_command(current_root: Path, releases_root: Path, name: str) -> Execu
     return command
 
 
+def resolve_command_from_release(release: ActiveRelease, name: str) -> ExecutableRef:
+    """Resolve one command directly from an already selected release snapshot."""
+    command = release.manifest.commands.get(name)
+    if command is None:
+        raise ValueError(f"unknown command: {name}")
+    return ExecutableRef(release=release, artifact_type="command", artifact=command)
+
+
 def resolve_job(
     current_root: Path,
     releases_root: Path,
@@ -140,6 +148,52 @@ def resolve_job(
     if job is None:
         raise ValueError(f"unknown job: {release_name}/{job_name}")
     return ExecutableRef(release=release, artifact_type="job", artifact=job)
+
+
+def resolve_job_from_release(release: ActiveRelease, job_name: str) -> ExecutableRef:
+    """Resolve one job directly from an already selected release snapshot."""
+    job = release.manifest.jobs.get(job_name)
+    if job is None:
+        raise ValueError(f"unknown job: {release.name}/{job_name}")
+    return ExecutableRef(release=release, artifact_type="job", artifact=job)
+
+
+def release_from_snapshot(
+    root: Path,
+    releases_root: Path,
+    *,
+    expected_name: str,
+    expected_version: str,
+    expected_digest: str,
+) -> ActiveRelease:
+    """Load and verify one immutable release snapshot without using current links."""
+    if not root.is_absolute() or not releases_root.is_absolute():
+        raise ValueError("selected release paths must be absolute")
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError(f"selected release snapshot is not a directory: {root}")
+    if releases_root.is_symlink() or not releases_root.is_dir():
+        raise ValueError(f"releases root must be a directory: {releases_root}")
+    resolved_root = root.resolve()
+    resolved_releases = releases_root.resolve()
+    validate_name(expected_name, kind="release")
+    if resolved_root.parent != resolved_releases / expected_name:
+        raise ValueError("selected release snapshot is outside its release directory")
+    manifest = load_manifest(resolved_root)
+    version = read_version(resolved_root)
+    digest = release_digest(resolved_root)
+    if manifest.name != expected_name:
+        raise ValueError("selected release name does not match its manifest")
+    if version != expected_version or digest != expected_digest:
+        raise ValueError("selected release identity changed")
+    if resolved_root.name != f"{version}-{digest}":
+        raise ValueError("selected release snapshot name does not match its identity")
+    return ActiveRelease(
+        name=expected_name,
+        version=version,
+        root=resolved_root,
+        manifest=manifest,
+        content_digest=digest,
+    )
 
 
 def resolve_service(

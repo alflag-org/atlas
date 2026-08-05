@@ -287,6 +287,99 @@ def test_in_flight_child_keeps_concrete_runtime_and_artifact_generations(
     assert not old_artifacts.exists()
 
 
+def test_child_owned_leases_survive_a_hard_killed_atlas_parent(
+    atlas_paths,
+    release_factory,
+) -> None:
+    source = release_factory(name="killed")
+    module = source / "modules/sample_show_entry.py"
+    module.write_text(
+        "import os\n"
+        "import time\n"
+        "from pathlib import Path\n"
+        "def main(argv=None):\n"
+        "    var = Path(os.environ['ATLAS_VAR_DIR'])\n"
+        "    (var / 'killed-ready').write_text('ready')\n"
+        "    while not (var / 'killed-continue').exists():\n"
+        "        time.sleep(0.01)\n"
+        "    (var / 'killed-done').write_text('done')\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    _activate(atlas_paths, source)
+    publish_host_artifacts(atlas_paths)
+    old_runtime = (atlas_paths.runtime / "python/envs/scripts").resolve()
+    old_artifacts = atlas_paths.artifact_current.resolve()
+
+    runner = (
+        "from atlas.catalog import resolve_command\n"
+        "from atlas.execution import execute\n"
+        "from atlas.paths import get_paths\n"
+        "paths = get_paths()\n"
+        "command = resolve_command(paths.current_root, paths.releases_root, 'sample-show')\n"
+        "raise SystemExit(execute(paths, command, []))\n"
+    )
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = os.environ.copy()
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        [str(repo_root / "src"), str(repo_root / "operations/modules")]
+    )
+    parent_process = subprocess.Popen(
+        [sys.executable, "-c", runner],
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    ready = atlas_paths.var / "killed-ready"
+    deadline = time.monotonic() + 10
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ready.exists()
+    parent_process.kill()
+    parent_process.wait(timeout=5)
+
+    replacement = release_factory(name="killed", version="2.0.0")
+    replacement_module = replacement / "modules/sample_show_entry.py"
+    replacement_module.write_text(module.read_text(encoding="utf-8"), encoding="utf-8")
+    _activate(atlas_paths, replacement)
+    publish_host_artifacts(atlas_paths)
+    new_runtime = (atlas_paths.runtime / "python/envs/scripts").resolve()
+    new_artifacts = atlas_paths.artifact_current.resolve()
+
+    collect_generation_garbage(
+        old_runtime.parent,
+        atlas_paths.runtime / "python/envs/scripts",
+        label="runtime generation",
+    )
+    collect_generation_garbage(
+        old_artifacts.parent,
+        atlas_paths.artifact_current,
+        label="artifact generation",
+    )
+    assert old_runtime.is_dir()
+    assert old_artifacts.is_dir()
+
+    (atlas_paths.var / "killed-continue").write_text("continue", encoding="utf-8")
+    parent_process.communicate(timeout=10)
+    assert (atlas_paths.var / "killed-done").read_text(encoding="utf-8") == "done"
+
+    collect_generation_garbage(
+        old_runtime.parent,
+        atlas_paths.runtime / "python/envs/scripts",
+        label="runtime generation",
+    )
+    collect_generation_garbage(
+        old_artifacts.parent,
+        atlas_paths.artifact_current,
+        label="artifact generation",
+    )
+    assert not old_runtime.exists()
+    assert not old_artifacts.exists()
+    assert new_runtime.is_dir()
+    assert new_artifacts.is_dir()
+
+
 def test_executed_snapshot_stays_unchanged_and_digest_stable(
     atlas_paths,
     release_factory,
@@ -1102,3 +1195,128 @@ def test_nested_shim_execution_preserves_operation_and_parent(
     assert records["parent"]["parent_run_id"] is None
     assert records["child"]["parent_run_id"] == records["parent"]["run_id"]
     assert records["child"]["operation_id"] == records["parent"]["operation_id"]
+
+
+def test_nested_dispatch_keeps_parent_selection_across_release_update(
+    atlas_paths,
+    release_factory,
+) -> None:
+    def write_modules(source: Path, marker: str) -> None:
+        for name in ("parent", "child", "new"):
+            phase = "parent" if name == "parent" else "child" if name == "child" else "new"
+            (source / f"modules/{name}_entry.py").write_text(
+                "import json\n"
+                "import os\n"
+                "import subprocess\n"
+                "import time\n"
+                "from pathlib import Path\n\n"
+                "def _payload():\n"
+                f"    return {{'marker': {marker!r}, 'phase': {phase!r}, "
+                "'version': os.environ['ATLAS_RELEASE_VERSION'], "
+                "'runtime': os.environ['ATLAS_RUNTIME_GENERATION'], "
+                "'artifact': os.environ['ATLAS_ARTIFACT_GENERATION']}\n\n"
+                "def main(argv=None):\n"
+                "    var = Path(os.environ['ATLAS_VAR_DIR'])\n"
+                f"    if {phase!r} == 'parent':\n"
+                "        (var / 'nested-parent-ready').write_text("
+                "json.dumps(_payload()), encoding='utf-8')\n"
+                "        while not (var / 'nested-parent-continue').exists():\n"
+                "            time.sleep(0.01)\n"
+                "        raise SystemExit(subprocess.run(['child'], check=False).returncode)\n"
+                f"    elif {phase!r} == 'child':\n"
+                "        with (var / 'nested-observed.jsonl').open('a', encoding='utf-8') as handle:\n"
+                "            handle.write(json.dumps(_payload()) + '\\n')\n"
+                "    else:\n"
+                "        (var / 'nested-new-selection.json').write_text("
+                "json.dumps(_payload()), encoding='utf-8')\n"
+                "    return 0\n",
+                encoding="utf-8",
+            )
+
+    old = release_factory(name="nested", version="1.0.0", commands=("parent", "child"))
+    write_modules(old, "old")
+    install_release(old, atlas_paths.releases_root, atlas_paths.current_root)
+    publish_host_artifacts(atlas_paths)
+    old_runtime = atlas_paths.runtime.joinpath("python/envs/scripts").resolve()
+    old_artifacts = atlas_paths.artifact_current.resolve()
+
+    replacement = release_factory(
+        name="nested",
+        version="2.0.0",
+        commands=("parent", "child", "new"),
+    )
+    write_modules(replacement, "new")
+    (atlas_paths.etc / "config.yml").write_text(
+        "runtime:\n"
+        f"  python:\n    version: '{sys.version_info.major}.{sys.version_info.minor}'\n"
+        "releases:\n"
+        f"  nested:\n    source: '{replacement}'\n",
+        encoding="utf-8",
+    )
+
+    runner = (
+        "from atlas.catalog import resolve_command\n"
+        "from atlas.execution import execute\n"
+        "from atlas.paths import get_paths\n"
+        "paths = get_paths()\n"
+        "command = resolve_command(paths.current_root, paths.releases_root, 'parent')\n"
+        "raise SystemExit(execute(paths, command, []))\n"
+    )
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = os.environ.copy()
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        [str(repo_root / "src"), str(repo_root / "operations/modules")]
+    )
+    parent_process = subprocess.Popen(
+        [sys.executable, "-c", runner],
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    ready = atlas_paths.var / "nested-parent-ready"
+    deadline = time.monotonic() + 10
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ready.exists()
+    ready_payload = json.loads(ready.read_text(encoding="utf-8"))
+    assert ready_payload["version"] == "1.0.0"
+
+    assert main(["release", "update"]) == 0
+    new_runtime = atlas_paths.runtime.joinpath("python/envs/scripts").resolve()
+    new_artifacts = atlas_paths.artifact_current.resolve()
+    assert new_runtime != old_runtime
+    assert new_artifacts != old_artifacts
+
+    (atlas_paths.var / "nested-parent-continue").write_text("continue", encoding="utf-8")
+    stdout, stderr = parent_process.communicate(timeout=10)
+    assert parent_process.returncode == 0, stderr
+    assert stdout == ""
+
+    observed = json.loads(
+        (atlas_paths.var / "nested-observed.jsonl").read_text(encoding="utf-8").strip()
+    )
+    assert observed == {
+        "marker": "old",
+        "phase": "child",
+        "version": "1.0.0",
+        "runtime": str(old_runtime),
+        "artifact": str(old_artifacts),
+    }
+
+    new_command = resolve_command(
+        atlas_paths.current_root,
+        atlas_paths.releases_root,
+        "new",
+    )
+    assert execute(atlas_paths, new_command, []) == 0
+    new_selection = json.loads(
+        (atlas_paths.var / "nested-new-selection.json").read_text(encoding="utf-8")
+    )
+    assert new_selection == {
+        "marker": "new",
+        "phase": "new",
+        "version": "2.0.0",
+        "runtime": str(new_runtime),
+        "artifact": str(new_artifacts),
+    }

@@ -23,17 +23,22 @@ from .catalog import (
 )
 from .config import load_config
 from .errors import AtlasError
-from .execution import execute
+from .execution import execute, resolve_command_for_execution
 from .init import SystemdAdapter
 from .job_instances import list_job_instances, load_job_instance
 from .jobs import list_jobs, run_job, run_job_instance
-from .launchers import publish_host_artifacts
+from .launchers import (
+    capture_host_artifact_state,
+    publish_host_artifacts,
+    restore_host_artifact_state,
+)
 from .locks import acquire_lock
 from .paths import AtlasPaths, ensure_dirs, get_paths
 from .releases import (
     reversible_release_install,
     reversible_release_transaction,
     validate_release,
+    validate_release_targets,
 )
 from .runtime import install_runtime, runtime_status
 from .sources import resolve_source
@@ -125,6 +130,14 @@ def cmd_runtime_install(_: argparse.Namespace) -> int:
             roots or None,
             tmp_dir=paths.tmp,
             python_build_cache_path=paths.cache / "python-build",
+            validate_candidate=(
+                lambda candidate: validate_release_targets(
+                    roots,
+                    runtime_python=candidate.python,
+                )
+            )
+            if roots
+            else None,
         )
     print(f"installed runtime python: {runtime_python}")
     print(f"configured python version: {config.runtime.python_version}")
@@ -138,29 +151,30 @@ def cmd_release_install(args: argparse.Namespace) -> int:
     config = load_config(paths.etc / "config.yml")
     source = resolve_source(args.source, cache_dir=paths.cache)
     with _host_artifact_transaction(paths):
-        refresh_started = False
-        try:
-            with reversible_release_install(
-                source,
-                paths.releases_root,
-                paths.current_root,
-                runtime_root=paths.runtime,
-                python_version=config.runtime.python_version,
-                tmp_dir=paths.tmp,
-                python_build_cache_path=paths.cache / "python-build",
-            ) as target:
-                refresh_started = True
-                names = _refresh_host_artifacts(paths)
-            release = validate_release(target, validate_targets=False)
-        except Exception:
-            if refresh_started:
-                try:
-                    _refresh_host_artifacts(paths)
-                except Exception as rollback_error:
-                    raise RuntimeError(
-                        "release installation failed and host artifacts could not be restored"
-                    ) from rollback_error
-            raise
+        with capture_host_artifact_state(paths) as artifact_state:
+            refresh_started = False
+            try:
+                with reversible_release_install(
+                    source,
+                    paths.releases_root,
+                    paths.current_root,
+                    runtime_root=paths.runtime,
+                    python_version=config.runtime.python_version,
+                    tmp_dir=paths.tmp,
+                    python_build_cache_path=paths.cache / "python-build",
+                ) as target:
+                    refresh_started = True
+                    names = _refresh_host_artifacts(paths)
+                release = validate_release(target, validate_targets=False)
+            except Exception:
+                if refresh_started:
+                    try:
+                        restore_host_artifact_state(paths, artifact_state)
+                    except Exception as rollback_error:
+                        raise RuntimeError(
+                            "release installation failed and host artifacts could not be restored"
+                        ) from rollback_error
+                raise
     print(f"installed release: {release.manifest.name} {release.version}")
     print(f"commands: {len(names)}")
     return 0
@@ -196,28 +210,29 @@ def cmd_release_update(args: argparse.Namespace) -> int:
             shutil.copytree(release.root, temporary_source)
             sources.append(temporary_source)
         with _host_artifact_transaction(paths):
-            refresh_started = False
-            try:
-                with reversible_release_transaction(  # pragma: no branch - contextmanager entry arc
-                    sources,
-                    paths.releases_root,
-                    paths.current_root,
-                    runtime_root=paths.runtime,
-                    python_version=config.runtime.python_version,
-                    tmp_dir=paths.tmp,
-                    python_build_cache_path=paths.cache / "python-build",
-                ):
-                    refresh_started = True
-                    _refresh_host_artifacts(paths)
-            except Exception:
-                if refresh_started:
-                    try:
+            with capture_host_artifact_state(paths) as artifact_state:  # pragma: no branch - contextmanager entry arc
+                refresh_started = False
+                try:
+                    with reversible_release_transaction(  # pragma: no branch - contextmanager entry arc
+                        sources,
+                        paths.releases_root,
+                        paths.current_root,
+                        runtime_root=paths.runtime,
+                        python_version=config.runtime.python_version,
+                        tmp_dir=paths.tmp,
+                        python_build_cache_path=paths.cache / "python-build",
+                    ):
+                        refresh_started = True
                         _refresh_host_artifacts(paths)
-                    except Exception as rollback_error:
-                        raise RuntimeError(
-                            "release update failed and host artifacts could not be restored"
-                        ) from rollback_error
-                raise
+                except Exception:
+                    if refresh_started:
+                        try:
+                            restore_host_artifact_state(paths, artifact_state)
+                        except Exception as rollback_error:
+                            raise RuntimeError(
+                                "release update failed and host artifacts could not be restored"
+                            ) from rollback_error
+                    raise
     return 0
 
 
@@ -258,7 +273,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     ensure_dirs(p)
     return execute(
         p,
-        lambda: resolve_command(p.current_root, p.releases_root, args.command_name),
+        lambda: resolve_command_for_execution(p, args.command_name),
         args.args,
     )
 
@@ -499,7 +514,7 @@ def main(argv: list[str] | None = None) -> int:
     except AtlasError as exc:
         print(f"atlas: {exc}", file=sys.stderr)
         return exc.exit_code
-    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+    except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
         print(f"atlas: {exc}", file=sys.stderr)
         return 2
 

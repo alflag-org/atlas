@@ -11,9 +11,7 @@ provider configuration, repository state, or secrets.
 ## Try Atlas
 
 The repository includes a containerized example. It installs the sample and first-party release,
-builds their shared runtime, and checks the public commands without touching host configuration.
-The default Docker runtime has no delegated cgroup, so its attempted sample execution must fail
-closed with status 125:
+builds their shared runtime, and checks the public commands without touching host configuration:
 
 ```bash
 docker compose build
@@ -39,11 +37,9 @@ home, configuration, and state directories. The defaults are `/opt/atlas`, `/etc
 `/var/lib/atlas`. Keep `ATLAS_HOME=/opt/atlas` when using the bundled systemd artifacts because
 they use `/opt/atlas/bin/atlas` as the stable launcher.
 
-Execution also requires Linux cgroup v2 delegation for the Atlas process. Atlas creates one private
-cgroup per command or job and keeps the complete descendant tree there; it does not fall back to
-`/proc` or process-group scans. The bundled systemd service therefore contains `Delegate=yes`.
-When a host or container cannot provide that delegation, Atlas fails closed with exit status 125 and
-records the containment error instead of starting release code.
+Each command or job runs in a separate child process with an exact argument vector and no shell.
+Atlas preserves child streams, exit status, timeout behavior, signal forwarding, execution logs, and
+parent/child run correlation. A timeout returns 124; a non-blocking job lock conflict returns 75.
 
 Configure the release sources in `/etc/atlas/config.yml`:
 
@@ -68,11 +64,12 @@ environment: production
 
 `control-01`, `site-a`, and `/srv/atlas/source` are examples. Replace them with values for your
 environment. A release source is separate from the installed copy: Atlas copies validated releases
-to an immutable `/opt/atlas/releases/<release>/<version>-<content-digest>` snapshot and atomically
-switches `/opt/atlas/current/<release>` to that snapshot. Snapshot files and directories are
-read-only to the runtime user, and children force `PYTHONDONTWRITEBYTECODE=1`, so the content
-digest stays stable while it runs. A running child keeps the snapshot selected when it started.
-Do not use either Atlas-managed directory as a release source.
+to a content-addressed, never-replaced `/opt/atlas/releases/<release>/<version>-<content-digest>`
+snapshot and atomically switches `/opt/atlas/current/<release>` to that snapshot. Atlas rechecks the
+snapshot provenance before the child imports release code and forces `PYTHONDONTWRITEBYTECODE=1`.
+Snapshot modes are read-only for the normal runtime path, but a same-UID account can change them;
+this is a selected-release correctness boundary, not a hostile same-UID sandbox. Do not use either
+Atlas-managed directory as a release source.
 
 Install the releases and shared runtime:
 

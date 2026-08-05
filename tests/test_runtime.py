@@ -64,12 +64,10 @@ def test_runtime_install_recreates_venv_and_installs_base_packages(monkeypatch, 
         ["pyenv", "prefix", "3.12.3"],
     ]
     assert calls[2][:3] == [str(pyenv_python), "-m", "venv"]
-    assert calls[3][0].endswith("/bin/python")
-    assert calls[3][1:] == ["-m", "pip", "install", "--upgrade", "pip"]
-    assert calls[4][0].endswith("/bin/python")
-    assert calls[4][1:] == ["-m", "pip", "install", "PyYAML"]
-    assert calls[5][0].endswith("/bin/python")
-    assert calls[5][1:] == ["-m", "pip", "check"]
+    pip_calls = [call for call in calls if len(call) > 2 and call[1:3] == ["-m", "pip"]]
+    assert pip_calls[0][1:] == ["-m", "pip", "install", "--upgrade", "pip"]
+    assert pip_calls[1][1:] == ["-m", "pip", "install", "PyYAML"]
+    assert pip_calls[2][1:] == ["-m", "pip", "check"]
 
 
 def test_runtime_install_sets_default_temp_environment(monkeypatch, tmp_path: Path) -> None:
@@ -81,6 +79,15 @@ def test_runtime_install_sets_default_temp_environment(monkeypatch, tmp_path: Pa
     pyenv_python = pyenv_root / "bin/python"
     pyenv_python.parent.mkdir(parents=True)
     pyenv_python.write_text("", encoding="utf-8")
+    for key in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "VIRTUAL_ENV",
+        "PIP_PREFIX",
+        "PIP_TARGET",
+        "PIP_USER",
+    ):
+        monkeypatch.setenv(key, f"/outer/{key.lower()}")
     monkeypatch.delenv("TMPDIR", raising=False)
     monkeypatch.delenv("PYTHON_BUILD_CACHE_PATH", raising=False)
     monkeypatch.setattr("atlas.runtime.shutil.which", lambda _: "/usr/bin/pyenv")
@@ -112,6 +119,18 @@ def test_runtime_install_sets_default_temp_environment(monkeypatch, tmp_path: Pa
     assert envs
     assert all(env["TMPDIR"] == str(atlas_tmp) for env in envs)
     assert all(env["PYTHON_BUILD_CACHE_PATH"] == str(build_cache) for env in envs)
+    assert all(
+        key not in env
+        for env in envs
+        for key in (
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "VIRTUAL_ENV",
+            "PIP_PREFIX",
+            "PIP_TARGET",
+            "PIP_USER",
+        )
+    )
     assert atlas_tmp.is_dir()
     assert build_cache.is_dir()
 
@@ -200,7 +219,8 @@ def test_runtime_install_keeps_console_scripts_relocatable_and_executable(
 
     console_script = artifacts_venv / "bin/atlas-sample"
     shebang = console_script.read_text(encoding="utf-8").splitlines()[0]
-    assert shebang == f"#!{artifacts_venv / 'bin/python'}"
+    assert shebang.startswith("#!")
+    assert "/envs/generations/scripts." in shebang
     assert "scripts.tmp." not in shebang
     proc = original_run([str(console_script)], check=True, capture_output=True, text=True)
     assert proc.stdout == "console ok\n"

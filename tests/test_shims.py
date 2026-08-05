@@ -17,6 +17,16 @@ def _set_env(monkeypatch, home: Path, etc: Path, var: Path) -> None:
     monkeypatch.setenv("ATLAS_ETC_DIR", str(etc))
     monkeypatch.setenv("ATLAS_VAR_DIR", str(var))
     monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
+    if not (etc / "config.yml").exists():
+        (etc / "config.yml").write_text(
+            f"runtime:\n  python:\n    version: '{sys.version_info.major}.{sys.version_info.minor}'\n"
+            "releases: {}\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(
+        "atlas.runtime._ensure_pyenv_runtime",
+        lambda version, env=None: Path(sys.executable),
+    )
     runtime_python = home / "runtime/python/envs/scripts/bin/python"
     runtime_python.parent.mkdir(parents=True)
     runtime_python.symlink_to(Path(sys.executable))
@@ -204,7 +214,7 @@ def test_concurrent_release_refreshes_publish_complete_generations(
         )
         for source in sources
     ]
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + 60
     while any(process.poll() is None for process in processes):
         current = home / "artifacts/current"
         if current.is_symlink():

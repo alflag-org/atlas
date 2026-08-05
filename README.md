@@ -31,11 +31,11 @@ python -m pip install /srv/atlas/source
 Another durable checkout path is valid. Use that same path for the release sources below. Atlas
 reads the checkout but does not pull, reset, or otherwise modify it.
 
-`atlas runtime install` requires `pyenv` on `PATH` and the operating-system packages needed to
-build the configured Python version. The account running Atlas must be able to write its configured
-home, configuration, and state directories. The defaults are `/opt/atlas`, `/etc/atlas`, and
-`/var/lib/atlas`. Keep `ATLAS_HOME=/opt/atlas` when using the bundled systemd artifacts because
-they use `/opt/atlas/bin/atlas` as the stable launcher.
+`atlas release install`, `atlas release update`, and `atlas runtime install` require `pyenv` on
+`PATH` and the operating-system packages needed to build the configured Python version. The account
+running Atlas must be able to write its configured home, configuration, and state directories. The
+defaults are `/opt/atlas`, `/etc/atlas`, and `/var/lib/atlas`. Keep `ATLAS_HOME=/opt/atlas` when
+using the bundled systemd artifacts because they use `/opt/atlas/bin/atlas` as the stable launcher.
 
 Each command or job runs in a separate child process with an exact argument vector and no shell.
 Atlas preserves child streams, exit status, timeout behavior, signal forwarding, execution logs, and
@@ -74,21 +74,23 @@ Snapshot modes are read-only for the normal runtime path, but a same-UID account
 this is a selected-release correctness boundary, not a hostile same-UID sandbox. Do not use either
 Atlas-managed directory as a release source.
 
-Install the release and then build the shared runtime:
+Install the release. The install builds and publishes the runtime needed by the complete active
+release set:
 
 ```bash
 atlas release install /srv/atlas/source/operations
-atlas runtime install
 atlas status
 ```
 
-Release installation does not require an existing shared runtime. When one exists, Atlas installs the
-candidate's `requirements.lock` or `requirements.txt` into that runtime before validation; when
-it is absent, Atlas builds a temporary validation venv that inherits Atlas core's installed
-dependencies and adds the candidate requirements. The parent Atlas process is used only to bootstrap
-that venv, never to import release code. Run `atlas runtime install` after each release install or
-update so the shared runtime is rebuilt from all active snapshots. A new dependency introduced by an
-update is therefore validated from the candidate and then included in the rebuilt shared runtime.
+Release installation and update do not require an existing shared runtime. Atlas selects the configured
+`pyenv` Python, builds a clean candidate venv without system-site packages, copies the Atlas core
+support package into it, installs PyYAML and the requirements of every intended active release, and
+runs `pip check`. It validates the exact staged snapshots with that candidate before publishing the
+runtime generation and switching release links. Host artifacts are published under the same
+transaction; a failed dependency install or validation restores the previous runtime, releases, and
+artifacts. The parent Atlas process only bootstraps the configured interpreter and never imports release
+code. `atlas runtime install` can be used to rebuild the runtime for the currently active snapshots
+without changing release links.
 
 The first-party release exposes three commands:
 

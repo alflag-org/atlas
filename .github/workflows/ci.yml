@@ -35,6 +35,29 @@ jobs:
             -r examples/basic-release/requirements.txt \
             -r examples/companion-release/requirements.txt
           python -m pip check
+      - name: Configure the selected Python as the CI runtime provider
+        run: |
+          ci_python="$(python -c 'import sys; print(sys.executable)')"
+          echo "ATLAS_CI_PYTHON=$ci_python" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/atlas-bin"
+          cat > "$RUNNER_TEMP/atlas-bin/pyenv" <<'PYENV'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          case "${1:-}" in
+            install)
+              exit 0
+              ;;
+            prefix)
+              exec "$ATLAS_CI_PYTHON" -c 'from pathlib import Path; import sys; print(Path(sys.executable).parent.parent)'
+              ;;
+            *)
+              echo "unsupported CI pyenv operation" >&2
+              exit 2
+              ;;
+          esac
+          PYENV
+          chmod +x "$RUNNER_TEMP/atlas-bin/pyenv"
+          echo "$RUNNER_TEMP/atlas-bin" >> "$GITHUB_PATH"
       - name: Validate Ansible fixture
         working-directory: tests/fixtures/provisioning
         run: ansible-playbook --syntax-check playbooks/site.yml
@@ -75,12 +98,6 @@ jobs:
           C
           atlas release install examples/basic-release
           atlas release install operations
-          python -m venv "$ATLAS_RUNTIME_DIR/python/envs/scripts"
-          "$ATLAS_RUNTIME_DIR/python/envs/scripts/bin/python" -m pip install --upgrade pip==26.2
-          "$ATLAS_RUNTIME_DIR/python/envs/scripts/bin/python" -m pip install \
-            PyYAML==6.0.3 \
-            -r operations/requirements.txt \
-            -r examples/basic-release/requirements.txt
           atlas release list
           atlas command list
           diff -u \

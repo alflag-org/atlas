@@ -30,7 +30,11 @@ from .jobs import list_jobs, run_job, run_job_instance
 from .launchers import publish_host_artifacts
 from .locks import acquire_lock
 from .paths import AtlasPaths, ensure_dirs, get_paths
-from .releases import reversible_release_install, validate_release
+from .releases import (
+    reversible_release_install,
+    reversible_release_transaction,
+    validate_release,
+)
 from .runtime import install_runtime, runtime_status
 from .sources import resolve_source
 
@@ -110,17 +114,18 @@ def cmd_runtime_install(_: argparse.Namespace) -> int:
     paths = get_paths()
     ensure_dirs(paths)
     config = load_config(paths.etc / "config.yml")
-    roots = [
-        release.root
-        for release in active_releases(paths.current_root, paths.releases_root)
-    ]
-    runtime_python = install_runtime(
-        paths.runtime,
-        config.runtime.python_version,
-        roots or None,
-        tmp_dir=paths.tmp,
-        python_build_cache_path=paths.cache / "python-build",
-    )
+    with _host_artifact_transaction(paths):
+        roots = [
+            release.root
+            for release in active_releases(paths.current_root, paths.releases_root)
+        ]
+        runtime_python = install_runtime(
+            paths.runtime,
+            config.runtime.python_version,
+            roots or None,
+            tmp_dir=paths.tmp,
+            python_build_cache_path=paths.cache / "python-build",
+        )
     print(f"installed runtime python: {runtime_python}")
     print(f"configured python version: {config.runtime.python_version}")
     return 0
@@ -130,6 +135,7 @@ def cmd_release_install(args: argparse.Namespace) -> int:
     """Install one release using its manifest name."""
     paths = get_paths()
     ensure_dirs(paths)
+    config = load_config(paths.etc / "config.yml")
     source = resolve_source(args.source, cache_dir=paths.cache)
     with _host_artifact_transaction(paths):
         refresh_started = False
@@ -138,7 +144,10 @@ def cmd_release_install(args: argparse.Namespace) -> int:
                 source,
                 paths.releases_root,
                 paths.current_root,
-                runtime_python=paths.runtime_python,
+                runtime_root=paths.runtime,
+                python_version=config.runtime.python_version,
+                tmp_dir=paths.tmp,
+                python_build_cache_path=paths.cache / "python-build",
             ) as target:
                 refresh_started = True
                 names = _refresh_host_artifacts(paths)
@@ -189,16 +198,15 @@ def cmd_release_update(args: argparse.Namespace) -> int:
         with _host_artifact_transaction(paths):
             refresh_started = False
             try:
-                with ExitStack() as installations:  # pragma: no branch - interpreter-generated with entry arc
-                    for source in sources:
-                        installations.enter_context(
-                            reversible_release_install(
-                                source,
-                                paths.releases_root,
-                                paths.current_root,
-                                runtime_python=paths.runtime_python,
-                            )
-                        )
+                with reversible_release_transaction(  # pragma: no branch - contextmanager entry arc
+                    sources,
+                    paths.releases_root,
+                    paths.current_root,
+                    runtime_root=paths.runtime,
+                    python_version=config.runtime.python_version,
+                    tmp_dir=paths.tmp,
+                    python_build_cache_path=paths.cache / "python-build",
+                ):
                     refresh_started = True
                     _refresh_host_artifacts(paths)
             except Exception:

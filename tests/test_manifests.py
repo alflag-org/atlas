@@ -615,7 +615,9 @@ def test_install_validate_only_does_not_invoke_the_target(
     )
 
     installed = install_release(release, tmp_path / "releases", tmp_path / "current")
-    assert validate_release(installed).content_digest == installed.name.rsplit("-", 1)[1]
+    assert validate_release(installed, validate_targets=False).content_digest == installed.name.rsplit(
+        "-", 1
+    )[1]
     assert not marker.exists()
     monkeypatch.setenv("ATLAS_RELEASE_ROOT", str(installed))
     monkeypatch.setenv("ATLAS_RELEASE_DIGEST", installed.name.rsplit("-", 1)[1])

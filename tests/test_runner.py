@@ -15,6 +15,16 @@ def _set_env(monkeypatch, home: Path, etc: Path, var: Path) -> None:
     monkeypatch.setenv("ATLAS_ETC_DIR", str(etc))
     monkeypatch.setenv("ATLAS_VAR_DIR", str(var))
     monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
+    if not (etc / "config.yml").exists():
+        (etc / "config.yml").write_text(
+            f"runtime:\n  python:\n    version: '{sys.version_info.major}.{sys.version_info.minor}'\n"
+            "releases: {}\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(
+        "atlas.runtime._ensure_pyenv_runtime",
+        lambda version, env=None: Path(sys.executable),
+    )
 
 
 def _write_release(path: Path, release_version: str, command_name: str, marker: str) -> Path:

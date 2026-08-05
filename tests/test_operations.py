@@ -5,7 +5,6 @@ import io
 import json
 import subprocess
 import sys
-from contextlib import contextmanager
 from pathlib import Path
 
 import atlas_configuration_operations.controller as controller_module
@@ -30,11 +29,10 @@ PROVISIONING_FIXTURE = ROOT / "tests/fixtures/provisioning"
 
 @pytest.fixture(autouse=True)
 def _release_validation_runtime(monkeypatch: pytest.MonkeyPatch):
-    @contextmanager
-    def use_test_runtime(*args, **kwargs):
-        yield Path(sys.executable)
-
-    monkeypatch.setattr("atlas.releases.candidate_validation_runtime", use_test_runtime)
+    monkeypatch.setattr(
+        "atlas.runtime._ensure_pyenv_runtime",
+        lambda version, env=None: Path(sys.executable),
+    )
 
 
 def _load_job(name: str):
@@ -477,14 +475,13 @@ def test_atlas_ansible_diff_many_preserves_nested_correlation(
     atlas_paths,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    assert cli.main(["release", "install", str(OPERATIONS)]) == 0
     fake_ansible = atlas_paths.runtime_python.parent / "ansible-playbook"
     fake_ansible.write_text(
         "#!/bin/sh\nprintf 'ansible-playbook:%s\\n' \"$*\"\n",
         encoding="utf-8",
     )
     fake_ansible.chmod(0o755)
-
-    assert cli.main(["release", "install", str(OPERATIONS)]) == 0
     monkeypatch.chdir(PROVISIONING_FIXTURE)
     process = subprocess.run(
         [

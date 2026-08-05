@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 from atlas.cli import main
@@ -11,6 +12,16 @@ def _set_env(monkeypatch, home: Path, etc: Path, var: Path) -> None:
     monkeypatch.setenv("ATLAS_ETC_DIR", str(etc))
     monkeypatch.setenv("ATLAS_VAR_DIR", str(var))
     monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
+    if not (etc / "config.yml").exists():
+        (etc / "config.yml").write_text(
+            f"runtime:\n  python:\n    version: '{sys.version_info.major}.{sys.version_info.minor}'\n"
+            "releases: {}\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(
+        "atlas.runtime._ensure_pyenv_runtime",
+        lambda version, env=None: Path(sys.executable),
+    )
     runtime_python = home / "runtime/python/envs/scripts/bin/python"
     runtime_python.parent.mkdir(parents=True)
     runtime_python.symlink_to(Path(sys.executable))
@@ -316,3 +327,32 @@ def test_release_update_activates_enabled_release_and_refreshes_artifacts(
     assert (home / "current/sample").is_symlink()
     assert (home / "shims/sample-show").is_symlink()
     assert capsys.readouterr().err == ""
+
+
+def test_release_update_handles_transaction_failure_before_activation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    etc.mkdir(parents=True)
+    _set_env(monkeypatch, home, etc, var)
+    source = _write_release(tmp_path / "source", "sample", "0.1.0", "sample-show")
+    (etc / "config.yml").write_text(
+        "runtime:\n"
+        "  python:\n"
+        f"    version: '{sys.version_info.major}.{sys.version_info.minor}'\n"
+        "releases:\n"
+        f"  sample:\n    source: '{source}'\n",
+        encoding="utf-8",
+    )
+
+    @contextmanager
+    def fail_transaction(*args, **kwargs):
+        raise RuntimeError("transaction failed before activation")
+        yield  # pragma: no cover - keeps this contextmanager syntactically complete
+
+    monkeypatch.setattr("atlas.cli.reversible_release_transaction", fail_transaction)
+    assert main(["release", "update"]) == 2
+    assert not (home / "current/sample").exists()

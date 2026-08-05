@@ -6,19 +6,15 @@ import os
 import shutil
 import stat
 import subprocess
-import sys
-import threading
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from uuid import uuid4
 
 from .files import remove_path
 
 RUNTIME_PROVIDER = "pyenv"
-_EMPTY_VALIDATION_RUNTIMES: dict[Path, tuple[TemporaryDirectory, Path]] = {}
-_EMPTY_VALIDATION_RUNTIME_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -33,6 +29,14 @@ class RuntimeStatus:
     configured_version: str | None = None
     pyenv_python: Path | None = None
     pyenv_python_error: str | None = None
+
+
+@dataclass(frozen=True)
+class RuntimeCandidate:
+    """A fully populated runtime generation waiting for publication."""
+
+    root: Path
+    python: Path
 
 
 def python_bin(venv_dir: Path) -> Path:
@@ -98,82 +102,184 @@ def _runtime_requirements(release_roots: Iterable[Path] | None) -> list[str]:
     return requirements
 
 
-def _install_release_requirements(python: Path, requirement: Path) -> None:
-    _run_checked(
+def _site_packages(python: Path, environment: dict[str, str]) -> Path:
+    venv_root = python.parent.parent
+    candidates = sorted((venv_root / "lib").glob("python*/site-packages"))
+    if len(candidates) == 1:
+        return candidates[0]
+    path = _run_stdout(
         [
             str(python),
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "--no-input",
-            "-r",
-            str(requirement),
-        ]
+            "-c",
+            "import sysconfig; print(sysconfig.get_paths()['purelib'])",
+        ],
+        env=environment,
     )
+    if not path:
+        raise ValueError(f"runtime site-packages path is unavailable: {python}")
+    return Path(path)
 
 
-def _empty_validation_runtime(base_python: Path) -> Path:
-    key = base_python.resolve()
-    with _EMPTY_VALIDATION_RUNTIME_LOCK:
-        cached = _EMPTY_VALIDATION_RUNTIMES.get(key)
-        if cached is not None and python_bin(cached[1]).is_file():
-            return python_bin(cached[1])
-        temporary = TemporaryDirectory(prefix="atlas-validation-empty.")
-        temporary_root = Path(temporary.name)
-        _run_checked(
-            [
-                str(base_python),
-                "-m",
-                "venv",
-                "--system-site-packages",
-                str(temporary_root),
-            ]
-        )
-        _EMPTY_VALIDATION_RUNTIMES[key] = (temporary, temporary_root)
-        return python_bin(temporary_root)
+def _install_atlas_core(python: Path, environment: dict[str, str]) -> None:
+    source = Path(__file__).resolve().parents[1] / "atlas_core"
+    if not source.is_dir() or source.is_symlink():
+        raise ValueError(f"Atlas core support package is unavailable: {source}")
+    destination = _site_packages(python, environment) / "atlas_core"
+    if destination.exists() or destination.is_symlink():
+        raise ValueError(f"runtime support package destination already exists: {destination}")
+    shutil.copytree(source, destination)
+
+
+def _runtime_generations(runtime_root: Path) -> tuple[Path, Path]:
+    environments = runtime_root / "python" / "envs"
+    generations = environments / "generations"
+    generations.mkdir(parents=True, exist_ok=True)
+    return environments, generations
 
 
 @contextmanager
-def candidate_validation_runtime(
-    release_root: Path,
+def _prepare_runtime(
+    runtime_root: Path,
+    python_version: str,
+    release_roots: Iterable[Path] | Path | None,
     *,
+    tmp_dir: Path | None = None,
+    python_build_cache_path: Path | None = None,
     base_python: Path | None = None,
-) -> Iterator[Path]:
-    """Provide a child interpreter containing only the candidate requirements.
-
-    A configured runtime is used directly after the candidate requirements are
-    installed into it. When no configured runtime exists, a temporary venv is
-    built from the Atlas process interpreter with the Atlas installation's
-    dependencies visible and populated from the candidate's requirements file.
-    Release code runs in that child venv, never in the bootstrap interpreter.
-    """
-    requirement = _requirements_file(release_root)
-    if base_python is not None and base_python.is_file():
-        if requirement is not None:
-            _install_release_requirements(base_python, requirement)
-        yield base_python
-        return
-
-    if requirement is None:
-        yield _empty_validation_runtime(Path(sys.executable))
-        return
-
-    bootstrap = Path(sys.executable)
-    with TemporaryDirectory(prefix="atlas-validation.") as temporary:
-        validation_root = Path(temporary)
+    upgrade_pip: bool = False,
+) -> Iterator[RuntimeCandidate]:
+    """Build one clean, dependency-complete runtime generation."""
+    _, generations = _runtime_generations(runtime_root)
+    candidate_root = generations / f"scripts.{uuid4().hex}"
+    remove_path(candidate_root)
+    environment = _runtime_install_env(runtime_root, tmp_dir, python_build_cache_path)
+    environment = {
+        key: value
+        for key, value in environment.items()
+        if key
+        not in {
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "VIRTUAL_ENV",
+            "PIP_PREFIX",
+            "PIP_TARGET",
+            "PIP_USER",
+        }
+    }
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["PYTHONNOUSERSITE"] = "1"
+    python = base_python or _ensure_pyenv_runtime(python_version, env=environment)
+    try:
+        _run_checked([str(python), "-m", "venv", str(candidate_root)], env=environment)
+        candidate_python = python_bin(candidate_root)
+        _install_atlas_core(candidate_python, environment)
+        if upgrade_pip:
+            _run_checked(
+                [
+                    str(candidate_python),
+                    "-m",
+                    "pip",
+                    "install",
+                    "--upgrade",
+                    "pip",
+                ],
+                env=environment,
+            )
         _run_checked(
             [
-                str(bootstrap),
+                str(candidate_python),
                 "-m",
-                "venv",
-                "--system-site-packages",
-                str(validation_root),
-            ]
+                "pip",
+                "install",
+                *_runtime_requirements(release_roots),
+            ],
+            env=environment,
         )
-        validation_python = python_bin(validation_root)
-        _install_release_requirements(validation_python, requirement)
-        yield validation_python
+        _run_checked([str(candidate_python), "-m", "pip", "check"], env=environment)
+        yield RuntimeCandidate(root=candidate_root, python=candidate_python)
+    except BaseException:
+        remove_path(candidate_root)
+        raise
+
+
+def _runtime_link_target(active: Path, generations: Path) -> tuple[Path, bool] | None:
+    if not active.exists() and not active.is_symlink():
+        return None
+    if active.is_symlink():
+        raw = os.readlink(active)
+        if any(part == ".." for part in Path(raw).parts):
+            raise ValueError(f"runtime link contains path traversal: {active}")
+        target = (active.parent / raw).resolve()
+        if target.parent != generations.resolve() or target.is_symlink() or not target.is_dir():
+            raise ValueError(f"runtime link target is not a generation: {active}")
+        return target, False
+    if not active.is_dir():
+        raise ValueError(f"runtime environment must be a directory or symlink: {active}")
+    return active, True
+
+
+def _replace_runtime_link(active: Path, target: Path) -> None:
+    temporary = active.parent / f".{active.name}.tmp.{uuid4().hex}"
+    remove_path(temporary)
+    try:
+        temporary.symlink_to(target, target_is_directory=True)
+        temporary.replace(active)
+    finally:
+        remove_path(temporary)
+
+
+@contextmanager
+def activate_runtime(runtime_root: Path, candidate: RuntimeCandidate) -> Iterator[Path]:
+    """Atomically publish a candidate generation and restore it on failure."""
+    environments, generations = _runtime_generations(runtime_root)
+    active = environments / "scripts"
+    previous = _runtime_link_target(active, generations)
+    previous_root: Path | None = None
+    previous_was_directory = False
+    if previous is not None:
+        previous_root, previous_was_directory = previous
+        if previous_was_directory:
+            legacy = generations / f"legacy.{uuid4().hex}"
+            active.rename(legacy)
+            previous_root = legacy
+    try:
+        _replace_runtime_link(active, Path("generations") / candidate.root.name)
+        yield python_bin(active)
+    except BaseException:
+        remove_path(active)
+        if previous_root is not None:
+            if previous_was_directory:
+                previous_root.rename(active)
+            else:
+                _replace_runtime_link(active, Path("generations") / previous_root.name)
+        raise
+    else:
+        if previous_root is not None:
+            remove_path(previous_root)
+
+
+@contextmanager
+def prepared_runtime(
+    runtime_root: Path,
+    python_version: str,
+    release_roots: Iterable[Path] | Path | None,
+    *,
+    tmp_dir: Path | None = None,
+    python_build_cache_path: Path | None = None,
+    base_python: Path | None = None,
+    upgrade_pip: bool = False,
+) -> Iterator[RuntimeCandidate]:
+    """Build a candidate runtime without changing the active generation."""
+    with _prepare_runtime(
+        runtime_root,
+        python_version,
+        release_roots,
+        tmp_dir=tmp_dir,
+        python_build_cache_path=python_build_cache_path,
+        base_python=base_python,
+        upgrade_pip=upgrade_pip,
+    ) as candidate:
+        yield candidate
 
 
 def _runtime_install_env(
@@ -216,20 +322,21 @@ def _executable_shebang(path: Path) -> str | None:
     return first_line.decode("utf-8").rstrip("\r\n")
 
 
-def _validate_console_script_shebangs(artifacts_venv: Path, temporary_venv: Path) -> None:
-    bin_dir = artifacts_venv / "bin"
-    expected_python = python_bin(artifacts_venv)
-    envs_root = artifacts_venv.parent
+def _validate_console_script_shebangs(
+    runtime_generation: Path,
+    runtime_python: Path,
+) -> None:
+    bin_dir = runtime_generation / "bin"
+    envs_root = runtime_generation.parent.parent
     for executable in sorted(bin_dir.iterdir()):
         first_line = _executable_shebang(executable)
         if first_line is None:
             continue
-        has_temporary_path = str(temporary_venv) in first_line
-        has_other_runtime_path = str(envs_root) in first_line and str(expected_python) not in first_line
-        if has_temporary_path or has_other_runtime_path:
+        has_other_runtime_path = str(envs_root) in first_line and str(runtime_python) not in first_line
+        if has_other_runtime_path:
             raise ValueError(
                 "console script shebang must point to "
-                f"{expected_python}: {executable} has {first_line}"
+                f"{runtime_python}: {executable} has {first_line}"
             )
 
 
@@ -241,42 +348,18 @@ def install_runtime(
     tmp_dir: Path | None = None,
     python_build_cache_path: Path | None = None,
 ) -> Path:
-    """Atomically replace the shared artifact virtual environment.
-
-    The venv is created in a temporary directory, moved into its final path,
-    and populated through the final-path interpreter so generated console
-    console scripts keep stable shebangs.
-    """
-    environment = runtime_root / "python" / "envs" / "scripts"
-    environment.parent.mkdir(parents=True, exist_ok=True)
-    env = _runtime_install_env(runtime_root, tmp_dir, python_build_cache_path)
-    python = _ensure_pyenv_runtime(python_version, env=env)
-
-    temporary = environment.parent / f"scripts.tmp.{os.getpid()}"
-    backup = environment.parent / f"scripts.bak.{os.getpid()}"
-    remove_path(temporary)
-    remove_path(backup)
-    _run_checked([str(python), "-m", "venv", str(temporary)], env=env)
-
-    if environment.exists() or environment.is_symlink():
-        environment.rename(backup)
-    try:
-        temporary.rename(environment)
-        runtime_python = python_bin(environment)
-        _run_checked([str(runtime_python), "-m", "pip", "install", "--upgrade", "pip"], env=env)
-        _run_checked(
-            [str(runtime_python), "-m", "pip", "install", *_runtime_requirements(release_roots)],
-            env=env,
-        )
-        _validate_console_script_shebangs(environment, temporary)
-        _run_checked([str(runtime_python), "-m", "pip", "check"], env=env)
-    except Exception:
-        remove_path(environment)
-        if backup.exists() or backup.is_symlink():
-            backup.rename(environment)
-        raise
-    remove_path(backup)
-    return python_bin(environment)
+    """Build and atomically publish the shared artifact runtime generation."""
+    with prepared_runtime(
+        runtime_root,
+        python_version,
+        release_roots,
+        tmp_dir=tmp_dir,
+        python_build_cache_path=python_build_cache_path,
+        upgrade_pip=True,
+    ) as candidate:
+        _validate_console_script_shebangs(candidate.root, candidate.python)
+        with activate_runtime(runtime_root, candidate) as runtime_python:
+            return runtime_python
 
 
 def runtime_status(runtime_root: Path, python_version: str | None = None) -> RuntimeStatus:

@@ -17,7 +17,16 @@ def configure_paths(monkeypatch, tmp_path: Path) -> AtlasPaths:
     monkeypatch.setenv("ATLAS_ETC_DIR", str(etc))
     monkeypatch.setenv("ATLAS_VAR_DIR", str(var))
     monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
+    monkeypatch.setattr(
+        "atlas.runtime._ensure_pyenv_runtime",
+        lambda version, env=None: Path(sys.executable),
+    )
     etc.mkdir(parents=True)
+    (etc / "config.yml").write_text(
+        f"runtime:\n  python:\n    version: '{sys.version_info.major}.{sys.version_info.minor}'\n"
+        "releases: {}\n",
+        encoding="utf-8",
+    )
     (etc / "host.yml").write_text("name: test-host\nsite: test\n", encoding="utf-8")
     paths = get_paths()
     paths.runtime_python.parent.mkdir(parents=True)

@@ -1,12 +1,12 @@
 First-party controllers
 =======================
 
-Install the bundled operations release and build the shared runtime:
+Install the bundled operations release. Installation builds the shared runtime for the active release
+set:
 
 .. code-block:: bash
 
    atlas release install /srv/atlas/source/operations
-   atlas runtime install
    atlas command list
 
 The public commands are ``atlas-ansible``, ``hostctl``, and ``imagectl``. Provider validation,

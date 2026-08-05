@@ -12,6 +12,7 @@ import threading
 import time
 import warnings
 import zipfile
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,13 +30,23 @@ from atlas.launchers import (
 from atlas.manifests import validate_name
 from atlas.paths import ensure_dirs, get_paths
 from atlas.releases import (
+    _current_target,
+    _validate_targets_in_child,
     install_release,
     read_version,
     release_digest,
     reversible_release_install,
+    reversible_release_transaction,
     validate_release,
 )
-from atlas.runtime import RuntimeStatus, install_runtime
+from atlas.runtime import (
+    RuntimeCandidate,
+    RuntimeStatus,
+    _install_atlas_core,
+    _runtime_link_target,
+    _site_packages,
+    install_runtime,
+)
 from atlas.sources import (
     clone_git_source,
     download_archive,
@@ -132,6 +143,22 @@ def _fake_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[list[
 
     monkeypatch.setattr("atlas.runtime.subprocess.run", fake_run)
     return calls
+
+
+def _fast_release_runtime(monkeypatch: pytest.MonkeyPatch, runtime_root: Path) -> None:
+    """Keep lock-order tests independent of pip and venv build time."""
+
+    @contextmanager
+    def prepared(*args, **kwargs):
+        generations = runtime_root / "python/envs/generations"
+        root = generations / f"scripts.test.{threading.get_ident()}"
+        (root / "bin").mkdir(parents=True, exist_ok=True)
+        python = root / "bin/python"
+        if not python.exists():
+            python.symlink_to(Path(sys.executable))
+        yield RuntimeCandidate(root=root, python=Path(sys.executable))
+
+    monkeypatch.setattr("atlas.releases.prepared_runtime", prepared)
 
 
 def test_cli_status_handles_invalid_host_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
@@ -328,6 +355,89 @@ def test_release_validation_rejects_missing_empty_and_invalid_inputs(tmp_path: P
             validate_name(name, kind="release")
 
 
+def test_validate_release_requires_a_child_runtime(tmp_path: Path) -> None:
+    source = _release(tmp_path / "source")
+    with pytest.raises(ValueError, match="target validation runtime is required"):
+        validate_release(source)
+    validated = validate_release(source, runtime_python=Path(sys.executable))
+    assert validated.manifest.name == "default"
+
+
+def test_current_target_validation_rejects_each_malformed_link(tmp_path: Path) -> None:
+    releases = tmp_path / "releases"
+    releases.mkdir()
+    current = tmp_path / "current"
+    current.mkdir()
+    link = current / "default"
+
+    assert _current_target(link, releases) is None
+    link.write_text("not a link", encoding="utf-8")
+    with pytest.raises(ValueError, match="must be a symlink"):
+        _current_target(link, releases)
+
+    link.unlink()
+    link.symlink_to("../outside")
+    with pytest.raises(ValueError, match="path traversal"):
+        _current_target(link, releases)
+
+    link.unlink()
+    external = tmp_path / "external"
+    external.mkdir()
+    link.symlink_to(external, target_is_directory=True)
+    with pytest.raises(ValueError, match="escapes releases root"):
+        _current_target(link, releases)
+
+    link.unlink()
+    (releases / "default").mkdir()
+    (releases / "default" / "alias").symlink_to(external, target_is_directory=True)
+    link.symlink_to(releases / "default" / "alias", target_is_directory=True)
+    with pytest.raises(ValueError, match="symlink chain"):
+        _current_target(link, releases)
+
+    link.unlink()
+    (releases / "default" / "alias").unlink()
+    link.symlink_to(releases / "default" / "missing", target_is_directory=True)
+    with pytest.raises(ValueError, match="target not found"):
+        _current_target(link, releases)
+
+    link.unlink()
+    source = _release(tmp_path / "source")
+    snapshot = releases / "default" / "wrong-name"
+    shutil.copytree(source, snapshot)
+    link.symlink_to(snapshot, target_is_directory=True)
+    with pytest.raises(ValueError, match="not a validated release snapshot"):
+        _current_target(link, releases)
+
+
+def test_release_transaction_rejects_duplicate_names(tmp_path: Path) -> None:
+    source = _release(tmp_path / "source")
+    with pytest.raises(ValueError, match="duplicate release names"):
+        with reversible_release_transaction(
+            [source, source],
+            tmp_path / "releases",
+            tmp_path / "current",
+            runtime_root=tmp_path / "runtime",
+            python_version="3.14.6",
+        ):
+            pass
+
+
+def test_release_transaction_cleanup_handles_no_created_snapshot(
+    tmp_path: Path,
+) -> None:
+    source = _release(tmp_path / "source")
+    releases = tmp_path / "releases"
+    (releases / "default").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    release_dir = releases / "default"
+    release_dir.rmdir()
+    release_dir.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="release directory must not be a symlink"):
+        install_release(source, releases, tmp_path / "current")
+
+
 def test_release_digest_rejects_missing_symlink_and_nonregular_entries(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="release directory not found"):
         release_digest(tmp_path / "missing")
@@ -355,7 +465,7 @@ def test_install_release_rejects_current_link_outside_release_root(tmp_path: Pat
     external.mkdir()
     (current / "default").symlink_to(external, target_is_directory=True)
 
-    with pytest.raises(ValueError, match="escapes releases root"):
+    with pytest.raises(ValueError, match="outside releases root"):
         install_release(source, releases, current)
 
     active = current / "default"
@@ -458,6 +568,7 @@ def test_catalog_rejects_mutated_snapshot_and_keeps_direct_snapshot_on_link_swap
 
 
 def test_concurrent_release_failure_cannot_rollback_a_later_activation(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     old = _release(tmp_path / "old", version="0.1.0")
@@ -465,6 +576,7 @@ def test_concurrent_release_failure_cannot_rollback_a_later_activation(
     winner = _release(tmp_path / "winner", version="0.3.0")
     releases = tmp_path / "releases"
     current = tmp_path / "current"
+    _fast_release_runtime(monkeypatch, tmp_path / "runtime")
     old_target = install_release(old, releases, current)
     failed_activated = threading.Event()
     allow_failed = threading.Event()
@@ -506,10 +618,14 @@ def test_concurrent_release_failure_cannot_rollback_a_later_activation(
     assert old_target.is_dir()
 
 
-def test_concurrent_same_digest_install_is_idempotent(tmp_path: Path) -> None:
+def test_concurrent_same_digest_install_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     source = _release(tmp_path / "source")
     releases = tmp_path / "releases"
     current = tmp_path / "current"
+    _fast_release_runtime(monkeypatch, tmp_path / "runtime")
     barrier = threading.Barrier(3)
     results: list[Path] = []
     errors: list[BaseException] = []
@@ -663,8 +779,8 @@ def test_release_snapshot_rejects_existing_digest_mismatch(tmp_path: Path) -> No
     )
     releases = tmp_path / "releases"
     current = tmp_path / "current"
-    validated = validate_release(source)
-    other = validate_release(different)
+    validated = validate_release(source, validate_targets=False)
+    other = validate_release(different, validate_targets=False)
     target = releases / "default" / f"{validated.version}-{validated.content_digest}"
     target.parent.mkdir(parents=True)
     import shutil
@@ -711,8 +827,13 @@ def test_release_target_validation_reports_empty_child_failure(
             stdout="",
         ),
     )
+    validated = validate_release(source, validate_targets=False)
     with pytest.raises(ValueError, match="child exited with status 1"):
-        validate_release(source)
+        _validate_targets_in_child(
+            validated,
+            runtime_python=Path(sys.executable),
+            runner_path=None,
+        )
 
 
 def test_release_transient_helpers_reject_links_and_preserve_existing_target(
@@ -856,7 +977,7 @@ def test_install_release_cleans_staging_when_initial_rename_fails(
 
 def test_install_release_rejects_non_directory_release_target(tmp_path: Path) -> None:
     source = _release(tmp_path / "source")
-    release = validate_release(source)
+    release = validate_release(source, validate_targets=False)
     target = tmp_path / "releases/default" / (
         f"{release.version}-{release.content_digest}"
     )
@@ -875,7 +996,7 @@ def test_install_release_rejects_tampered_existing_snapshot(tmp_path: Path) -> N
     for item in [*target.rglob("*"), target]:
         item.chmod(stat.S_IMODE(item.stat().st_mode) | 0o200)
     (target / "tampered.txt").write_text("tampered\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="not a validated release snapshot"):
+    with pytest.raises(ValueError, match="snapshot name mismatch"):
         install_release(source, releases, current)
     assert (current / "default").resolve() == target
 
@@ -1041,6 +1162,82 @@ def test_runtime_install_rejects_empty_pyenv_prefix_and_missing_python(
         install_runtime(tmp_path / "runtime", "3.12.3")
 
 
+def test_runtime_site_package_and_support_package_edges(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    python = tmp_path / "venv/bin/python"
+    with pytest.raises(ValueError, match="site-packages path is unavailable"):
+        monkeypatch.setattr("atlas.runtime._run_stdout", lambda *args, **kwargs: "")
+        _site_packages(python, {})
+
+    import atlas.runtime as runtime_module
+
+    monkeypatch.setattr(
+        runtime_module,
+        "__file__",
+        str(tmp_path / "missing/src/atlas/runtime.py"),
+    )
+    with pytest.raises(ValueError, match="support package is unavailable"):
+        _install_atlas_core(python, {})
+
+
+def test_runtime_support_package_rejects_existing_destination(tmp_path: Path) -> None:
+    venv = tmp_path / "venv"
+    site_packages = venv / "lib/python3.14/site-packages"
+    (venv / "bin").mkdir(parents=True)
+    site_packages.mkdir(parents=True)
+    (site_packages / "atlas_core").mkdir()
+    with pytest.raises(ValueError, match="destination already exists"):
+        _install_atlas_core(venv / "bin/python", {})
+
+
+def test_runtime_link_target_rejects_traversal_external_and_regular_entries(
+    tmp_path: Path,
+) -> None:
+    environments = tmp_path / "runtime/python/envs"
+    generations = environments / "generations"
+    generations.mkdir(parents=True)
+    active = environments / "scripts"
+    assert _runtime_link_target(active, generations) is None
+
+    active.symlink_to("../outside", target_is_directory=True)
+    with pytest.raises(ValueError, match="path traversal"):
+        _runtime_link_target(active, generations)
+
+    active.unlink()
+    external = tmp_path / "external"
+    external.mkdir()
+    active.symlink_to(external, target_is_directory=True)
+    with pytest.raises(ValueError, match="not a generation"):
+        _runtime_link_target(active, generations)
+
+    active.unlink()
+    active.write_text("not a runtime", encoding="utf-8")
+    with pytest.raises(ValueError, match="must be a directory or symlink"):
+        _runtime_link_target(active, generations)
+
+
+def test_failed_transaction_cleanup_skips_removed_created_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = _release(tmp_path / "source")
+
+    @contextmanager
+    def fail_after_staging(runtime_root, python_version, release_roots, **kwargs):
+        target = next(iter(release_roots))
+        for item in [*target.rglob("*"), target]:
+            item.chmod(stat.S_IMODE(item.stat().st_mode) | 0o200)
+        shutil.rmtree(target)
+        raise RuntimeError("candidate runtime failed")
+        yield  # pragma: no cover - keeps this contextmanager syntactically complete
+
+    monkeypatch.setattr("atlas.releases.prepared_runtime", fail_after_staging)
+    with pytest.raises(RuntimeError, match="candidate runtime failed"):
+        install_release(source, tmp_path / "releases", tmp_path / "current")
+
+
 def test_runtime_install_rolls_back_existing_venv_when_final_rename_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1049,14 +1246,10 @@ def test_runtime_install_rolls_back_existing_venv_when_final_rename_fails(
     scripts = runtime / "python/envs/scripts"
     scripts.mkdir(parents=True)
     (scripts / "old.txt").write_text("old", encoding="utf-8")
-    original_rename = Path.rename
+    def fail_runtime_link(active: Path, target: Path) -> None:
+        raise RuntimeError("rename failed")
 
-    def fail_tmp_scripts_rename(self: Path, target_path: Path):
-        if self.name.startswith("scripts.tmp."):
-            raise RuntimeError("rename failed")
-        return original_rename(self, target_path)
-
-    monkeypatch.setattr(Path, "rename", fail_tmp_scripts_rename)
+    monkeypatch.setattr("atlas.runtime._replace_runtime_link", fail_runtime_link)
     with pytest.raises(RuntimeError, match="rename failed"):
         install_runtime(runtime, "3.12.3")
 
@@ -1068,14 +1261,10 @@ def test_runtime_install_leaves_no_venv_when_final_rename_fails_without_backup(
 ) -> None:
     _fake_runtime(monkeypatch, tmp_path)
     runtime = tmp_path / "runtime"
-    original_rename = Path.rename
+    def fail_runtime_link(active: Path, target: Path) -> None:
+        raise RuntimeError("rename failed")
 
-    def fail_tmp_scripts_rename(self: Path, target_path: Path):
-        if self.name.startswith("scripts.tmp."):
-            raise RuntimeError("rename failed")
-        return original_rename(self, target_path)
-
-    monkeypatch.setattr(Path, "rename", fail_tmp_scripts_rename)
+    monkeypatch.setattr("atlas.runtime._replace_runtime_link", fail_runtime_link)
     with pytest.raises(RuntimeError, match="rename failed"):
         install_runtime(runtime, "3.12.3")
 

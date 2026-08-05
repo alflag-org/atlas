@@ -15,12 +15,13 @@ Atlas supports Python 3.11 through 3.14 on Linux. This guide uses
 Another durable checkout path is valid. Use that same path in release source configuration. Atlas
 reads the checkout but does not pull, reset, or otherwise modify it.
 
-The host needs Git for Git-backed release sources and execution context. ``atlas runtime install``
-also requires ``pyenv`` on ``PATH`` and the operating-system packages needed to build the configured
-Python version. The account running Atlas must be able to write the configured home, configuration,
-and state directories. Runtime execution starts the selected release in a separate child process with
-an exact argument vector and no shell. Atlas preserves stdout, stderr, exit status, timeout handling,
-signal forwarding, execution logs, and parent/child run correlation.
+The host needs Git for Git-backed release sources and execution context. ``atlas release install``,
+``atlas release update``, and ``atlas runtime install`` require ``pyenv`` on ``PATH`` and the
+operating-system packages needed to build the configured Python version. The account running Atlas
+must be able to write the configured home, configuration, and state directories. Runtime execution
+starts the selected release in a separate child process with an exact argument vector and no shell.
+Atlas preserves stdout, stderr, exit status, timeout handling, signal forwarding, execution logs, and
+parent/child run correlation.
 
 Configure an Atlas host
 -----------------------
@@ -111,7 +112,7 @@ The default paths have distinct owners and purposes:
      - Stable launchers and public command shims.
    * - ``/opt/atlas/runtime``
      - Atlas
-     - Shared Python runtime for active releases.
+     - Shared Python runtime for active releases; ``python/envs/scripts`` points to a generation below ``python/envs/generations``.
    * - ``/var/lib/atlas``
      - Atlas
      - Execution records, host-artifact and job locks, and source or build caches.
@@ -131,12 +132,10 @@ transaction uses ``$ATLAS_HOME/releases/.locks/<release>.lock``. The
 .. code-block:: bash
 
    atlas release install /srv/atlas/source/operations
-   atlas runtime install
    atlas release list --verbose
    atlas status
 
    atlas release update
-   atlas runtime install
 
 Atlas validates every requested source, copies it to a staged content-addressed snapshot below
 ``$ATLAS_HOME/releases``, revalidates the staged tree, and then atomically switches the link below
@@ -149,22 +148,23 @@ before importing release code. A per-release lock serializes installs. Host arti
 uses a separate global lock, acquired before release locks; update acquires release locks in sorted
 manifest-name order. Activation rollback restores the previous link only when it still points to the
 failed transaction's target. Atlas does not remove installed snapshots automatically.
-Runtime installation restores the active environment when dependency installation or validation
-fails.
+Candidate runtime publication restores the active generation when dependency installation or release
+validation fails.
 
 ``atlas runtime install`` reads ``requirements.lock`` when a release provides it, otherwise
 ``requirements.txt``. Only manifest commands receive shims below ``/opt/atlas/shims``. Jobs remain
 available through ``atlas job``.
 
-Release installation and update do not require the shared runtime to exist first. If a candidate has
-release requirements and the shared runtime exists, Atlas installs those requirements into that
-runtime before validation. Without a shared runtime, Atlas creates a temporary validation venv with
-Atlas core's installed dependencies visible, installs the candidate requirements, and runs the
-validate-only child against the exact staged snapshot. A dependency-free candidate uses the configured
-shared interpreter when it exists; otherwise Atlas creates the same temporary validation venv. The
-Atlas process is only the venv bootstrap and never imports release code. Run ``atlas runtime install``
-after every install or update to rebuild the shared runtime from the active snapshots, including
-dependencies introduced by the update.
+Release installation and update do not require the shared runtime to exist first. Atlas selects the
+configured ``pyenv`` Python and builds a clean candidate venv without system-site packages. It copies
+the Atlas core support package into that venv, installs PyYAML and the requirements from every intended
+active release, and runs ``pip check``. The validate-only child then imports each target from the exact
+staged snapshot using that candidate runtime. Only after dependency installation, digest checks, and
+callable validation succeed does Atlas publish the candidate runtime generation and switch the requested
+release links; host-artifact publication is part of the same transaction. A failure restores the
+previous runtime, release links, and host artifacts. The Atlas process bootstraps the configured
+interpreter but never imports release code. ``atlas runtime install`` separately rebuilds the runtime
+for the current active snapshots without changing release links.
 
 Write a release manifest
 ------------------------
@@ -341,7 +341,8 @@ The default layout is:
      artifacts/current/shims/
      artifacts/generations/<generation>/
      lib/python -> artifacts/current/python
-     runtime/
+     runtime/python/envs/generations/<generation>/
+     runtime/python/envs/scripts -> generations/<generation>
      releases/<release>/<version>-<content-digest>/
      current/<release> -> ../releases/<release>/<version>-<content-digest>
      releases/.locks/<release>.lock

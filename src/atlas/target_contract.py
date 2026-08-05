@@ -227,18 +227,6 @@ class _ModuleDynamicBindingVisitor(ast.NodeVisitor):
     def __init__(self) -> None:
         self.bindings: list[tuple[str, str, ast.AST]] = []
 
-    def visit_FunctionDef(self, _node: ast.FunctionDef) -> None:
-        return
-
-    def visit_AsyncFunctionDef(self, _node: ast.AsyncFunctionDef) -> None:
-        return
-
-    def visit_ClassDef(self, _node: ast.ClassDef) -> None:
-        return
-
-    def visit_Lambda(self, _node: ast.Lambda) -> None:
-        return
-
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if any(alias.name == "*" for alias in node.names):
             self.bindings.append(("*", "wildcard", node))

@@ -472,6 +472,14 @@ def test_manifest_service_paths_reject_symlink_escape_and_wrong_suffix(
             "dynamic",
             "dynamic binding",
         ),
+        (
+            "nested-wildcard",
+            "wildcard import",
+        ),
+        (
+            "nested-dynamic",
+            "dynamic binding",
+        ),
     ],
 )
 def test_manifest_target_source_and_callable_validation(
@@ -526,6 +534,16 @@ def test_manifest_target_source_and_callable_validation(
             ),
             "dynamic": (
                 "exec('value = 1')\n"
+                "def main(argv):\n    return 0\n"
+            ),
+            "nested-wildcard": (
+                "def helper():\n"
+                "    from dependency import *\n"
+                "def main(argv):\n    return 0\n"
+            ),
+            "nested-dynamic": (
+                "def helper():\n"
+                "    exec('value = 1')\n"
                 "def main(argv):\n    return 0\n"
             ),
         }
@@ -609,7 +627,7 @@ def test_target_contract_edge_helpers(tmp_path: Path) -> None:
     )
     lambda_release = _release(tmp_path / "lambda-release")
     (lambda_release / "modules/sample.py").write_text(
-        "value = lambda: globals()\n"
+        "value = lambda: 1\n"
         "def main(argv: list[str] | None = None) -> int:\n"
         "    return 0\n",
         encoding="utf-8",

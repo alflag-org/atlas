@@ -5,10 +5,11 @@ from __future__ import annotations
 import ast
 import inspect
 import re
+import types
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Union, get_args, get_origin
 
 TARGET_RE = re.compile(
     r"^(?P<module>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*):"
@@ -316,6 +317,16 @@ def validate_callable_source(source: Path, callable_name: str) -> None:
         )
 
 
+def _runtime_annotation_is_int_or_none(annotation: Any) -> bool:
+    if annotation is int or annotation is None or annotation is type(None):
+        return True
+    origin = get_origin(annotation)
+    if origin not in (types.UnionType, Union):
+        return False
+    elements = get_args(annotation)
+    return bool(elements) and all(_runtime_annotation_is_int_or_none(item) for item in elements)
+
+
 def validate_callable_runtime(
     target: Any,
     module_name: str,
@@ -349,7 +360,7 @@ def validate_callable_runtime(
                     f"target callable return annotation must be int or None: "
                     f"{module_name}:{callable_name}"
                 )
-        elif annotation is not int and annotation is not None and annotation is not type(None):
+        elif not _runtime_annotation_is_int_or_none(annotation):
             raise ValueError(
                 f"target callable return annotation must be int or None: "
                 f"{module_name}:{callable_name}"

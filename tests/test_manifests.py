@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import typing
 from pathlib import Path
 from types import ModuleType
 
@@ -737,6 +738,18 @@ def test_runtime_target_contract_and_provenance_edges(
 
     valid_value_annotation.__annotations__["return"] = int
     validate_callable_runtime(valid_value_annotation, "selected", "main")
+
+    def valid_union_annotation(argv):
+        return None
+
+    valid_union_annotation.__annotations__["return"] = int | None
+    validate_callable_runtime(valid_union_annotation, "selected", "main")
+
+    def valid_optional_annotation(argv):
+        return None
+
+    valid_optional_annotation.__annotations__["return"] = typing.Optional[int]  # noqa: UP045
+    validate_callable_runtime(valid_optional_annotation, "selected", "main")
 
     def valid_target(argv):
         return None

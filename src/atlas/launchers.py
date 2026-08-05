@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from .catalog import command_index
 from .files import remove_path
-from .generations import active_generation
+from .generations import _remove_unleased_generation, active_generation
 from .locks import acquire_lock
 from .paths import AtlasPaths
 
@@ -27,10 +27,11 @@ class _LauncherState:
 
 @dataclass(frozen=True)
 class HostArtifactState:
-    """A filesystem snapshot used to roll back one outer publication transaction."""
+    """Mutable host selection state and pre-existing artifact generations."""
 
     backup_root: Path
     entries: tuple[tuple[Path, Path], ...]
+    artifact_generation_names: frozenset[str]
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -82,20 +83,23 @@ def _copy_state_entry(source: Path, destination: Path) -> None:
 
 
 def _artifact_state_paths(paths: AtlasPaths) -> tuple[Path, ...]:
-    legacy_paths = sorted(paths.home.glob(".shims.legacy.*"))
     return (
-        paths.artifact_root,
+        paths.artifact_current,
         paths.home / "lib",
         paths.shims,
         paths.bin_dir / "atlas",
         paths.artifact_runner,
-        *legacy_paths,
+        *_legacy_state_paths(paths),
     )
 
 
 @contextmanager
 def capture_host_artifact_state(paths: AtlasPaths) -> Iterator[HostArtifactState]:
-    """Capture all Atlas-owned host-artifact state before a larger transaction."""
+    """Capture mutable host selection state without copying immutable generations."""
+    generations = paths.artifact_root / "generations"
+    if generations.is_symlink() or not generations.is_dir():
+        raise ValueError(f"artifact generations path must be a directory: {generations}")
+    generation_names = frozenset(path.name for path in generations.iterdir())
     with TemporaryDirectory(prefix="artifact-state.", dir=paths.tmp) as temporary:
         backup_root = Path(temporary)
         entries: list[tuple[Path, Path]] = []
@@ -105,15 +109,26 @@ def capture_host_artifact_state(paths: AtlasPaths) -> Iterator[HostArtifactState
             backup = backup_root / str(index)
             _copy_state_entry(path, backup)
             entries.append((path, backup))
-        yield HostArtifactState(backup_root=backup_root, entries=tuple(entries))
+        yield HostArtifactState(
+            backup_root=backup_root,
+            entries=tuple(entries),
+            artifact_generation_names=generation_names,
+        )
 
 
 def _legacy_state_paths(paths: AtlasPaths) -> tuple[Path, ...]:
-    return tuple(sorted(paths.home.glob(".shims.legacy.*")))
+    return tuple(
+        sorted(
+            [
+                *paths.home.glob(".shims.legacy.*"),
+                *(paths.home / "lib").glob(".python.legacy.*"),
+            ]
+        )
+    )
 
 
 def restore_host_artifact_state(paths: AtlasPaths, state: HostArtifactState) -> None:
-    """Restore a captured host-artifact state without publishing a new generation."""
+    """Restore mutable links and launchers, then clean only new safe candidates."""
     current_paths = {
         path
         for path, _ in state.entries
@@ -124,6 +139,20 @@ def restore_host_artifact_state(paths: AtlasPaths, state: HostArtifactState) -> 
         remove_path(path)
     for path, backup in sorted(state.entries, key=lambda item: len(item[0].parts)):
         _copy_state_entry(backup, path)
+    generations = paths.artifact_root / "generations"
+    if not generations.is_dir() or generations.is_symlink():
+        return
+    for generation in sorted(generations.iterdir()):
+        if generation.name in state.artifact_generation_names or generation.name.startswith("."):
+            continue
+        if generation.is_symlink() or not generation.is_dir():
+            continue
+        _remove_unleased_generation(
+            generations,
+            generation,
+            active_link=paths.artifact_current,
+            label="artifact generation",
+        )
 
 
 def _atlas_launcher_content() -> str:
@@ -326,11 +355,12 @@ def _publish_host_artifacts(paths: AtlasPaths) -> list[str]:
                 _restore_launcher(path, state)
             except BaseException as exc:
                 rollback_error = rollback_error or exc
-        try:
-            remove_path(generation)
-        except OSError:
-            # The unreferenced candidate can be collected on a later pass.
-            pass
+        _remove_unleased_generation(
+            generations,
+            generation,
+            active_link=paths.artifact_current,
+            label="artifact generation",
+        )
         if rollback_error is not None:
             raise RuntimeError("host artifact publication rollback failed") from rollback_error
         raise

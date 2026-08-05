@@ -26,6 +26,7 @@ import atlas_core.generations as artifact_generations_module
 from atlas import cli
 from atlas.catalog import active_releases, release_from_snapshot, resolve_command
 from atlas.execution import (
+    _await_generation_lease_ack,
     _capture_generation_snapshot,
     _selected_executable,
     pinned_execution_selection,
@@ -33,9 +34,12 @@ from atlas.execution import (
 )
 from atlas.generations import (
     _generation_lease,
+    _generation_lease_handoff,
     _leased_names,
+    _remove_unleased_generation,
     active_generation,
     collect_generation_garbage,
+    generation_lease,
 )
 from atlas.launchers import (
     _atomic_write,
@@ -1422,6 +1426,28 @@ def test_generation_lease_rejects_collisions_and_tolerates_cleanup_failure(
     assert (leases / "lease-id.lease").exists()
 
 
+def test_generation_lease_holds_runtime_and_artifact_generations(
+    tmp_path: Path,
+) -> None:
+    runtime_generations = tmp_path / "runtime/generations"
+    artifact_generations = tmp_path / "artifacts/generations"
+    runtime_generation = runtime_generations / "runtime-old"
+    artifact_generation = artifact_generations / "artifact-old"
+    runtime_generation.mkdir(parents=True)
+    artifact_generation.mkdir(parents=True)
+
+    with generation_lease(
+        runtime_generations,
+        runtime_generation,
+        artifact_generations,
+        artifact_generation,
+    ):
+        assert list(runtime_generations.parent.joinpath("leases").glob("*.lease"))
+        assert list(artifact_generations.parent.joinpath("leases").glob("*.lease"))
+    assert not list(runtime_generations.parent.joinpath("leases").glob("*.lease"))
+    assert not list(artifact_generations.parent.joinpath("leases").glob("*.lease"))
+
+
 def test_child_generation_leases_follow_the_execution_environment(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1452,6 +1478,591 @@ def test_child_generation_leases_follow_the_execution_environment(
     with pytest.raises(ValueError, match="both required"):
         with generation_lease_from_environment():
             pass
+
+
+def test_child_generation_lease_handoff_acknowledges_after_both_leases(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_generations = tmp_path / "runtime/generations"
+    artifact_generations = tmp_path / "artifacts/generations"
+    runtime_generation = runtime_generations / "runtime-old"
+    artifact_generation = artifact_generations / "artifact-old"
+    runtime_generation.mkdir(parents=True)
+    artifact_generation.mkdir(parents=True)
+    monkeypatch.setenv("ATLAS_RUNTIME_GENERATION", str(runtime_generation))
+    monkeypatch.setenv("ATLAS_ARTIFACT_GENERATION", str(artifact_generation))
+
+    with _generation_lease_handoff(
+        runtime_generations,
+        runtime_generation,
+        artifact_generations,
+        artifact_generation,
+    ) as handoff:
+        ack_read, ack_write = os.pipe()
+        inherited = (os.dup(handoff.runtime_fd), os.dup(handoff.artifact_fd), os.dup(ack_write))
+        monkeypatch.setenv("ATLAS_LEASE_HANDOFF_RUNTIME_FD", str(inherited[0]))
+        monkeypatch.setenv("ATLAS_LEASE_HANDOFF_ARTIFACT_FD", str(inherited[1]))
+        monkeypatch.setenv("ATLAS_LEASE_HANDOFF_ACK_FD", str(inherited[2]))
+        try:
+            with generation_lease_from_environment():
+                assert os.read(ack_read, 1) == b"1"
+        finally:
+            os.close(ack_read)
+            os.close(ack_write)
+    assert not list((runtime_generations.parent / "leases").glob("*.lease"))
+    assert not list((artifact_generations.parent / "leases").glob("*.lease"))
+
+
+def test_child_generation_lease_handoff_keeps_child_leases_after_acknowledged_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_generations = tmp_path / "runtime/generations"
+    artifact_generations = tmp_path / "artifacts/generations"
+    runtime_generation = runtime_generations / "runtime-old"
+    artifact_generation = artifact_generations / "artifact-old"
+    runtime_generation.mkdir(parents=True)
+    artifact_generation.mkdir(parents=True)
+    monkeypatch.setenv("ATLAS_RUNTIME_GENERATION", str(runtime_generation))
+    monkeypatch.setenv("ATLAS_ARTIFACT_GENERATION", str(artifact_generation))
+
+    with _generation_lease_handoff(
+        runtime_generations,
+        runtime_generation,
+        artifact_generations,
+        artifact_generation,
+    ) as handoff:
+        ack_read, ack_write = os.pipe()
+        inherited = (os.dup(handoff.runtime_fd), os.dup(handoff.artifact_fd), os.dup(ack_write))
+        for key, fd in zip(
+            (
+                "ATLAS_LEASE_HANDOFF_RUNTIME_FD",
+                "ATLAS_LEASE_HANDOFF_ARTIFACT_FD",
+                "ATLAS_LEASE_HANDOFF_ACK_FD",
+            ),
+            inherited,
+            strict=True,
+        ):
+            monkeypatch.setenv(key, str(fd))
+        try:
+            with pytest.raises(RuntimeError, match="child failed"):
+                with generation_lease_from_environment():
+                    assert os.read(ack_read, 1) == b"1"
+                    raise RuntimeError("child failed")
+        finally:
+            os.close(ack_read)
+            os.close(ack_write)
+    assert not list((runtime_generations.parent / "leases").glob("*.lease"))
+    assert not list((artifact_generations.parent / "leases").glob("*.lease"))
+
+
+def test_child_generation_lease_handoff_rejects_incomplete_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_generation = tmp_path / "runtime/generations/runtime-old"
+    artifact_generation = tmp_path / "artifacts/generations/artifact-old"
+    runtime_generation.mkdir(parents=True)
+    artifact_generation.mkdir(parents=True)
+    monkeypatch.setenv("ATLAS_RUNTIME_GENERATION", str(runtime_generation))
+    monkeypatch.setenv("ATLAS_ARTIFACT_GENERATION", str(artifact_generation))
+    monkeypatch.setenv("ATLAS_LEASE_HANDOFF_RUNTIME_FD", "3")
+    with pytest.raises(ValueError, match="handoff variables are all required"):
+        with generation_lease_from_environment():
+            pass
+    assert "ATLAS_LEASE_HANDOFF_RUNTIME_FD" not in os.environ
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        ("not-an-integer", "4", "5"),
+        ("3", "3", "5"),
+        ("2", "4", "5"),
+    ],
+)
+def test_child_generation_lease_handoff_rejects_invalid_descriptor_values(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    values: tuple[str, str, str],
+) -> None:
+    runtime_generation = tmp_path / "runtime/generations/runtime-old"
+    artifact_generation = tmp_path / "artifacts/generations/artifact-old"
+    runtime_generation.mkdir(parents=True)
+    artifact_generation.mkdir(parents=True)
+    monkeypatch.setenv("ATLAS_RUNTIME_GENERATION", str(runtime_generation))
+    monkeypatch.setenv("ATLAS_ARTIFACT_GENERATION", str(artifact_generation))
+    for key, value in zip(
+        (
+            "ATLAS_LEASE_HANDOFF_RUNTIME_FD",
+            "ATLAS_LEASE_HANDOFF_ARTIFACT_FD",
+            "ATLAS_LEASE_HANDOFF_ACK_FD",
+        ),
+        values,
+        strict=True,
+    ):
+        monkeypatch.setenv(key, value)
+
+    with pytest.raises(ValueError, match="descriptors"):
+        with generation_lease_from_environment():
+            pass
+    assert not any(
+        key in os.environ
+        for key in (
+            "ATLAS_LEASE_HANDOFF_RUNTIME_FD",
+            "ATLAS_LEASE_HANDOFF_ARTIFACT_FD",
+            "ATLAS_LEASE_HANDOFF_ACK_FD",
+        )
+    )
+
+
+def test_child_generation_lease_handoff_requires_selections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ATLAS_RUNTIME_GENERATION", raising=False)
+    monkeypatch.delenv("ATLAS_ARTIFACT_GENERATION", raising=False)
+    read_fd, write_fd = os.pipe()
+    inherited = (os.dup(read_fd), os.dup(write_fd), os.dup(read_fd))
+    for key, value in zip(
+        (
+            "ATLAS_LEASE_HANDOFF_RUNTIME_FD",
+            "ATLAS_LEASE_HANDOFF_ARTIFACT_FD",
+            "ATLAS_LEASE_HANDOFF_ACK_FD",
+        ),
+        inherited,
+        strict=True,
+    ):
+        monkeypatch.setenv(key, str(value))
+
+    try:
+        with pytest.raises(ValueError, match="selections are required"):
+            with generation_lease_from_environment():
+                pass
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+    assert not any(
+        key in os.environ
+        for key in (
+            "ATLAS_LEASE_HANDOFF_RUNTIME_FD",
+            "ATLAS_LEASE_HANDOFF_ARTIFACT_FD",
+            "ATLAS_LEASE_HANDOFF_ACK_FD",
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    ["nonregular", "wrong-path", "wrong-content", "ack", "closed", "closed-ack"],
+)
+def test_child_generation_lease_handoff_validates_descriptors_and_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    invalid: str,
+) -> None:
+    runtime_generations = tmp_path / "runtime/generations"
+    artifact_generations = tmp_path / "artifacts/generations"
+    runtime_generation = runtime_generations / "runtime-old"
+    artifact_generation = artifact_generations / "artifact-old"
+    runtime_generation.mkdir(parents=True)
+    artifact_generation.mkdir(parents=True)
+    runtime_selection = runtime_generation
+    extra_fds: list[int] = []
+
+    with _generation_lease_handoff(
+        runtime_generations,
+        runtime_generation,
+        artifact_generations,
+        artifact_generation,
+    ) as handoff:
+        ack_read, ack_write = os.pipe()
+        runtime_fd = artifact_fd = ack_fd = -1
+        try:
+            if invalid == "nonregular":
+                nonregular_read, nonregular_write = os.pipe()
+                extra_fds.extend((nonregular_read, nonregular_write))
+                runtime_fd = os.dup(nonregular_read)
+            elif invalid == "wrong-path":
+                wrong_path = tmp_path / "not-a-lease"
+                wrong_path.write_text("runtime-old\n", encoding="utf-8")
+                wrong_descriptor = os.open(wrong_path, os.O_RDWR)
+                extra_fds.append(wrong_descriptor)
+                runtime_fd = os.dup(wrong_descriptor)
+            elif invalid == "wrong-content":
+                runtime_selection = runtime_generations / "runtime-new"
+                runtime_selection.mkdir()
+                runtime_fd = os.dup(handoff.runtime_fd)
+            elif invalid == "ack":
+                ack_path = tmp_path / "ack-file"
+                ack_descriptor = os.open(ack_path, os.O_RDWR | os.O_CREAT, 0o600)
+                extra_fds.append(ack_descriptor)
+                ack_fd = os.dup(ack_descriptor)
+            else:
+                runtime_fd = os.dup(handoff.runtime_fd)
+            if runtime_fd < 0:
+                runtime_fd = os.dup(handoff.runtime_fd)
+            if artifact_fd < 0:
+                artifact_fd = os.dup(handoff.artifact_fd)
+            if ack_fd < 0:
+                ack_fd = os.dup(ack_write)
+            if invalid == "closed":
+                os.close(runtime_fd)
+            elif invalid == "closed-ack":
+                os.close(ack_fd)
+            for key, fd in (
+                ("ATLAS_LEASE_HANDOFF_RUNTIME_FD", runtime_fd),
+                ("ATLAS_LEASE_HANDOFF_ARTIFACT_FD", artifact_fd),
+                ("ATLAS_LEASE_HANDOFF_ACK_FD", ack_fd),
+            ):
+                monkeypatch.setenv(key, str(fd))
+            monkeypatch.setenv("ATLAS_RUNTIME_GENERATION", str(runtime_selection))
+            monkeypatch.setenv("ATLAS_ARTIFACT_GENERATION", str(artifact_generation))
+            with pytest.raises(ValueError):
+                with generation_lease_from_environment():
+                    pass
+            if invalid not in {"ack", "closed-ack"}:
+                assert os.read(ack_read, 1) == b"0"
+        finally:
+            os.close(ack_read)
+            os.close(ack_write)
+            for fd in extra_fds:
+                os.close(fd)
+    assert not list((runtime_generations.parent / "leases").glob("*.lease"))
+    assert not list((artifact_generations.parent / "leases").glob("*.lease"))
+
+
+@pytest.mark.parametrize("operation", ["readlink", "pread"])
+def test_child_generation_lease_handoff_rejects_descriptor_io_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    runtime_generations = tmp_path / "runtime/generations"
+    artifact_generations = tmp_path / "artifacts/generations"
+    runtime_generation = runtime_generations / "runtime-old"
+    artifact_generation = artifact_generations / "artifact-old"
+    runtime_generation.mkdir(parents=True)
+    artifact_generation.mkdir(parents=True)
+    monkeypatch.setattr(
+        f"atlas_core.generations.os.{operation}",
+        lambda *args: (_ for _ in ()).throw(OSError(f"{operation} failed")),
+    )
+
+    with _generation_lease_handoff(
+        runtime_generations,
+        runtime_generation,
+        artifact_generations,
+        artifact_generation,
+    ) as handoff:
+        ack_read, ack_write = os.pipe()
+        inherited = (os.dup(handoff.runtime_fd), os.dup(handoff.artifact_fd), os.dup(ack_write))
+        for key, fd in zip(
+            (
+                "ATLAS_LEASE_HANDOFF_RUNTIME_FD",
+                "ATLAS_LEASE_HANDOFF_ARTIFACT_FD",
+                "ATLAS_LEASE_HANDOFF_ACK_FD",
+            ),
+            inherited,
+            strict=True,
+        ):
+            monkeypatch.setenv(key, str(fd))
+        try:
+            monkeypatch.setenv("ATLAS_RUNTIME_GENERATION", str(runtime_generation))
+            monkeypatch.setenv("ATLAS_ARTIFACT_GENERATION", str(artifact_generation))
+            with pytest.raises(ValueError, match="handoff descriptor"):
+                with generation_lease_from_environment():
+                    pass
+            assert os.read(ack_read, 1) == b"0"
+        finally:
+            os.close(ack_read)
+            os.close(ack_write)
+    assert not list((runtime_generations.parent / "leases").glob("*.lease"))
+    assert not list((artifact_generations.parent / "leases").glob("*.lease"))
+
+
+def test_child_generation_lease_handoff_ignores_closed_ack_reader(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_generations = tmp_path / "runtime/generations"
+    artifact_generations = tmp_path / "artifacts/generations"
+    runtime_generation = runtime_generations / "runtime-old"
+    artifact_generation = artifact_generations / "artifact-old"
+    runtime_generation.mkdir(parents=True)
+    artifact_generation.mkdir(parents=True)
+    monkeypatch.setenv("ATLAS_RUNTIME_GENERATION", str(runtime_generation))
+    monkeypatch.setenv("ATLAS_ARTIFACT_GENERATION", str(artifact_generation))
+
+    with _generation_lease_handoff(
+        runtime_generations,
+        runtime_generation,
+        artifact_generations,
+        artifact_generation,
+    ) as handoff:
+        ack_read, ack_write = os.pipe()
+        os.close(ack_read)
+        inherited = (os.dup(handoff.runtime_fd), os.dup(handoff.artifact_fd), os.dup(ack_write))
+        for key, fd in zip(
+            (
+                "ATLAS_LEASE_HANDOFF_RUNTIME_FD",
+                "ATLAS_LEASE_HANDOFF_ARTIFACT_FD",
+                "ATLAS_LEASE_HANDOFF_ACK_FD",
+            ),
+            inherited,
+            strict=True,
+        ):
+            monkeypatch.setenv(key, str(fd))
+        try:
+            with generation_lease_from_environment():
+                assert list((runtime_generations.parent / "leases").glob("*.lease"))
+        finally:
+            os.close(ack_write)
+    assert not list((runtime_generations.parent / "leases").glob("*.lease"))
+    assert not list((artifact_generations.parent / "leases").glob("*.lease"))
+
+
+def test_child_generation_lease_handoff_requires_matching_parent_leases(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_generations = tmp_path / "runtime/generations"
+    artifact_generations = tmp_path / "artifacts/generations"
+    runtime_generation = runtime_generations / "runtime-old"
+    artifact_generation = artifact_generations / "artifact-old"
+    runtime_generation.mkdir(parents=True)
+    artifact_generation.mkdir(parents=True)
+    monkeypatch.setenv("ATLAS_RUNTIME_GENERATION", str(runtime_generation))
+    monkeypatch.setenv("ATLAS_ARTIFACT_GENERATION", str(artifact_generation))
+
+    with _generation_lease(runtime_generations, runtime_generation, "runtime-lease") as runtime_fd:
+        with _generation_lease(
+            artifact_generations,
+            artifact_generation,
+            "artifact-lease",
+        ) as artifact_fd:
+            ack_read, ack_write = os.pipe()
+            inherited = (os.dup(runtime_fd), os.dup(artifact_fd), os.dup(ack_write))
+            for key, fd in zip(
+                (
+                    "ATLAS_LEASE_HANDOFF_RUNTIME_FD",
+                    "ATLAS_LEASE_HANDOFF_ARTIFACT_FD",
+                    "ATLAS_LEASE_HANDOFF_ACK_FD",
+                ),
+                inherited,
+                strict=True,
+            ):
+                monkeypatch.setenv(key, str(fd))
+            try:
+                with pytest.raises(ValueError, match="do not match"):
+                    with generation_lease_from_environment():
+                        pass
+                assert os.read(ack_read, 1) == b"0"
+            finally:
+                os.close(ack_read)
+                os.close(ack_write)
+    assert not list((runtime_generations.parent / "leases").glob("*.lease"))
+    assert not list((artifact_generations.parent / "leases").glob("*.lease"))
+
+
+def test_child_generation_lease_handoff_rejects_invalid_lease_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_generations = tmp_path / "runtime/generations"
+    artifact_generations = tmp_path / "artifacts/generations"
+    runtime_generation = runtime_generations / "runtime-old"
+    artifact_generation = artifact_generations / "artifact-old"
+    runtime_generation.mkdir(parents=True)
+    artifact_generation.mkdir(parents=True)
+    monkeypatch.setenv("ATLAS_RUNTIME_GENERATION", str(runtime_generation))
+    monkeypatch.setenv("ATLAS_ARTIFACT_GENERATION", str(artifact_generation))
+
+    with _generation_lease_handoff(
+        runtime_generations,
+        runtime_generation,
+        artifact_generations,
+        artifact_generation,
+    ) as handoff:
+        ack_read, ack_write = os.pipe()
+        inherited = (os.dup(handoff.runtime_fd), os.dup(handoff.artifact_fd), os.dup(ack_write))
+        for key, fd in zip(
+            (
+                "ATLAS_LEASE_HANDOFF_RUNTIME_FD",
+                "ATLAS_LEASE_HANDOFF_ARTIFACT_FD",
+                "ATLAS_LEASE_HANDOFF_ACK_FD",
+            ),
+            inherited,
+            strict=True,
+        ):
+            monkeypatch.setenv(key, str(fd))
+        leases = runtime_generations.parent / "leases"
+        moved_leases = runtime_generations.parent / "leases.moved"
+        leases.rename(moved_leases)
+        leases.write_text("not a directory", encoding="utf-8")
+        try:
+            with pytest.raises(ValueError, match="leases path is invalid"):
+                with generation_lease_from_environment():
+                    pass
+            assert os.read(ack_read, 1) == b"0"
+        finally:
+            leases.unlink()
+            moved_leases.rename(leases)
+            os.close(ack_read)
+            os.close(ack_write)
+    assert not list((runtime_generations.parent / "leases").glob("*.lease"))
+    assert not list((artifact_generations.parent / "leases").glob("*.lease"))
+
+
+def test_parent_generation_lease_handoff_timeout_cleans_parent_leases(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_generations = tmp_path / "runtime/generations"
+    artifact_generations = tmp_path / "artifacts/generations"
+    runtime_generation = runtime_generations / "runtime-old"
+    artifact_generation = artifact_generations / "artifact-old"
+    runtime_generation.mkdir(parents=True)
+    artifact_generation.mkdir(parents=True)
+    terminated: list[object] = []
+    monkeypatch.setattr("atlas.execution.select.select", lambda *args: ([], [], []))
+    monkeypatch.setattr(
+        "atlas.execution._terminate_process_group",
+        lambda process: terminated.append(process),
+    )
+
+    class Child:
+        pass
+
+    child = Child()
+    with pytest.raises(ValueError, match="did not acknowledge"):
+        with _generation_lease_handoff(
+            runtime_generations,
+            runtime_generation,
+            artifact_generations,
+            artifact_generation,
+        ):
+            ack_read, ack_write = os.pipe()
+            try:
+                _await_generation_lease_ack(child, ack_read)
+            finally:
+                os.close(ack_read)
+                os.close(ack_write)
+    assert terminated == [child]
+    assert not list((runtime_generations.parent / "leases").glob("*.lease"))
+    assert not list((artifact_generations.parent / "leases").glob("*.lease"))
+
+
+def test_child_generation_lease_handoff_cleans_partial_child_leases(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_generations = tmp_path / "runtime/generations"
+    artifact_generations = tmp_path / "artifacts/generations"
+    runtime_generation = runtime_generations / "runtime-old"
+    artifact_generation = artifact_generations / "artifact-old"
+    runtime_generation.mkdir(parents=True)
+    artifact_generation.mkdir(parents=True)
+    monkeypatch.setenv("ATLAS_RUNTIME_GENERATION", str(runtime_generation))
+    monkeypatch.setenv("ATLAS_ARTIFACT_GENERATION", str(artifact_generation))
+    original_open = artifact_generations_module.os.open
+    artifact_leases = artifact_generations.parent / "leases"
+
+    def fail_artifact_lease(path, *args, **kwargs):
+        if Path(path).parent == artifact_leases:
+            raise OSError("artifact lease failed")
+        return original_open(path, *args, **kwargs)
+
+    with _generation_lease_handoff(
+        runtime_generations,
+        runtime_generation,
+        artifact_generations,
+        artifact_generation,
+    ) as handoff:
+        ack_read, ack_write = os.pipe()
+        inherited = (os.dup(handoff.runtime_fd), os.dup(handoff.artifact_fd), os.dup(ack_write))
+        for key, fd in zip(
+            (
+                "ATLAS_LEASE_HANDOFF_RUNTIME_FD",
+                "ATLAS_LEASE_HANDOFF_ARTIFACT_FD",
+                "ATLAS_LEASE_HANDOFF_ACK_FD",
+            ),
+            inherited,
+            strict=True,
+        ):
+            monkeypatch.setenv(key, str(fd))
+        monkeypatch.setattr(artifact_generations_module.os, "open", fail_artifact_lease)
+        try:
+            with pytest.raises(ValueError, match="generation lease must be a regular file"):
+                with generation_lease_from_environment():
+                    pass
+            assert os.read(ack_read, 1) == b"0"
+            assert len(list((runtime_generations.parent / "leases").glob("*.lease"))) == 1
+            assert len(list(artifact_leases.glob("*.lease"))) == 1
+        finally:
+            os.close(ack_read)
+            os.close(ack_write)
+    assert not list((runtime_generations.parent / "leases").glob("*.lease"))
+    assert not list(artifact_leases.glob("*.lease"))
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        ("rejected", "rejected generation lease handoff"),
+        ("select", "release child lease handoff failed"),
+        ("read", "release child lease handoff failed"),
+    ],
+)
+def test_parent_generation_lease_handoff_failure_cleans_parent_leases(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: str,
+    message: str,
+) -> None:
+    runtime_generations = tmp_path / "runtime/generations"
+    artifact_generations = tmp_path / "artifacts/generations"
+    runtime_generation = runtime_generations / "runtime-old"
+    artifact_generation = artifact_generations / "artifact-old"
+    runtime_generation.mkdir(parents=True)
+    artifact_generation.mkdir(parents=True)
+    terminated: list[object] = []
+    monkeypatch.setattr(
+        "atlas.execution._terminate_process_group",
+        lambda process: terminated.append(process),
+    )
+
+    class Child:
+        pass
+
+    child = Child()
+    ack_read, ack_write = os.pipe()
+    try:
+        if failure == "rejected":
+            os.write(ack_write, b"0")
+        elif failure == "select":
+            monkeypatch.setattr(
+                "atlas.execution.select.select",
+                lambda *args: (_ for _ in ()).throw(OSError("select failed")),
+            )
+        else:
+            monkeypatch.setattr("atlas.execution.select.select", lambda *args: ([args[0][0]], [], []))
+            monkeypatch.setattr(
+                "atlas.execution.os.read",
+                lambda *args: (_ for _ in ()).throw(OSError("read failed")),
+            )
+        with pytest.raises(ValueError, match=message):
+            with _generation_lease_handoff(
+                runtime_generations,
+                runtime_generation,
+                artifact_generations,
+                artifact_generation,
+            ):
+                _await_generation_lease_ack(child, ack_read)
+    finally:
+        os.close(ack_read)
+        os.close(ack_write)
+    assert terminated == [child]
+    assert not list((runtime_generations.parent / "leases").glob("*.lease"))
+    assert not list((artifact_generations.parent / "leases").glob("*.lease"))
 
 
 def test_child_generation_leases_fail_closed_and_preserve_lease_files(
@@ -1580,6 +2191,91 @@ def test_generation_helpers_fail_closed_on_invalid_roots_targets_and_lease_files
     assert names == set()
     assert safe is False
 
+
+def test_remove_unleased_generation_is_lease_aware_and_candidate_scoped(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    generations = tmp_path / "generations"
+    generations.mkdir()
+    active = generations / "active"
+    active.mkdir()
+    active_link = tmp_path / "current"
+    active_link.symlink_to(Path("generations/active"), target_is_directory=True)
+    candidate = generations / "candidate"
+    candidate.mkdir()
+    assert (
+        _remove_unleased_generation(
+            generations,
+            candidate,
+            active_link=active_link,
+            label="artifact",
+        )
+        is True
+    )
+    assert not candidate.exists()
+    assert _remove_unleased_generation(
+        generations,
+        candidate,
+        active_link=active_link,
+        label="artifact",
+    ) is True
+    assert _remove_unleased_generation(
+        generations,
+        active,
+        active_link=active_link,
+        label="artifact",
+    ) is False
+
+    held = generations / "held"
+    held.mkdir()
+    with _generation_lease(generations, held, "held"):
+        assert _remove_unleased_generation(generations, held, label="artifact") is False
+    assert held.is_dir()
+
+    unsafe = generations / "unsafe"
+    unsafe.mkdir()
+    leases = generations.parent / "leases"
+    (leases / "unrelated").write_text("not a lease", encoding="utf-8")
+    assert _remove_unleased_generation(generations, unsafe, label="artifact") is False
+    (leases / "unrelated").unlink()
+
+    stale = generations / "stale"
+    stale.mkdir()
+    preexisting_lease = leases / "preexisting.lease"
+    preexisting_lease.write_text("old\n", encoding="utf-8")
+    assert _remove_unleased_generation(generations, stale, label="artifact") is False
+    assert stale.is_dir()
+    assert preexisting_lease.read_text(encoding="utf-8") == "old\n"
+    preexisting_lease.unlink()
+
+    cleanup_failure = generations / "cleanup-failure"
+    cleanup_failure.mkdir()
+    original_remove = __import__("atlas.launchers").launchers.remove_path
+    monkeypatch.setattr(
+        generations_module,
+        "remove_path",
+        lambda path: (
+            (_ for _ in ()).throw(OSError("cleanup failed"))
+            if path == cleanup_failure
+            else original_remove(path)
+        ),
+    )
+    assert _remove_unleased_generation(generations, cleanup_failure, label="artifact") is False
+    assert cleanup_failure.is_dir()
+
+    invalid_root = tmp_path / "invalid-root"
+    invalid_root.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(ValueError, match="generations path must be a directory"):
+        _remove_unleased_generation(invalid_root, cleanup_failure, label="artifact")
+    invalid_target = tmp_path / "invalid-target"
+    invalid_target.mkdir()
+    with pytest.raises(ValueError, match="not a generation"):
+        _remove_unleased_generation(generations, invalid_target, label="artifact")
+    nested = generations / "nested"
+    nested.mkdir()
+    with pytest.raises(ValueError, match="not a generation"):
+        _remove_unleased_generation(generations, nested / "..", label="artifact")
 
 def test_generation_gc_marks_lease_cleanup_failure_unsafe(
     monkeypatch: pytest.MonkeyPatch,
@@ -2213,14 +2909,14 @@ def test_host_artifact_publication_leaves_candidate_when_cleanup_fails(
     _set_env(monkeypatch, home, etc, var)
     paths = get_paths()
     ensure_dirs(paths)
-    original_remove = __import__("atlas.launchers").launchers.remove_path
+    original_remove = generations_module.remove_path
 
     def fail_candidate_cleanup(path: Path) -> None:
         if path.parent == paths.artifact_root / "generations" and not path.name.startswith("."):
             raise OSError("candidate cleanup failed")
         original_remove(path)
 
-    monkeypatch.setattr("atlas.launchers.remove_path", fail_candidate_cleanup)
+    monkeypatch.setattr(generations_module, "remove_path", fail_candidate_cleanup)
     monkeypatch.setattr(
         "atlas.launchers._atomic_write",
         lambda *args, **kwargs: (_ for _ in ()).throw(OSError("launcher write failed")),

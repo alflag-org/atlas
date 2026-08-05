@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import select
 import shlex
 import signal
 import stat
@@ -25,7 +26,7 @@ from .catalog import (
     resolve_command,
     resolve_command_from_release,
 )
-from .generations import collect_generation_garbage, generation_lease
+from .generations import _generation_lease_handoff, collect_generation_garbage
 from .launchers import active_artifact_generation
 from .locks import acquire_lock
 from .paths import AtlasPaths
@@ -35,6 +36,12 @@ _SENSITIVE_TOKENS = ("password", "token", "secret", "key")
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TIMEOUT_EXIT_CODE = 124
 _TERMINATE_GRACE_SECONDS = 5
+_LEASE_HANDOFF_TIMEOUT_SECONDS = 5
+_LEASE_HANDOFF_ENVIRONMENT_KEYS = (
+    "ATLAS_LEASE_HANDOFF_RUNTIME_FD",
+    "ATLAS_LEASE_HANDOFF_ARTIFACT_FD",
+    "ATLAS_LEASE_HANDOFF_ACK_FD",
+)
 
 
 @dataclass(frozen=True)
@@ -178,6 +185,8 @@ def _environment(
     artifact_generation: Path | None = None,
 ) -> dict[str, str]:
     env = os.environ.copy()
+    for key in _LEASE_HANDOFF_ENVIRONMENT_KEYS:
+        env.pop(key, None)
     for path in environment_files:
         env.update(_parse_environment_file(path))
     for name in tuple(env):
@@ -343,6 +352,26 @@ def _terminate_process_group(process: subprocess.Popen[str]) -> None:
         process.wait()
 
 
+def _await_generation_lease_ack(process: subprocess.Popen[str], ack_fd: int) -> None:
+    """Wait until the child owns both generations before releasing parent leases."""
+    try:
+        ready, _, _ = select.select([ack_fd], [], [], _LEASE_HANDOFF_TIMEOUT_SECONDS)
+    except OSError as exc:
+        _terminate_process_group(process)
+        raise ValueError("release child lease handoff failed") from exc
+    if not ready:
+        _terminate_process_group(process)
+        raise ValueError("release child did not acknowledge generation leases")
+    try:
+        acknowledged = os.read(ack_fd, 1) == b"1"
+    except OSError as exc:
+        _terminate_process_group(process)
+        raise ValueError("release child lease handoff failed") from exc
+    if not acknowledged:
+        _terminate_process_group(process)
+        raise ValueError("release child rejected generation lease handoff")
+
+
 @contextmanager
 def _forward_termination_signal(process: subprocess.Popen[str]) -> Iterator[None]:
     previous_handler = signal.getsignal(signal.SIGTERM)
@@ -455,24 +484,43 @@ def execute(
                 file=sys.stderr,
             )
             spawn_contexts.enter_context(_lock_context(paths, lock))
-            spawn_contexts.enter_context(
-                generation_lease(
-                    snapshot.runtime_generation.parent,
-                    snapshot.runtime_generation,
-                    snapshot.artifact_generation.parent,
-                    snapshot.artifact_generation,
-                )
-            )
-            try:
-                process = subprocess.Popen(
-                    command,
-                    cwd=working_directory,
-                    env=env,
-                    text=True,
-                    start_new_session=True,
-                )
-            except FileNotFoundError as exc:
-                raise ValueError(f"runtime executable not found: {paths.runtime_python}") from exc
+            with _generation_lease_handoff(
+                snapshot.runtime_generation.parent,
+                snapshot.runtime_generation,
+                snapshot.artifact_generation.parent,
+                snapshot.artifact_generation,
+            ) as handoff:
+                ack_read = ack_write = -1
+                try:
+                    ack_read, ack_write = os.pipe2(os.O_CLOEXEC)
+                    env.update(
+                        {
+                            "ATLAS_LEASE_HANDOFF_RUNTIME_FD": str(handoff.runtime_fd),
+                            "ATLAS_LEASE_HANDOFF_ARTIFACT_FD": str(handoff.artifact_fd),
+                            "ATLAS_LEASE_HANDOFF_ACK_FD": str(ack_write),
+                        }
+                    )
+                    try:
+                        process = subprocess.Popen(
+                            command,
+                            cwd=working_directory,
+                            env=env,
+                            text=True,
+                            start_new_session=True,
+                            pass_fds=(handoff.runtime_fd, handoff.artifact_fd, ack_write),
+                        )
+                    except FileNotFoundError as exc:
+                        raise ValueError(
+                            f"runtime executable not found: {paths.runtime_python}"
+                        ) from exc
+                    os.close(ack_write)
+                    ack_write = -1
+                    _await_generation_lease_ack(process, ack_read)
+                finally:
+                    if ack_write >= 0:
+                        os.close(ack_write)
+                    if ack_read >= 0:
+                        os.close(ack_read)
 
         assert process is not None
         with _forward_termination_signal(process):

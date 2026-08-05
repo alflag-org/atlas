@@ -6,10 +6,19 @@ import fcntl
 import os
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
 from .files import remove_path
+
+
+@dataclass(frozen=True)
+class _GenerationLeaseHandoff:
+    """Parent lease descriptors inherited until a release child is ready."""
+
+    runtime_fd: int
+    artifact_fd: int
 
 
 def active_generation(link: Path, generations: Path, *, label: str) -> Path:
@@ -43,7 +52,7 @@ def _generation_lease(
     generations: Path,
     generation: Path,
     lease_id: str,
-) -> Iterator[None]:
+) -> Iterator[int]:
     if generations.is_symlink() or not generations.is_dir():
         raise ValueError(f"generation path must be a directory: {generations}")
     if (
@@ -70,7 +79,7 @@ def _generation_lease(
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         handle.write(generation.name + "\n")
         handle.flush()
-        yield
+        yield handle.fileno()
     finally:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
@@ -81,6 +90,25 @@ def _generation_lease(
             except OSError:
                 # A stale lease is safer than deleting a generation still in use.
                 pass
+
+
+@contextmanager
+def _generation_lease_handoff(
+    runtime_generations: Path,
+    runtime_generation: Path,
+    artifact_generations: Path,
+    artifact_generation: Path,
+) -> Iterator[_GenerationLeaseHandoff]:
+    """Keep parent leases open while a child acquires its own leases."""
+    lease_id = uuid4().hex
+    with ExitStack() as leases:
+        runtime_fd = leases.enter_context(
+            _generation_lease(runtime_generations, runtime_generation, lease_id)
+        )
+        artifact_fd = leases.enter_context(
+            _generation_lease(artifact_generations, artifact_generation, lease_id)
+        )
+        yield _GenerationLeaseHandoff(runtime_fd, artifact_fd)
 
 
 @contextmanager
@@ -98,7 +126,11 @@ def generation_lease(
         yield
 
 
-def _leased_names(generations: Path) -> tuple[set[str], bool]:
+def _leased_names(
+    generations: Path,
+    *,
+    remove_stale: bool = True,
+) -> tuple[set[str], bool]:
     leases = _lease_root(generations)
     if not leases.exists():
         return set(), True
@@ -136,15 +168,53 @@ def _leased_names(generations: Path) -> tuple[set[str], bool]:
                 continue
             handle.seek(0)
             if handle.readline().strip():
-                try:
-                    remove_path(path)
-                except OSError:
+                if not remove_stale:
                     safe_to_collect = False
+                else:
+                    try:
+                        remove_path(path)
+                    except OSError:
+                        safe_to_collect = False
             else:
                 safe_to_collect = False
         finally:
             handle.close()
     return names, safe_to_collect
+
+
+def _remove_unleased_generation(
+    generations: Path,
+    generation: Path,
+    *,
+    active_link: Path | None = None,
+    label: str,
+) -> bool:
+    """Remove one transaction candidate only when its lease state is safe."""
+    if generations.is_symlink() or not generations.is_dir():
+        raise ValueError(f"{label} generations path must be a directory: {generations}")
+    if not generation.exists() and not generation.is_symlink():
+        return True
+    if (
+        generation.is_symlink()
+        or not generation.is_dir()
+        or generation.parent != generations
+        or generation.parent.resolve() != generations.resolve()
+    ):
+        raise ValueError(f"{label} cleanup target is not a generation: {generation}")
+    if active_link is not None and (active_link.exists() or active_link.is_symlink()):
+        if active_generation(active_link, generations, label=label) == generation.resolve():
+            return False
+    # Rollback must not mutate lease state that existed before this transaction.
+    # A later normal GC pass can remove unlocked stale lease files.
+    leased, safe_to_collect = _leased_names(generations, remove_stale=False)
+    if not safe_to_collect or generation.name in leased:
+        return False
+    try:
+        remove_path(generation)
+    except OSError:
+        # A failed cleanup leaves the candidate for a later lease-aware pass.
+        return False
+    return not generation.exists()
 
 
 def collect_generation_garbage(

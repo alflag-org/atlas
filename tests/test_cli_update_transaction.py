@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
 import sys
+import time
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -112,20 +114,20 @@ def _host_artifact_state(home: Path):
     return tuple((path.relative_to(home).as_posix(), _path_state(path)) for path in paths)
 
 
-def _fail_once_on_late_launcher_write(monkeypatch: pytest.MonkeyPatch) -> None:
+def _fail_once_on_late_launcher_write(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     import atlas.launchers as launchers
 
     original = launchers._atomic_write
-    writes = 0
+    writes = [0]
 
     def fail_late(path: Path, content: str) -> None:
-        nonlocal writes
-        writes += 1
-        if writes == 2:
+        writes[0] += 1
+        if writes[0] == 2:
             raise OSError("late launcher write")
         original(path, content)
 
     monkeypatch.setattr(launchers, "_atomic_write", fail_late)
+    return writes
 
 
 def test_release_update_rolls_back_all_target_releases_on_collision(
@@ -378,9 +380,10 @@ def test_release_install_late_artifact_failure_restores_fresh_host_exactly(
     ensure_dirs(paths)
     before = _host_artifact_state(home)
     source = _write_release(tmp_path / "source", "sample", "0.1.0", "sample-show")
-    _fail_once_on_late_launcher_write(monkeypatch)
+    writes = _fail_once_on_late_launcher_write(monkeypatch)
 
     assert main(["release", "install", str(source)]) == 2
+    assert writes == [2]
 
     assert _host_artifact_state(home) == before
     assert not (home / "current/sample").exists()
@@ -408,14 +411,105 @@ def test_release_install_late_artifact_failure_restores_populated_host_exactly(
     old_target = (home / "current/sample").resolve()
     old_runtime = (home / "runtime/python/envs/scripts").resolve()
     new_source = _write_release(tmp_path / "new", "sample", "0.2.0", "sample-show")
-    _fail_once_on_late_launcher_write(monkeypatch)
+    writes = _fail_once_on_late_launcher_write(monkeypatch)
 
     assert main(["release", "install", str(new_source)]) == 2
+    assert writes == [2]
 
     assert _host_artifact_state(home) == before
     assert (home / "current/sample").resolve() == old_target
     assert (home / "runtime/python/envs/scripts").resolve() == old_runtime
     assert not list((home / "releases/sample").glob("0.2.0-*"))
+
+
+def test_late_artifact_failure_preserves_an_in_flight_child_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    etc.mkdir(parents=True)
+    _set_env(monkeypatch, home, etc, var)
+    old_source = _write_release(tmp_path / "old", "sample", "0.1.0", "sample-show")
+    (old_source / "modules/nested.py").write_text(
+        "from pathlib import Path\n"
+        "import os\n"
+        "def main(argv=None):\n"
+        "    Path(os.environ['ATLAS_VAR_DIR'], 'nested-work').write_text('done')\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    (old_source / "release.yml").write_text(
+        "schema: atlas.release/v1\n"
+        "name: sample\n"
+        "commands:\n"
+        "  sample-show:\n"
+        "    target: sample_show:main\n"
+        "  nested:\n"
+        "    target: nested:main\n",
+        encoding="utf-8",
+    )
+    (old_source / "modules/sample_show.py").write_text(
+        "import os\n"
+        "import subprocess\n"
+        "import time\n"
+        "from pathlib import Path\n"
+        "def main(argv=None):\n"
+        "    var = Path(os.environ['ATLAS_VAR_DIR'])\n"
+        "    (var / 'rollback-child-ready').write_text('ready')\n"
+        "    while not (var / 'rollback-child-continue').exists():\n"
+        "        time.sleep(0.01)\n"
+        "    return subprocess.run(['nested'], check=False).returncode\n",
+        encoding="utf-8",
+    )
+    assert main(["release", "install", str(old_source)]) == 0
+    old_artifacts = (home / "artifacts/current").resolve()
+    runner = (
+        "from atlas.catalog import resolve_command\n"
+        "from atlas.execution import execute\n"
+        "from atlas.paths import get_paths\n"
+        "paths = get_paths()\n"
+        "command = resolve_command(paths.current_root, paths.releases_root, 'sample-show')\n"
+        "raise SystemExit(execute(paths, command, []))\n"
+    )
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = os.environ.copy()
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        [str(repo_root / "src"), str(repo_root / "operations/modules")]
+    )
+    child = subprocess.Popen(
+        [sys.executable, "-c", runner],
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        ready = var / "rollback-child-ready"
+        deadline = time.monotonic() + 10
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists()
+        assert list((home / "artifacts/leases").glob("*.lease"))
+
+        new_source = _write_release(tmp_path / "new", "sample", "0.2.0", "sample-show")
+        writes = _fail_once_on_late_launcher_write(monkeypatch)
+        assert main(["release", "install", str(new_source)]) == 2
+        assert writes == [2]
+
+        assert old_artifacts.is_dir()
+        assert (home / "artifacts/current").resolve() == old_artifacts
+        assert list((home / "artifacts/leases").glob("*.lease"))
+        (var / "rollback-child-continue").write_text("continue", encoding="utf-8")
+        stdout, stderr = child.communicate(timeout=10)
+        assert child.returncode == 0, stderr
+        assert stdout == ""
+        assert (var / "nested-work").read_text(encoding="utf-8") == "done"
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.communicate(timeout=5)
 
 
 def test_release_install_final_validation_failure_preserves_previous_state(

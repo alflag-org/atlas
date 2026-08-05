@@ -54,6 +54,12 @@ def _all_logs(paths) -> list[dict[str, object]]:
     ]
 
 
+def _acknowledge_fake_child(kwargs: dict[str, object]) -> None:
+    env = kwargs["env"]
+    assert isinstance(env, dict)
+    os.write(int(env["ATLAS_LEASE_HANDOFF_ACK_FD"]), b"1")
+
+
 def test_execute_sets_environment_and_logs_correlation(
     atlas_paths,
     release_factory,
@@ -380,6 +386,122 @@ def test_child_owned_leases_survive_a_hard_killed_atlas_parent(
     assert new_artifacts.is_dir()
 
 
+def test_handoff_leases_survive_parent_kill_before_child_lease_acquisition(
+    atlas_paths,
+    release_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = release_factory(name="handoff")
+    module = source / "modules/sample_show_entry.py"
+    module.write_text(
+        "from pathlib import Path\n"
+        "import os\n"
+        "def main(argv=None):\n"
+        "    Path(os.environ['ATLAS_VAR_DIR'], 'handoff-done').write_text('done')\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    _activate(atlas_paths, source)
+    publish_host_artifacts(atlas_paths)
+    old_runtime = (atlas_paths.runtime / "python/envs/scripts").resolve()
+    old_artifacts = atlas_paths.artifact_current.resolve()
+
+    ready = atlas_paths.var / "handoff-wrapper-ready"
+    proceed = atlas_paths.var / "handoff-wrapper-proceed"
+    monkeypatch.setenv("ATLAS_HANDOFF_WRAPPER_READY", str(ready))
+    monkeypatch.setenv("ATLAS_HANDOFF_WRAPPER_PROCEED", str(proceed))
+    runtime_python = old_runtime / "bin/python"
+    runtime_python.unlink()
+    runtime_python.write_text(
+        f"#!{sys.executable}\n"
+        "import os\n"
+        "import sys\n"
+        "import time\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['ATLAS_HANDOFF_WRAPPER_READY']).write_text('ready')\n"
+        "while not Path(os.environ['ATLAS_HANDOFF_WRAPPER_PROCEED']).exists():\n"
+        "    time.sleep(0.01)\n"
+        "os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n",
+        encoding="utf-8",
+    )
+    runtime_python.chmod(0o755)
+
+    runner = (
+        "from atlas.catalog import resolve_command\n"
+        "from atlas.execution import execute\n"
+        "from atlas.paths import get_paths\n"
+        "paths = get_paths()\n"
+        "command = resolve_command(paths.current_root, paths.releases_root, 'sample-show')\n"
+        "raise SystemExit(execute(paths, command, []))\n"
+    )
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = os.environ.copy()
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        [str(repo_root / "src"), str(repo_root / "operations/modules")]
+    )
+    parent_process = subprocess.Popen(
+        [sys.executable, "-c", runner],
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists()
+        parent_process.kill()
+        parent_process.wait(timeout=5)
+
+        replacement = release_factory(name="handoff", version="2.0.0")
+        replacement_module = replacement / "modules/sample_show_entry.py"
+        replacement_module.write_text(module.read_text(encoding="utf-8"), encoding="utf-8")
+        _activate(atlas_paths, replacement)
+        publish_host_artifacts(atlas_paths)
+        new_runtime = (atlas_paths.runtime / "python/envs/scripts").resolve()
+        new_artifacts = atlas_paths.artifact_current.resolve()
+
+        collect_generation_garbage(
+            old_runtime.parent,
+            atlas_paths.runtime / "python/envs/scripts",
+            label="runtime generation",
+        )
+        collect_generation_garbage(
+            old_artifacts.parent,
+            atlas_paths.artifact_current,
+            label="artifact generation",
+        )
+        assert old_runtime.is_dir()
+        assert old_artifacts.is_dir()
+
+        proceed.write_text("proceed", encoding="utf-8")
+        stdout, stderr = parent_process.communicate(timeout=10)
+        assert parent_process.returncode == 0, stderr
+        assert stdout == ""
+        assert (atlas_paths.var / "handoff-done").read_text(encoding="utf-8") == "done"
+
+        collect_generation_garbage(
+            old_runtime.parent,
+            atlas_paths.runtime / "python/envs/scripts",
+            label="runtime generation",
+        )
+        collect_generation_garbage(
+            old_artifacts.parent,
+            atlas_paths.artifact_current,
+            label="artifact generation",
+        )
+        assert not old_runtime.exists()
+        assert not old_artifacts.exists()
+        assert new_runtime.is_dir()
+        assert new_artifacts.is_dir()
+    finally:
+        if parent_process.poll() is None:
+            parent_process.kill()
+        proceed.write_text("proceed", encoding="utf-8")
+        parent_process.communicate(timeout=5)
+
+
 def test_executed_snapshot_stays_unchanged_and_digest_stable(
     atlas_paths,
     release_factory,
@@ -465,6 +587,7 @@ def test_execute_orders_path_and_preserves_caller_environment(
     def fake_popen(command, **kwargs):
         captured["command"] = command
         captured.update(kwargs)
+        _acknowledge_fake_child(kwargs)
         return Finished()
 
     monkeypatch.setattr(
@@ -1091,7 +1214,11 @@ def test_execute_timeout_records_base_process_semantics(
         def poll(self):
             return 0
 
-    monkeypatch.setattr("atlas.execution.subprocess.Popen", lambda *args, **kwargs: TimedOut())
+    def fake_popen(*args, **kwargs):
+        _acknowledge_fake_child(kwargs)
+        return TimedOut()
+
+    monkeypatch.setattr("atlas.execution.subprocess.Popen", fake_popen)
     monkeypatch.setattr(
         "atlas.execution.git_context",
         lambda cwd: {
@@ -1123,10 +1250,11 @@ def test_execute_logs_and_reraises_keyboard_interrupt(
         def poll(self):
             return 0
 
-    monkeypatch.setattr(
-        "atlas.execution.subprocess.Popen",
-        lambda *args, **kwargs: Interrupted(),
-    )
+    def fake_popen(*args, **kwargs):
+        _acknowledge_fake_child(kwargs)
+        return Interrupted()
+
+    monkeypatch.setattr("atlas.execution.subprocess.Popen", fake_popen)
     monkeypatch.setattr(
         "atlas.execution.git_context",
         lambda cwd: {

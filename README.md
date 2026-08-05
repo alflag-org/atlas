@@ -89,16 +89,19 @@ intended active release, and runs `pip check`. Candidate pip calls use an isolat
 explicit PyPI input, and no ambient pip configuration or `PIP_*` settings. It validates the exact staged
 snapshots with that candidate before publishing the runtime generation and switching release links.
 Host artifacts are published under the same transaction; a failed dependency install, callable
-validation, or artifact publication restores the previous runtime, releases, artifacts, and stable
-launcher bytes. The parent Atlas process only bootstraps the configured interpreter and never imports
-release code. `atlas runtime install` can be used to rebuild the runtime for the currently active
+validation, or artifact publication restores the previous runtime, release links, mutable artifact
+selection links, and stable launcher bytes. Only transaction-created artifact candidates are removed,
+and only when their lease state is safe; pre-existing generations and lease files are never part of
+rollback. The parent Atlas process only bootstraps the configured interpreter and never imports release
+code. `atlas runtime install` can be used to rebuild the runtime for the currently active
 snapshots; it validates every command and job with the candidate Python before switching the runtime
 link and does not change release links.
 
 Runtime and host-artifact generations are immutable after publication. The active links select one
 concrete generation, and each release child captures both selections before it starts and owns the
-leases until it exits. Prior generations are retained while a child holds a lease, so a lazy import
-cannot lose its dependencies during a release replacement or a hard-killed waiting Atlas parent.
+leases until it exits. Parent lease descriptors are handed across exec and retained until the child
+acknowledges its own leases. Prior generations are retained while a child holds a lease, so a lazy
+import cannot lose its dependencies during a release replacement or a hard-killed waiting Atlas parent.
 Nested private jobs inherit the parent release snapshot and generation selections. After the child
 exits Atlas performs lease-aware best-effort garbage collection; a failed cleanup leaves that
 generation for a later pass and does not change the active state.

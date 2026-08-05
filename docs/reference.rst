@@ -145,9 +145,11 @@ Atlas validates every requested source, copies it to a staged content-addressed 
 ``$ATLAS_HOME/current``. Installed snapshots are never replaced, so a running child keeps its
 selected tree while a later install activates a new snapshot. Runtime and host-artifact generations
 are also never replaced. A child captures concrete runtime and artifact generation paths before
-spawning, and the release child holds leases on both until it exits. The child-owned leases keep
-in-flight generations protected even if the waiting Atlas parent is hard-killed. Nested private jobs
-inherit the parent release snapshot and generation paths instead of resolving current links again.
+spawning. Parent lease descriptors cross exec and remain open until the release child has acquired
+both child-owned leases and acknowledged readiness; the child then holds its leases until it exits.
+This handoff keeps in-flight generations protected even if the waiting Atlas parent is hard-killed.
+Nested private jobs inherit the parent release snapshot and generation paths instead of resolving
+current links again.
 Snapshot modes are read-only after staging for the normal runtime path, and the child forces
 ``PYTHONDONTWRITEBYTECODE=1``. The
 runtime account can still change its own modes; this is a release-selection correctness boundary,
@@ -158,8 +160,10 @@ manifest-name order. Activation rollback restores the previous link only when it
 failed transaction's target. Command and job execution takes that global lock while resolving and
 spawning, then releases it while the leased child runs. Candidate ownership transfers to the active
 link only after activation succeeds; previous generations remain available until lease-aware garbage
-collection. Garbage collection runs after child completion, is best-effort, and leaves a generation
-in place when cleanup fails. Atlas does not remove installed release snapshots automatically.
+collection. Rollback restores mutable selection links and stable launchers without copying or deleting
+pre-existing generations or lease state, and cleans only candidates created by the failed transaction
+when they are unleased. Garbage collection runs after child completion, is best-effort, and leaves a
+generation in place when cleanup fails. Atlas does not remove installed release snapshots automatically.
 Candidate runtime publication restores the active generation when dependency installation or release
 validation fails, and host-artifact publication restores the previous generation and stable launchers
 if a later publication step fails.

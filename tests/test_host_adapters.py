@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
-import signal
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -35,14 +34,11 @@ from atlas_host_operations.subprocesses import (
     ChildResult,
     RecordingRunner,
     SubprocessRunner,
-    _groups_alive,
-    _parent_death_preexec,
-    _process_groups_for_tree,
-    _signal_process_groups,
-    _terminate_process_group,
     _timeout_text,
 )
 from atlas_operations.child import atlas_executable, job_argv
+
+from atlas_process_supervisor import ContainmentUnavailable
 
 from .test_host_operations_support import make_host_fixture
 
@@ -667,149 +663,117 @@ def test_subprocess_timeout_kills_a_separate_descendant_group(tmp_path: Path) ->
     assert not completed.exists()
 
 
-def test_subprocess_helpers_cover_platform_proc_and_timeout_edges(
+def test_subprocess_runner_fails_closed_when_containment_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr("atlas_host_operations.subprocesses.sys.platform", "darwin")
-    assert _parent_death_preexec() is None
-
-    monkeypatch.setattr("atlas_host_operations.subprocesses.sys.platform", "linux")
-    import ctypes
-
-    class Libc:
-        def __init__(self, result: int):
-            self.result = result
-
-        def prctl(self, *args):
-            return self.result
-
-    monkeypatch.setattr("atlas_host_operations.subprocesses.os.getppid", os.getpid)
-    monkeypatch.setattr(ctypes, "CDLL", lambda _: Libc(0))
-    hook = _parent_death_preexec()
-    assert callable(hook)
-    hook()
-
-    exits: list[int] = []
-    monkeypatch.setattr(ctypes, "CDLL", lambda _: Libc(1))
-    monkeypatch.setattr("atlas_host_operations.subprocesses.os._exit", exits.append)
-    hook = _parent_death_preexec()
-    assert callable(hook)
-    hook()
-    assert exits == [127]
-
-    killed: list[tuple[int, int]] = []
-    monkeypatch.setattr(ctypes, "CDLL", lambda _: Libc(0))
-    monkeypatch.setattr("atlas_host_operations.subprocesses.os.getppid", lambda: -1)
     monkeypatch.setattr(
-        "atlas_host_operations.subprocesses.os.kill",
-        lambda pid, signum: killed.append((pid, signum)),
+        "atlas_host_operations.subprocesses.spawn_contained",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            ContainmentUnavailable("delegation unavailable")
+        ),
     )
-    hook = _parent_death_preexec()
-    assert callable(hook)
-    hook()
-    assert killed == [(os.getpid(), signal.SIGTERM)]
+
+    result = SubprocessRunner().run([sys.executable, "-c", "print('must not run')"])
+
+    assert result.return_code == 125
+    assert "delegation unavailable" in result.stderr
+
+
+def test_subprocess_runner_handles_launch_timeout_and_cleanup_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Process:
+        returncode = None
+        calls = 0
+
+        def communicate(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise subprocess.TimeoutExpired("command", kwargs["timeout"], output=b"out", stderr=b"err")
+            return b"out", b"err"
+
+    class FailingTerminate:
+        process = Process()
+
+        def terminate(self):
+            raise ContainmentUnavailable("cannot terminate")
+
+        def cleanup(self):
+            raise ContainmentUnavailable("cannot cleanup after terminate")
 
     monkeypatch.setattr(
-        Path,
-        "iterdir",
-        lambda self: (_ for _ in ()).throw(OSError("/proc unavailable")),
+        "atlas_host_operations.subprocesses.spawn_contained",
+        lambda *args, **kwargs: FailingTerminate(),
     )
-    assert _process_groups_for_tree(99) == ({99}, False)
+    failed_termination = SubprocessRunner().run(["command"], timeout_seconds=1)
+    assert failed_termination.return_code == 125
+    assert failed_termination.timed_out
+    assert failed_termination.stdout == "out"
 
-    numeric = tmp_path / "123"
-    invalid = tmp_path / "124"
-    numeric.mkdir()
-    invalid.mkdir()
-    (numeric / "stat").write_text("invalid", encoding="utf-8")
-    (invalid / "stat").write_text("invalid", encoding="utf-8")
-    original_read_text = Path.read_text
+    class FailingCleanup:
+        process = Process()
 
-    def fail_one_stat(path: Path, *args, **kwargs):
-        if path == invalid / "stat":
-            raise OSError("stat disappeared")
-        return original_read_text(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", fail_one_stat)
-    monkeypatch.setattr(Path, "iterdir", lambda self: [Path("not-a-pid"), numeric, invalid])
-    assert _process_groups_for_tree(123) == ({123}, False)
-
-    monkeypatch.setattr(
-        "atlas_host_operations.subprocesses.os.killpg",
-        lambda pid, signum: (_ for _ in ()).throw(ProcessLookupError),
-    )
-    _signal_process_groups({123}, signal.SIGTERM)
-    assert _groups_alive({123}) is False
-    monkeypatch.setattr(
-        "atlas_host_operations.subprocesses.os.killpg",
-        lambda pid, signum: None,
-    )
-    assert _groups_alive({123}) is True
-
-    class Finished:
-        pid = 10
-
-        def poll(self):
-            return 0
-
-    _terminate_process_group(Finished())
-
-    signals: list[int] = []
-
-    class NeedsKill:
-        pid = 11
-        waits = 0
-
-        def poll(self):
+        def terminate(self):
             return None
 
-        def wait(self, timeout=None):
-            self.waits += 1
-            if self.waits == 1:
-                raise subprocess.TimeoutExpired("child", timeout)
-            return 0
-
-    process = NeedsKill()
-    monkeypatch.setattr(
-        "atlas_host_operations.subprocesses._process_groups_for_tree",
-        lambda pid: ({11}, False),
-    )
-    monkeypatch.setattr(
-        "atlas_host_operations.subprocesses.os.killpg",
-        lambda pid, signum: signals.append(signum),
-    )
-    _terminate_process_group(process)
-    assert signals == [signal.SIGTERM, signal.SIGKILL]
-    assert process.waits == 2
-
-    descendant_signals: list[int] = []
-    sleeps: list[float] = []
-
-    class ExitedParent:
-        pid = 12
-        alive = True
-
-        def poll(self):
-            return None if self.alive else 0
-
-        def wait(self, timeout=None):
-            self.alive = False
-            return 0
+        def cleanup(self):
+            raise ContainmentUnavailable("cannot cleanup")
 
     monkeypatch.setattr(
-        "atlas_host_operations.subprocesses._process_groups_for_tree",
-        lambda pid: ({12, 13}, True),
+        "atlas_host_operations.subprocesses.spawn_contained",
+        lambda *args, **kwargs: FailingCleanup(),
     )
+    failed_cleanup = SubprocessRunner().run(["command"], timeout_seconds=1)
+    assert failed_cleanup.return_code == 125
+    assert failed_cleanup.timed_out
+    assert failed_cleanup.stderr.endswith("cannot cleanup")
+
+
+def test_subprocess_runner_handles_missing_launch_and_normal_cleanup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(
-        "atlas_host_operations.subprocesses._groups_alive",
-        lambda groups: True,
+        "atlas_host_operations.subprocesses.spawn_contained",
+        lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError("missing")),
     )
+    missing = SubprocessRunner().run(["missing-command"])
+    assert missing.return_code == 127
+
+    class Process:
+        returncode = 0
+
+        def communicate(self, **kwargs):
+            return "out", "err"
+
+    class FailingCleanup:
+        process = Process()
+
+        def cleanup(self):
+            raise ContainmentUnavailable("cannot cleanup")
+
     monkeypatch.setattr(
-        "atlas_host_operations.subprocesses._signal_process_groups",
-        lambda groups, signum: descendant_signals.append(signum),
+        "atlas_host_operations.subprocesses.spawn_contained",
+        lambda *args, **kwargs: FailingCleanup(),
     )
-    monkeypatch.setattr("atlas_host_operations.subprocesses.time.sleep", sleeps.append)
-    _terminate_process_group(ExitedParent())
-    assert sleeps == [5]
-    assert descendant_signals == [signal.SIGTERM, signal.SIGKILL]
+    failed_cleanup = SubprocessRunner().run(["command"])
+    assert failed_cleanup.return_code == 125
+    assert failed_cleanup.stdout == "out"
     assert _timeout_text(None) == ""
+
+
+def test_threaded_controller_child_launches_do_not_use_preexec_deadlock(
+    tmp_path: Path,
+) -> None:
+    def run_one(index: int) -> ChildResult:
+        return SubprocessRunner().run(
+            [sys.executable, "-c", f"print('thread-{index}')"],
+            cwd=tmp_path,
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(run_one, range(8)))
+
+    assert [result.return_code for result in results] == [0] * 8
+    assert [result.stdout.strip() for result in results] == [
+        f"thread-{index}" for index in range(8)
+    ]

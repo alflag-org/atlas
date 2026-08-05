@@ -91,6 +91,7 @@ def make_release(
         (unit_root / f"{service}.service").write_text(
             "[Unit]\nDescription=Sample\n"
             "[Service]\nUser=ops\n"
+            "Delegate=yes\n"
             "ExecStart=/opt/atlas/bin/atlas job instance run sample-instance\n",
             encoding="utf-8",
         )

@@ -97,6 +97,11 @@ class SystemdAdapter:
                         f"stable Atlas launcher: {source}"
                     )
                 self._validate_exec_start(service, text, exec_start[0], source)
+                if "Delegate=yes" not in lines:
+                    raise ValueError(
+                        "systemd service must enable Delegate=yes for child containment: "
+                        f"{source}"
+                    )
                 if "/releases/" in text:
                     raise ValueError(
                         f"systemd service contains a versioned release path: {source}"

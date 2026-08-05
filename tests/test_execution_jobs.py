@@ -18,11 +18,7 @@ from atlas.errors import LockUnavailableError
 from atlas.execution import (
     _append_run_log,
     _forward_termination_signal,
-    _groups_alive,
-    _parent_death_preexec,
-    _process_groups_for_tree,
     _pythonpath,
-    _terminate_process_group,
     execute,
     git_context,
     redact_args,
@@ -35,7 +31,8 @@ from atlas.launchers import (
     regenerate_shims,
 )
 from atlas.locks import acquire_lock
-from atlas.releases import install_release
+from atlas.releases import install_release, release_digest
+from atlas_process_supervisor import ContainmentUnavailable
 
 
 def _activate(paths, source: Path) -> None:
@@ -73,7 +70,7 @@ def test_execute_sets_environment_and_logs_correlation(
     monkeypatch.setenv("ATLAS_RUN_ID", "parent-run")
     monkeypatch.setenv("ATLAS_OPERATION_ID", "root-operation")
     monkeypatch.setenv("PYTHONPATH", "/existing")
-    command = resolve_command(atlas_paths.current_root, "sample-show")
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
     atlas_paths.var.mkdir(parents=True)
 
     assert execute(
@@ -102,7 +99,7 @@ def test_execute_sets_environment_and_logs_correlation(
 def test_execute_root_run_has_own_operation_id(atlas_paths, release_factory) -> None:
     source = release_factory()
     _activate(atlas_paths, source)
-    command = resolve_command(atlas_paths.current_root, "sample-show")
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
 
     assert execute(atlas_paths, command, []) == 0
 
@@ -132,14 +129,18 @@ def test_reinstall_same_version_keeps_running_snapshot_and_correlates_digest(
         encoding="utf-8",
     )
     _activate(atlas_paths, source)
-    old_command = resolve_command(atlas_paths.current_root, "sample-show")
+    old_command = resolve_command(
+        atlas_paths.current_root,
+        atlas_paths.releases_root,
+        "sample-show",
+    )
     atlas_paths.var.mkdir(parents=True)
     runner = (
         "from atlas.catalog import resolve_command\n"
         "from atlas.execution import execute\n"
         "from atlas.paths import get_paths\n"
         "paths = get_paths()\n"
-        "command = resolve_command(paths.current_root, 'sample-show')\n"
+        "command = resolve_command(paths.current_root, paths.releases_root, 'sample-show')\n"
         "raise SystemExit(execute(paths, command, []))\n"
     )
     repo_root = Path(__file__).resolve().parents[1]
@@ -175,7 +176,7 @@ def test_reinstall_same_version_keeps_running_snapshot_and_correlates_digest(
         atlas_paths.releases_root,
         atlas_paths.current_root,
     )
-    new_command = resolve_command(atlas_paths.current_root, "sample-show")
+    new_command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
     assert new_target != old_command.release.root
     assert new_command.release.root == new_target
     assert execute(atlas_paths, new_command, []) == 0
@@ -203,6 +204,44 @@ def test_reinstall_same_version_keeps_running_snapshot_and_correlates_digest(
     }
 
 
+def test_executed_snapshot_stays_immutable_and_digest_stable(
+    atlas_paths,
+    release_factory,
+) -> None:
+    source = release_factory(name="immutable")
+    target = install_release(source, atlas_paths.releases_root, atlas_paths.current_root)
+    before = {
+        item.relative_to(target): (item.read_bytes(), item.stat().st_mode & 0o777)
+        for item in target.rglob("*")
+        if item.is_file()
+    }
+    command = resolve_command(
+        atlas_paths.current_root,
+        atlas_paths.releases_root,
+        "sample-show",
+    )
+
+    assert execute(atlas_paths, command, []) == 0
+
+    after = {
+        item.relative_to(target): (item.read_bytes(), item.stat().st_mode & 0o777)
+        for item in target.rglob("*")
+        if item.is_file()
+    }
+    assert after == before
+    assert not any(item.name == "__pycache__" for item in target.rglob("*"))
+    assert release_digest(target) == target.name.rsplit("-", 1)[1]
+    assert release_digest(target) == command.release.content_digest
+    assert _last_log(atlas_paths)["release_digest"] == command.release.content_digest
+
+    assert install_release(source, atlas_paths.releases_root, atlas_paths.current_root) == target
+    assert {
+        item.relative_to(target): (item.read_bytes(), item.stat().st_mode & 0o777)
+        for item in target.rglob("*")
+        if item.is_file()
+    } == before
+
+
 def test_execute_handles_empty_caller_path(
     atlas_paths,
     release_factory,
@@ -212,8 +251,32 @@ def test_execute_handles_empty_caller_path(
     _activate(atlas_paths, source)
     monkeypatch.delenv("PATH", raising=False)
     monkeypatch.delenv("PYTHONPATH", raising=False)
-    command = resolve_command(atlas_paths.current_root, "sample-show")
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
     assert execute(atlas_paths, command, []) == 0
+
+
+def test_execute_containment_failure_is_logged_and_releases_lock(
+    atlas_paths,
+    release_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = release_factory()
+    _activate(atlas_paths, source)
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
+    monkeypatch.setattr(
+        "atlas.execution.spawn_contained",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            ContainmentUnavailable("delegation unavailable")
+        ),
+    )
+
+    assert execute(atlas_paths, command, [], lock="sample-run") == 125
+    record = _last_log(atlas_paths)
+    assert record["exit_code"] == 125
+    assert record["containment"] == "cgroup-v2"
+    assert record["containment_error"] == "delegation unavailable"
+    with acquire_lock(atlas_paths.locks, "sample-run"):
+        pass
 
 
 def test_execute_orders_path_and_preserves_caller_environment(
@@ -247,10 +310,19 @@ def test_execute_orders_path_and_preserves_caller_environment(
         def poll(self):
             return 0
 
-    def fake_popen(command, **kwargs):
+    class FakeContained:
+        process = Finished()
+
+        def terminate(self, **kwargs):
+            return None
+
+        def cleanup(self):
+            return None
+
+    def fake_spawn(command, **kwargs):
         captured["command"] = command
         captured.update(kwargs)
-        return Finished()
+        return FakeContained()
 
     monkeypatch.setattr(
         "atlas.execution.git_context",
@@ -261,8 +333,8 @@ def test_execute_orders_path_and_preserves_caller_environment(
             "git_branch": None,
         },
     )
-    monkeypatch.setattr("atlas.execution.subprocess.Popen", fake_popen)
-    command = resolve_command(atlas_paths.current_root, "sample-show")
+    monkeypatch.setattr("atlas.execution.spawn_contained", fake_spawn)
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
 
     assert execute(
         atlas_paths,
@@ -298,8 +370,8 @@ def test_execute_orders_path_and_preserves_caller_environment(
         "ATLAS_SCRIPTS_CURRENT_DIR",
     ):
         assert legacy_name not in env
-    assert captured["start_new_session"] is True
-    assert captured["text"] is True
+    assert captured["python_executable"] == atlas_paths.runtime_python
+    assert captured["supervisor_path"] == atlas_paths.process_supervisor
 
 
 @pytest.mark.parametrize(
@@ -445,9 +517,19 @@ def test_direct_job_inherits_cwd_and_passthrough(
     with pytest.raises(ValueError, match="unknown release"):
         list_jobs(atlas_paths, "missing")
     with pytest.raises(ValueError, match="unknown release"):
-        resolve_job(atlas_paths.current_root, "missing", "collect")
+        resolve_job(
+            atlas_paths.current_root,
+            atlas_paths.releases_root,
+            "missing",
+            "collect",
+        )
     with pytest.raises(ValueError, match="unknown job"):
-        resolve_job(atlas_paths.current_root, "worker", "missing")
+        resolve_job(
+            atlas_paths.current_root,
+            atlas_paths.releases_root,
+            "worker",
+            "missing",
+        )
 
 
 def test_job_instance_uses_job_default_timeout(
@@ -601,7 +683,12 @@ def test_job_instance_directory_and_symlink_fail_closed(atlas_paths, tmp_path: P
 def test_environment_file_validation(atlas_paths, release_factory, tmp_path: Path) -> None:
     source = release_factory(name="worker", commands=(), jobs=("collect",))
     _activate(atlas_paths, source)
-    job = resolve_job(atlas_paths.current_root, "worker", "collect")
+    job = resolve_job(
+        atlas_paths.current_root,
+        atlas_paths.releases_root,
+        "worker",
+        "collect",
+    )
     with pytest.raises(ValueError, match="must be absolute"):
         execute(atlas_paths, job, [], environment_files=(Path("relative"),))
     with pytest.raises(ValueError, match="not found"):
@@ -691,7 +778,12 @@ def test_execute_timeout_terminates_process_group(
         encoding="utf-8",
     )
     _activate(atlas_paths, source)
-    job = resolve_job(atlas_paths.current_root, "worker", "slow-job")
+    job = resolve_job(
+        atlas_paths.current_root,
+        atlas_paths.releases_root,
+        "worker",
+        "slow-job",
+    )
     started = time.monotonic()
 
     assert execute(atlas_paths, job, [], timeout_seconds=1) == 124
@@ -713,7 +805,7 @@ def test_execute_normalizes_signal_exit(atlas_paths, release_factory) -> None:
         encoding="utf-8",
     )
     _activate(atlas_paths, source)
-    command = resolve_command(atlas_paths.current_root, "signal-stop")
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "signal-stop")
     assert execute(atlas_paths, command, []) == 128 + signal.SIGTERM
 
 
@@ -724,7 +816,7 @@ def test_execute_validates_runtime_cwd_and_timeout(
 ) -> None:
     source = release_factory()
     _activate(atlas_paths, source)
-    command = resolve_command(atlas_paths.current_root, "sample-show")
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
     with pytest.raises(ValueError, match="working directory not found"):
         execute(atlas_paths, command, [], cwd=tmp_path / "missing")
     with pytest.raises(ValueError, match="timeout must be a positive"):
@@ -741,6 +833,18 @@ def test_execute_validates_runtime_cwd_and_timeout(
         execute(atlas_paths, command, [])
 
 
+def test_execute_requires_process_supervisor(
+    atlas_paths,
+    release_factory,
+) -> None:
+    source = release_factory()
+    _activate(atlas_paths, source)
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
+    atlas_paths.process_supervisor.unlink()
+    with pytest.raises(ValueError, match="process supervisor not found"):
+        execute(atlas_paths, command, [])
+
+
 def test_pythonpath_omits_a_missing_selected_modules_root(
     atlas_paths,
     release_factory,
@@ -748,7 +852,7 @@ def test_pythonpath_omits_a_missing_selected_modules_root(
 ) -> None:
     source = release_factory()
     _activate(atlas_paths, source)
-    command = resolve_command(atlas_paths.current_root, "sample-show")
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
     missing_release = replace(
         command.release,
         root=tmp_path / "missing-release",
@@ -766,7 +870,7 @@ def test_execute_reports_popen_missing_after_precheck(
 ) -> None:
     source = release_factory()
     _activate(atlas_paths, source)
-    command = resolve_command(atlas_paths.current_root, "sample-show")
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
 
     def missing(*args, **kwargs):
         raise FileNotFoundError("gone")
@@ -776,271 +880,81 @@ def test_execute_reports_popen_missing_after_precheck(
         execute(atlas_paths, command, [])
 
 
-def test_process_group_termination_edges(monkeypatch: pytest.MonkeyPatch) -> None:
-    class Finished:
-        pid = 10
-
-        def poll(self):
-            return 0
-
-    _terminate_process_group(Finished())
-
-    class Running:
-        pid = 11
-
-        def poll(self):
-            return None
-
-        def wait(self, timeout=None):
-            return 0
-
-    monkeypatch.setattr(
-        "atlas.execution.os.killpg",
-        lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError),
-    )
-    _terminate_process_group(Running())
-
-    signals: list[int] = []
-
-    class NeedsKill:
-        pid = 12
-        waits = 0
-
-        def poll(self):
-            return None
-
-        def wait(self, timeout=None):
-            self.waits += 1
-            if self.waits == 1:
-                raise subprocess.TimeoutExpired("child", timeout)
-            return 0
-
-    process = NeedsKill()
-
-    def kill_then_missing(pid, sig):
-        signals.append(sig)
-        if sig == signal.SIGKILL:
-            raise ProcessLookupError
-
-    monkeypatch.setattr("atlas.execution.os.killpg", kill_then_missing)
-    _terminate_process_group(process)
-    assert signals == [signal.SIGTERM, signal.SIGKILL]
-
-    signals.clear()
-    process = NeedsKill()
-    monkeypatch.setattr("atlas.execution.os.killpg", lambda pid, sig: signals.append(sig))
-    _terminate_process_group(process)
-    assert signals == [signal.SIGTERM, signal.SIGKILL]
-    assert process.waits == 2
-
-
-def test_process_group_helpers_cover_platform_and_proc_failure_paths(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setattr("atlas.execution.sys.platform", "darwin")
-    assert _parent_death_preexec() is None
-
-    monkeypatch.setattr("atlas.execution.sys.platform", "linux")
-    import ctypes
-
-    class Libc:
-        def __init__(self, result: int):
-            self.result = result
-
-        def prctl(self, *args):
-            return self.result
-
-    monkeypatch.setattr("atlas.execution.os.getppid", os.getpid)
-    monkeypatch.setattr(ctypes, "CDLL", lambda _: Libc(0))
-    hook = _parent_death_preexec()
-    assert callable(hook)
-    hook()
-
-    exits: list[int] = []
-    monkeypatch.setattr(ctypes, "CDLL", lambda _: Libc(1))
-    monkeypatch.setattr("atlas.execution.os._exit", exits.append)
-    hook = _parent_death_preexec()
-    assert callable(hook)
-    hook()
-    assert exits == [127]
-
-    killed: list[tuple[int, int]] = []
-    monkeypatch.setattr(ctypes, "CDLL", lambda _: Libc(0))
-    monkeypatch.setattr("atlas.execution.os.getppid", lambda: -1)
-    monkeypatch.setattr("atlas.execution.os.kill", lambda pid, signum: killed.append((pid, signum)))
-    hook = _parent_death_preexec()
-    assert callable(hook)
-    hook()
-    assert killed == [(os.getpid(), signal.SIGTERM)]
-
-    monkeypatch.setattr(
-        Path,
-        "iterdir",
-        lambda self: (_ for _ in ()).throw(OSError("/proc unavailable")),
-    )
-    assert _process_groups_for_tree(99) == ({99}, False)
-
-    numeric = tmp_path / "123"
-    invalid = tmp_path / "124"
-    numeric.mkdir()
-    invalid.mkdir()
-    (numeric / "stat").write_text("invalid", encoding="utf-8")
-    (invalid / "stat").write_text("invalid", encoding="utf-8")
-    original_read_text = Path.read_text
-
-    def fail_one_stat(path: Path, *args, **kwargs):
-        if path == invalid / "stat":
-            raise OSError("stat disappeared")
-        return original_read_text(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", fail_one_stat)
-    monkeypatch.setattr(Path, "iterdir", lambda self: [Path("not-a-pid"), numeric, invalid])
-    assert _process_groups_for_tree(123) == ({123}, False)
-
-    monkeypatch.setattr(
-        "atlas.execution.os.killpg",
-        lambda pid, signum: (_ for _ in ()).throw(ProcessLookupError),
-    )
-    assert _groups_alive({123}) is False
-    monkeypatch.setattr("atlas.execution.os.killpg", lambda pid, signum: None)
-    assert _groups_alive({123}) is True
-
-    class Running:
-        pid = 125
-
-        def poll(self):
-            return None
-
-        def wait(self, timeout=None):
-            return None
-
-    monkeypatch.setattr("atlas.execution._process_groups_for_tree", lambda pid: ({125}, False))
-    monkeypatch.setattr(
-        "atlas.execution._signal_process_groups",
-        lambda groups, signum: (_ for _ in ()).throw(ProcessLookupError),
-    )
-    _terminate_process_group(Running())
-
-
-def test_process_group_termination_handles_descendants_after_parent_exit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    signals: list[int] = []
-    sleeps: list[float] = []
-
-    class ExitedParent:
-        pid = 33
-        waits = 0
-        alive = True
-
-        def poll(self):
-            return None if self.alive else 0
-
-        def wait(self, timeout=None):
-            self.waits += 1
-            self.alive = False
-            return 0
-
-    process = ExitedParent()
-    monkeypatch.setattr("atlas.execution._process_groups_for_tree", lambda pid: ({33, 44}, True))
-    monkeypatch.setattr("atlas.execution._groups_alive", lambda groups: True)
-    monkeypatch.setattr("atlas.execution._signal_process_groups", lambda groups, signum: signals.append(signum))
-    monkeypatch.setattr("atlas.execution.time.sleep", sleeps.append)
-    _terminate_process_group(process)
-    assert sleeps == [5]
-    assert signals == [signal.SIGTERM, signal.SIGKILL]
-
-    signals.clear()
-    sleeps.clear()
-
-    class AlreadyExitedParent:
-        pid = 34
-
-        def poll(self):
-            return 0
-
-        def wait(self, timeout=None):
-            return 0
-
-    monkeypatch.setattr(
-        "atlas.execution._process_groups_for_tree",
-        lambda pid: ({34, 45}, True),
-    )
-    _terminate_process_group(AlreadyExitedParent())
-    assert sleeps == [5]
-    assert signals == [signal.SIGTERM, signal.SIGKILL]
-
-
-def test_forward_termination_uses_process_group_termination_for_real_processes(
+def test_forward_termination_records_containment_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     previous = object()
     handlers: list[object] = []
-    terminated: list[tuple[object, int]] = []
+    errors = []
 
     monkeypatch.setattr("atlas.execution.signal.getsignal", lambda signum: previous)
     monkeypatch.setattr(
         "atlas.execution.signal.signal",
         lambda signum, handler: handlers.append(handler),
     )
-    monkeypatch.setattr(
-        "atlas.execution._terminate_process_group",
-        lambda process, initial_signal: terminated.append((process, initial_signal)),
-    )
 
-    class RealProcessShape:
-        pid = 55
+    class FailingContained:
+        def terminate(self, **kwargs):
+            raise ContainmentUnavailable("cannot signal")
 
-        def poll(self):
-            return None
-
-        def wait(self, timeout=None):
-            return None
-
-    process = RealProcessShape()
-    with _forward_termination_signal(process):
+    with _forward_termination_signal(FailingContained(), errors):
         handlers[-1](signal.SIGTERM, None)
 
-    assert terminated == [(process, signal.SIGTERM)]
+    assert [str(error) for error in errors] == ["cannot signal"]
 
 
-def test_termination_signal_is_forwarded_and_handler_is_restored(
+def test_execute_timeout_and_cleanup_containment_errors_are_logged(
+    atlas_paths,
+    release_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    previous_handler = object()
-    handlers: list[object] = []
-    forwarded: list[tuple[int, int]] = []
+    source = release_factory()
+    _activate(atlas_paths, source)
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
 
-    monkeypatch.setattr("atlas.execution.signal.getsignal", lambda signum: previous_handler)
-    monkeypatch.setattr(
-        "atlas.execution.signal.signal",
-        lambda signum, handler: handlers.append(handler),
-    )
-    monkeypatch.setattr(
-        "atlas.execution.os.killpg",
-        lambda pid, signum: forwarded.append((pid, signum)),
-    )
+    class TimedOut:
+        returncode = None
 
-    class Running:
-        pid = 42
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("command", timeout)
 
-    with _forward_termination_signal(Running()):
-        handler = handlers[-1]
-        assert callable(handler)
-        handler(signal.SIGTERM, None)
+    class FailingTimeout:
+        process = TimedOut()
 
-    assert forwarded == [(42, signal.SIGTERM)]
-    assert handlers[-1] is previous_handler
+        def terminate(self, **kwargs):
+            raise ContainmentUnavailable("cannot terminate")
+
+        def cleanup(self):
+            return None
 
     monkeypatch.setattr(
-        "atlas.execution.os.killpg",
-        lambda pid, signum: (_ for _ in ()).throw(ProcessLookupError),
+        "atlas.execution.spawn_contained",
+        lambda *args, **kwargs: FailingTimeout(),
     )
-    with _forward_termination_signal(Running()):
-        handler = handlers[-1]
-        assert callable(handler)
-        handler(signal.SIGTERM, None)
+    assert execute(atlas_paths, command, [], timeout_seconds=1) == 125
+    assert _last_log(atlas_paths)["containment_error"] == "cannot terminate"
+
+    class Finished:
+        returncode = 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    class FailingCleanup:
+        process = Finished()
+
+        def terminate(self, **kwargs):
+            return None
+
+        def cleanup(self):
+            raise ContainmentUnavailable("cannot cleanup")
+
+    monkeypatch.setattr(
+        "atlas.execution.spawn_contained",
+        lambda *args, **kwargs: FailingCleanup(),
+    )
+    assert execute(atlas_paths, command, []) == 125
+    assert _last_log(atlas_paths)["containment_error"] == "cannot cleanup"
 
 
 def test_execute_logs_and_reraises_keyboard_interrupt(
@@ -1050,7 +964,7 @@ def test_execute_logs_and_reraises_keyboard_interrupt(
 ) -> None:
     source = release_factory()
     _activate(atlas_paths, source)
-    command = resolve_command(atlas_paths.current_root, "sample-show")
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
 
     class Interrupted:
         pid = 123
@@ -1061,9 +975,18 @@ def test_execute_logs_and_reraises_keyboard_interrupt(
         def poll(self):
             return 0
 
+    class FakeContained:
+        process = Interrupted()
+
+        def terminate(self, **kwargs):
+            return None
+
+        def cleanup(self):
+            return None
+
     monkeypatch.setattr(
-        "atlas.execution.subprocess.Popen",
-        lambda *args, **kwargs: Interrupted(),
+        "atlas.execution.spawn_contained",
+        lambda *args, **kwargs: FakeContained(),
     )
     monkeypatch.setattr(
         "atlas.execution.git_context",
@@ -1077,6 +1000,39 @@ def test_execute_logs_and_reraises_keyboard_interrupt(
     with pytest.raises(KeyboardInterrupt):
         execute(atlas_paths, command, [])
     assert _last_log(atlas_paths)["exit_code"] == 130
+
+
+def test_keyboard_interrupt_containment_failure_is_logged(
+    atlas_paths,
+    release_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = release_factory()
+    _activate(atlas_paths, source)
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
+
+    class Interrupted:
+        returncode = None
+
+        def wait(self, timeout=None):
+            raise KeyboardInterrupt
+
+    class FailingContained:
+        process = Interrupted()
+
+        def terminate(self, **kwargs):
+            raise ContainmentUnavailable("cannot terminate")
+
+        def cleanup(self):
+            return None
+
+    monkeypatch.setattr(
+        "atlas.execution.spawn_contained",
+        lambda *args, **kwargs: FailingContained(),
+    )
+    with pytest.raises(KeyboardInterrupt):
+        execute(atlas_paths, command, [])
+    assert _last_log(atlas_paths)["exit_code"] == 125
 
 
 def test_cli_job_commands_and_instances(atlas_paths, release_factory, capsys) -> None:
@@ -1113,6 +1069,7 @@ def test_cli_job_commands_and_instances(atlas_paths, release_factory, capsys) ->
         atlas_paths.current_root,
         atlas_paths.shims,
         atlas_paths.artifact_runner,
+        atlas_paths.releases_root,
     ) == []
     assert not (atlas_paths.shims / "collect").exists()
 
@@ -1135,9 +1092,10 @@ def test_nested_shim_execution_preserves_operation_and_parent(
         atlas_paths.current_root,
         atlas_paths.shims,
         atlas_paths.artifact_runner,
+        atlas_paths.releases_root,
     )
 
-    parent = resolve_command(atlas_paths.current_root, "parent")
+    parent = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "parent")
     assert execute(atlas_paths, parent, []) == 0
 
     records = {record["artifact"]: record for record in _all_logs(atlas_paths)}

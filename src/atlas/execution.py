@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from atlas_process_supervisor import ContainedProcess, ContainmentError, spawn_contained
+
 from .catalog import ExecutableRef
 from .locks import acquire_lock
 from .paths import AtlasPaths
@@ -24,8 +26,7 @@ from .paths import AtlasPaths
 _SENSITIVE_TOKENS = ("password", "token", "secret", "key")
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TIMEOUT_EXIT_CODE = 124
-_TERMINATE_GRACE_SECONDS = 5
-_PR_SET_PDEATHSIG = 1
+_CONTAINMENT_EXIT_CODE = 125
 
 
 def redact_args(args: list[str]) -> list[str]:
@@ -160,113 +161,25 @@ def _environment(
             "ATLAS_OPERATION_ID": operation_id,
             "PATH": os.pathsep.join(path_parts),
             "PYTHONPATH": _pythonpath(paths, executable, env),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "ATLAS_SUPERVISOR_PATH": str(paths.process_supervisor),
         }
     )
     return env
 
 
-def _parent_death_preexec() -> object | None:
-    """Return a Linux pre-exec hook that binds a child to this parent."""
-    if sys.platform != "linux":
-        return None
-    parent_pid = os.getpid()
-
-    def set_parent_death_signal() -> None:
-        import ctypes
-
-        libc = ctypes.CDLL(None)
-        if libc.prctl(_PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0) != 0:
-            os._exit(127)
-        if os.getppid() != parent_pid:
-            os.kill(os.getpid(), signal.SIGTERM)
-
-    return set_parent_death_signal
-
-
-def _process_groups_for_tree(root_pid: int) -> tuple[set[int], bool]:
-    """Return process groups in a Linux descendant tree and whether it was read."""
-    try:
-        entries: dict[int, tuple[int, int]] = {}
-        for entry in Path("/proc").iterdir():
-            if not entry.name.isdecimal():
-                continue
-            try:
-                fields = (entry / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
-                entries[int(entry.name)] = (int(fields[1]), int(fields[2]))
-            except (OSError, ValueError, IndexError):
-                continue
-    except OSError:
-        return {root_pid}, False
-
-    if root_pid not in entries:
-        return {root_pid}, False
-    descendants = {root_pid}
-    groups = {entries[root_pid][1]}
-    changed = True
-    while changed:
-        changed = False
-        for pid, (parent_pid, group_id) in entries.items():
-            if pid in descendants or parent_pid not in descendants:
-                continue
-            descendants.add(pid)
-            groups.add(group_id)
-            changed = True
-    return groups, len(descendants) > 1
-
-
-def _signal_process_groups(groups: set[int], signum: int) -> None:
-    for group_id in groups:
-        try:
-            os.killpg(group_id, signum)
-        except ProcessLookupError:
-            continue
-
-
-def _groups_alive(groups: set[int]) -> bool:
-    for group_id in groups:
-        try:
-            os.killpg(group_id, 0)
-        except ProcessLookupError:
-            continue
-        return True
-    return False
-
-
-def _terminate_process_group(
-    process: subprocess.Popen[str],
-    *,
-    initial_signal: int = signal.SIGTERM,
-) -> None:
-    groups, has_descendants = _process_groups_for_tree(process.pid)
-    if process.poll() is not None and not has_descendants:
-        return
-    try:
-        _signal_process_groups(groups, initial_signal)
-    except ProcessLookupError:
-        return
-    try:
-        process.wait(timeout=_TERMINATE_GRACE_SECONDS)
-    except subprocess.TimeoutExpired:
-        pass
-    if has_descendants and process.poll() is not None and _groups_alive(groups):
-        time.sleep(_TERMINATE_GRACE_SECONDS)
-    if process.poll() is None or (has_descendants and _groups_alive(groups)):
-        _signal_process_groups(groups, signal.SIGKILL)
-        process.wait()
-
-
 @contextmanager
-def _forward_termination_signal(process: subprocess.Popen[str]) -> Iterator[None]:
+def _forward_termination_signal(
+    contained: ContainedProcess,
+    errors: list[ContainmentError],
+) -> Iterator[None]:
     previous_handler = signal.getsignal(signal.SIGTERM)
 
     def forward(signum: int, _frame: object) -> None:
-        if hasattr(process, "poll") and hasattr(process, "wait"):
-            _terminate_process_group(process, initial_signal=signum)
-        else:
-            try:
-                os.killpg(process.pid, signum)
-            except ProcessLookupError:
-                pass
+        try:
+            contained.terminate(initial_signal=signum)
+        except ContainmentError as exc:
+            errors.append(exc)
 
     signal.signal(signal.SIGTERM, forward)
     try:
@@ -323,6 +236,8 @@ def execute(
         raise ValueError(f"runtime python executable not found: {paths.runtime_python}")
     if paths.release_runner.is_symlink() or not paths.release_runner.is_file():
         raise ValueError(f"release runner not found: {paths.release_runner}")
+    if paths.process_supervisor.is_symlink() or not paths.process_supervisor.is_file():
+        raise ValueError(f"process supervisor not found: {paths.process_supervisor}")
     if timeout_seconds is not None and (
         isinstance(timeout_seconds, bool)
         or not isinstance(timeout_seconds, int)
@@ -354,30 +269,50 @@ def execute(
     context = git_context(working_directory)
     timed_out = False
     interrupted = False
+    containment_error: ContainmentError | None = None
+    termination_errors: list[ContainmentError] = []
+    contained: ContainedProcess | None = None
+    exit_code = _CONTAINMENT_EXIT_CODE
     with _lock_context(paths, lock):
         try:
-            process = subprocess.Popen(
+            contained = spawn_contained(
                 command,
+                python_executable=paths.runtime_python,
+                supervisor_path=paths.process_supervisor,
                 cwd=working_directory,
                 env=env,
-                text=True,
-                start_new_session=True,
-                preexec_fn=_parent_death_preexec(),
             )
         except FileNotFoundError as exc:
             raise ValueError(f"runtime executable not found: {paths.runtime_python}") from exc
-        with _forward_termination_signal(process):
+        except ContainmentError as exc:
+            containment_error = exc
+        else:
+            with _forward_termination_signal(contained, termination_errors):
+                try:
+                    return_code = contained.process.wait(timeout=timeout_seconds)
+                    exit_code = _normalize_exit_code(return_code)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    try:
+                        contained.terminate()
+                    except ContainmentError as exc:
+                        termination_errors.append(exc)
+                    exit_code = _TIMEOUT_EXIT_CODE
+                except KeyboardInterrupt:
+                    interrupted = True
+                    try:
+                        contained.terminate()
+                    except ContainmentError as exc:
+                        termination_errors.append(exc)
+                    exit_code = 130
+            if termination_errors:
+                containment_error = termination_errors[0]
             try:
-                return_code = process.wait(timeout=timeout_seconds)
-                exit_code = _normalize_exit_code(return_code)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                _terminate_process_group(process)
-                exit_code = _TIMEOUT_EXIT_CODE
-            except KeyboardInterrupt:
-                interrupted = True
-                _terminate_process_group(process)
-                exit_code = 130
+                contained.cleanup()
+            except ContainmentError as exc:
+                containment_error = containment_error or exc
+            if containment_error is not None:
+                exit_code = _CONTAINMENT_EXIT_CODE
 
     duration_ms = int((time.perf_counter() - started) * 1000)
     record: dict[str, object] = {
@@ -397,6 +332,10 @@ def execute(
         "timeout": timeout_seconds,
         "timed_out": timed_out,
         "lock": lock,
+        "containment": "cgroup-v2",
+        "containment_error": (
+            None if containment_error is None else str(containment_error)
+        ),
         **context,
     }
     _append_run_log(paths, record)

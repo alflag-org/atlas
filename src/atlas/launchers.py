@@ -20,13 +20,14 @@ def sync_atlas_core(home: Path) -> None:
 
 
 def sync_release_runner(home: Path) -> None:
-    """Copy the standalone release runner and its pure support helper."""
+    """Copy the standalone runner, contract helper, and process supervisor."""
     source = Path(__file__).with_name("release_runner.py")
     destination = home / "lib/python/atlas_release_runner.py"
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.is_symlink() or (destination.exists() and not destination.is_file()):
         raise ValueError(f"release runner destination must be a regular file: {destination}")
     helper_destination = destination.with_name("target_contract.py")
+    supervisor_destination = destination.with_name("atlas_process_supervisor.py")
     if helper_destination.is_symlink() or (
         helper_destination.exists() and not helper_destination.is_file()
     ):
@@ -34,10 +35,21 @@ def sync_release_runner(home: Path) -> None:
             "target contract helper destination must be a regular file: "
             f"{helper_destination}"
         )
+    if supervisor_destination.is_symlink() or (
+        supervisor_destination.exists() and not supervisor_destination.is_file()
+    ):
+        raise ValueError(
+            "process supervisor destination must be a regular file: "
+            f"{supervisor_destination}"
+        )
     shutil.copyfile(source, destination)
     shutil.copyfile(
         Path(__file__).with_name("target_contract.py"),
         helper_destination,
+    )
+    shutil.copyfile(
+        Path(__file__).resolve().parents[1] / "atlas_process_supervisor.py",
+        supervisor_destination,
     )
 
 
@@ -66,9 +78,14 @@ def ensure_artifact_runner(path: Path, atlas_bin: Path) -> None:
     path.chmod(0o755)
 
 
-def regenerate_shims(current_root: Path, shims_dir: Path, artifact_runner: Path) -> list[str]:
+def regenerate_shims(
+    current_root: Path,
+    shims_dir: Path,
+    artifact_runner: Path,
+    releases_root: Path,
+) -> list[str]:
     """Regenerate command shims for all active release commands."""
-    names = list(command_index(current_root))
+    names = list(command_index(current_root, releases_root))
     shims_dir.mkdir(parents=True, exist_ok=True)
     for item in shims_dir.iterdir():
         if item.is_dir() and not item.is_symlink():

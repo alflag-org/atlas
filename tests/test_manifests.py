@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import typing
 from pathlib import Path
 from types import ModuleType
@@ -22,13 +23,11 @@ from atlas.target_contract import (
     TargetResolutionError,
     TargetSources,
     _annotation_is_int_or_none,
-    _bound_names,
-    _module_bindings,
-    _ModuleDynamicBindingVisitor,
     _selected_path,
     parse_target_spec,
     resolve_target_sources,
     validate_callable_runtime,
+    validate_module_source,
     validate_selected_module,
 )
 
@@ -412,7 +411,7 @@ def test_manifest_service_paths_reject_symlink_escape_and_wrong_suffix(
 
 
 @pytest.mark.parametrize(
-    ("mutation", "message"),
+    ("case", "message"),
     [
         (
             "missing-modules",
@@ -426,74 +425,18 @@ def test_manifest_service_paths_reject_symlink_escape_and_wrong_suffix(
             "syntax",
             "module cannot be parsed",
         ),
-        (
-            "async",
-            "must be a synchronous function",
-        ),
-        (
-            "no-argv",
-            "must accept argv",
-        ),
-        (
-            "required-positional",
-            "required positional",
-        ),
-        (
-            "required-keyword",
-            "required keyword-only",
-        ),
-        (
-            "duplicate",
-            "target callable is not a function",
-        ),
-        (
-            "rebind",
-            "target callable is not a function",
-        ),
-        (
-            "conditional-rebind",
-            "target callable is not a function",
-        ),
-        (
-            "async-after-sync",
-            "must be a synchronous function",
-        ),
-        (
-            "bad-return",
-            "return annotation",
-        ),
-        (
-            "decorator",
-            "decorators are not allowed",
-        ),
-        (
-            "wildcard",
-            "wildcard import",
-        ),
-        (
-            "dynamic",
-            "dynamic binding",
-        ),
-        (
-            "nested-wildcard",
-            "wildcard import",
-        ),
-        (
-            "nested-dynamic",
-            "dynamic binding",
-        ),
     ],
 )
-def test_manifest_target_source_and_callable_validation(
+def test_manifest_target_source_and_syntax_validation(
     tmp_path: Path,
-    mutation: str,
+    case: str,
     message: str,
 ) -> None:
-    release = _release(tmp_path / mutation)
+    release = _release(tmp_path / case)
     modules = release / "modules"
-    if mutation == "missing-modules":
+    if case == "missing-modules":
         modules.rename(release / "saved-modules")
-    elif mutation == "ambiguous":
+    elif case == "ambiguous":
         (modules / "ambiguous").mkdir()
         (modules / "ambiguous.py").write_text(
             "def main(argv):\n    return 0\n", encoding="utf-8"
@@ -505,125 +448,179 @@ def test_manifest_target_source_and_callable_validation(
         raw["commands"]["sample"]["target"] = "ambiguous:main"
         _write_manifest(release, raw)
     else:
-        contents = {
-            "syntax": "def main(\n",
-            "async": "async def main(argv):\n    return 0\n",
-            "no-argv": "def main():\n    return 0\n",
-            "required-positional": "def main(argv, required):\n    return 0\n",
-            "required-keyword": "def main(argv, *, required):\n    return 0\n",
-            "duplicate": (
-                "def main(argv):\n    return 0\n\n"
-                "def main(argv):\n    return 1\n"
-            ),
-            "rebind": "def main(argv):\n    return 0\nmain = 1\n",
-            "conditional-rebind": (
-                "def main(argv):\n    return 0\n\n"
-                "if True:\n    main = 1\n"
-            ),
-            "async-after-sync": (
-                "def main(argv):\n    return 0\n\n"
-                "async def main(argv):\n    return 1\n"
-            ),
-            "bad-return": "def main(argv) -> str:\n    return 'bad'\n",
-            "decorator": (
-                "def decorator(function):\n    return function\n\n"
-                "@decorator\n"
-                "def main(argv):\n    return 0\n"
-            ),
-            "wildcard": (
-                "from dependency import *\n"
-                "def main(argv):\n    return 0\n"
-            ),
-            "dynamic": (
-                "exec('value = 1')\n"
-                "def main(argv):\n    return 0\n"
-            ),
-            "nested-wildcard": (
-                "def helper():\n"
-                "    from dependency import *\n"
-                "def main(argv):\n    return 0\n"
-            ),
-            "nested-dynamic": (
-                "def helper():\n"
-                "    exec('value = 1')\n"
-                "def main(argv):\n    return 0\n"
-            ),
-        }
-        (modules / "sample.py").write_text(contents[mutation], encoding="utf-8")
+        (modules / "sample.py").write_text("def main(\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match=message):
         load_manifest(release)
 
 
 @pytest.mark.parametrize(
-    "expression",
+    ("source", "message"),
     [
-        "setattr(object(), 'main', lambda argv: 0)",
-        "delattr(object(), 'main')",
-        "getattr(object(), 'main', None)",
-        "globals()['main'] = main",
-        "locals()['main'] = main",
-        "vars()['main'] = main",
-        "importlib.import_module('dependency')",
-        "importlib.make('dependency')",
-        "from builtins import setattr as mutate\nmutate(object(), 'main', main)",
-        "import importlib as loader\nloader.util.spec_from_file_location('x', 'x')",
-        "from importlib import import_module as load\nload('dependency')",
-        "from importlib import *",
-        "from builtins import len, setattr\nsetattr(object(), 'main', main)",
-        "__builtins__['setattr'](object(), 'main', main)",
+        ("def main():\n    return 0\n", "must accept argv"),
+        (
+            "def main(argv, required):\n    return 0\n",
+            "required positional arguments beyond argv",
+        ),
+        (
+            "def main(argv, *, required):\n    return 0\n",
+            "required keyword-only arguments",
+        ),
+        ("async def main(argv):\n    return 0\n", "synchronous function"),
+        ("def main(argv) -> str:\n    return 'bad'\n", "return annotation"),
+        ("main = 1\n", "target is not callable"),
+        ("value = 1\n", "target is not callable"),
     ],
 )
-def test_manifest_rejects_dynamic_module_binding(
+def test_install_and_runtime_share_actual_callable_contract(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    expression: str,
+    source: str,
+    message: str,
 ) -> None:
-    release = _release(tmp_path / "dynamic-binding")
-    (release / "modules/sample.py").write_text(
-        "import importlib\n"
-        f"{expression}\n"
-        "def main(argv):\n"
-        "    return 0\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match=r"(dynamic binding|wildcard import)"):
-        load_manifest(release)
+    release = _release(tmp_path / "actual-contract")
+    (release / "modules/sample.py").write_text(source, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        install_release(release, tmp_path / "releases", tmp_path / "current")
+
+    monkeypatch.setenv("ATLAS_RELEASE_ROOT", str(release))
+    with pytest.raises(ValueError, match=message):
+        release_runner.run_target("sample:main", [])
 
 
 @pytest.mark.parametrize(
-    "binding_site",
+    ("source", "extra", "target", "expected"),
     [
-        "sys.modules[__name__].main = lambda argv: 73",
-        "del sys.modules[__name__].main",
-        "values[0] = 73",
-        "del values[0]",
-        "match (lambda argv: 74):\n    case main:\n        pass",
-        "match (lambda argv: 74):\n    case main if main is not None:\n        pass",
-        "match {'value': 0}:\n    case {'value': main}:\n        pass",
-        "match [0]:\n    case [*main]:\n        pass",
-        "try:\n    raise RuntimeError\nexcept RuntimeError as main:\n    pass",
+        (
+            "def main(argv):\n    return 11\n",
+            None,
+            "sample:main",
+            11,
+        ),
+        (
+            "from dependency import main as imported\n",
+            "def main(argv):\n    return 23\n",
+            "sample:imported",
+            23,
+        ),
+        (
+            "from dependency import *\n",
+            "def main(argv):\n    return 29\n",
+            "sample:main",
+            29,
+        ),
+        (
+            "def main(argv):\n    return 31\n"
+            "shadow = [main for main in ()]\n",
+            None,
+            "sample:main",
+            31,
+        ),
+        (
+            "match (lambda argv: 74):\n"
+            "    case main:\n"
+            "        pass\n",
+            None,
+            "sample:main",
+            74,
+        ),
+        (
+            "import sys\n"
+            "def main(argv):\n    return 37\n"
+            "sys.modules[__name__].__dict__.update("
+            "main=lambda argv: 73)\n",
+            None,
+            "sample:main",
+            73,
+        ),
+        (
+            "values = [0]\n"
+            "values[0] = 1\n"
+            "del values[0]\n"
+            "class Holder:\n"
+            "    value = 1\n"
+            "Holder.value = 2\n"
+            "del Holder.value\n"
+            "def main(argv):\n"
+            "    return 76\n",
+            None,
+            "sample:main",
+            76,
+        ),
+        (
+            "def main(argv):\n    return 41\n"
+            "def replace():\n"
+            "    global main\n"
+            "    main = lambda argv: 79\n"
+            "replace()\n",
+            None,
+            "sample:main",
+            79,
+        ),
+        (
+            "def decorate(function):\n"
+            "    return lambda argv: 43\n"
+            "@decorate\n"
+            "def main(argv):\n"
+            "    return 0\n",
+            None,
+            "sample:main",
+            43,
+        ),
     ],
 )
-def test_module_binding_sites_are_rejected_at_install_and_runtime(
+def test_install_and_runtime_use_the_actual_selected_callable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    binding_site: str,
+    source: str,
+    extra: str | None,
+    target: str,
+    expected: int,
 ) -> None:
-    release = _release(tmp_path / "binding-site")
+    release = _release(tmp_path / "actual-callable")
     (release / "modules/sample.py").write_text(
-        "import sys\n"
-        "values = [0]\n"
-        "def main(argv):\n"
-        "    return 0\n"
-        f"{binding_site}\n",
+        source,
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match=r"(rebind|dynamic binding|not a function)"):
-        load_manifest(release)
+    if extra is not None:
+        (release / "modules/dependency.py").write_text(
+            extra,
+            encoding="utf-8",
+        )
+    if target != "sample:main":
+        raw = _read_manifest(release)
+        raw["commands"]["sample"]["target"] = target
+        _write_manifest(release, raw)
 
-    monkeypatch.setenv("ATLAS_RELEASE_ROOT", str(release))
-    with pytest.raises(ValueError, match=r"(rebind|dynamic binding|not a function)"):
-        release_runner.run_target("sample:main", [])
+    installed = install_release(release, tmp_path / "releases", tmp_path / "current")
+    monkeypatch.setenv("ATLAS_RELEASE_ROOT", str(installed))
+    monkeypatch.setenv("ATLAS_RELEASE_DIGEST", installed.name.rsplit("-", 1)[1])
+    assert release_runner.run_target(target, []) == expected
+
+
+def test_install_validate_only_does_not_invoke_the_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "invoked"
+    release = _release(tmp_path / "validate-only")
+    (release / "modules/sample.py").write_text(
+        "from pathlib import Path\n"
+        f"MARKER = Path({str(marker)!r})\n"
+        "def main(argv):\n"
+        "    MARKER.write_text('called')\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+
+    installed = install_release(release, tmp_path / "releases", tmp_path / "current")
+    assert validate_release(installed).content_digest == installed.name.rsplit("-", 1)[1]
+    assert not marker.exists()
+    monkeypatch.setenv("ATLAS_RELEASE_ROOT", str(installed))
+    monkeypatch.setenv("ATLAS_RELEASE_DIGEST", installed.name.rsplit("-", 1)[1])
+    assert release_runner.run_target("sample:main", []) == 0
+    assert marker.read_text(encoding="utf-8") == "called"
 
 
 def test_direct_function_and_explicit_import_remain_valid_at_install_and_runtime(
@@ -705,11 +702,12 @@ def test_target_contract_edge_helpers(tmp_path: Path) -> None:
     with pytest.raises(TargetResolutionError, match="not a directory"):
         resolve_target_sources(tmp_path / "missing", "sample")
 
-    assert _bound_names(ast.parse("x = 1").body[0].targets[0]) == ["x"]
-    assert _bound_names(
-        ast.parse("a, *b = value").body[0].targets[0]
-    ) == ["a", "b"]
-    assert _bound_names(ast.parse("obj.value = 1").body[0].targets[0]) == []
+    source = tmp_path / "module.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    validate_module_source(source)
+    source.write_text("def main(\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="cannot be parsed"):
+        validate_module_source(source)
     assert _annotation_is_int_or_none(ast.parse("x: int").body[0].annotation)
     assert _annotation_is_int_or_none(
         ast.parse("x: int | None").body[0].annotation
@@ -758,26 +756,6 @@ def test_target_contract_edge_helpers(tmp_path: Path) -> None:
     assert not _annotation_is_int_or_none(
         ast.parse("x: Optional[int, None]").body[0].annotation
     )
-    dynamic = _ModuleDynamicBindingVisitor()
-    dynamic.visit(ast.parse("other.make()"))
-    assert dynamic.bindings == []
-    assert _module_bindings(ast.parse("del main")).pop()[0] == "main"
-    nested_bindings = _module_bindings(
-        ast.parse(
-            "if True:\n"
-            "    import main\n"
-            "    import package as package_alias\n"
-            "    from package import main as imported\n"
-            "    from package import main\n"
-            "    from package import other\n"
-            "    def main(argv):\n        return 0\n"
-            "    async def main(argv):\n        return 0\n"
-            "    class main:\n        pass\n"
-            "    main = 1\n"
-            "    main\n"
-        )
-    )
-    assert [name for name, _, _ in nested_bindings].count("main") >= 6
 
 
 def test_runtime_target_contract_and_provenance_edges(
@@ -808,7 +786,7 @@ def test_runtime_target_contract_and_provenance_edges(
     monkeypatch.setattr(Path, "resolve", fail_resolve)
     assert validate_selected_module(module, sources) is False
 
-    with pytest.raises(ValueError, match="not a function"):
+    with pytest.raises(ValueError, match="not callable"):
         validate_callable_runtime(1, "selected", "main")
 
     async def async_target(argv):
@@ -816,6 +794,24 @@ def test_runtime_target_contract_and_provenance_edges(
 
     with pytest.raises(ValueError, match="synchronous"):
         validate_callable_runtime(async_target, "selected", "main")
+
+    class AsyncCallable:
+        async def __call__(self, argv):
+            return None
+
+    with pytest.raises(ValueError, match="synchronous"):
+        validate_callable_runtime(AsyncCallable(), "selected", "main")
+
+    class CallableTarget:
+        def __call__(self, argv):
+            return None
+
+    callable_target = CallableTarget()
+    assert validate_callable_runtime(
+        callable_target,
+        "selected",
+        "main",
+    ) is callable_target
 
     def invalid_annotation(argv) -> list[str]:
         return []
@@ -847,7 +843,7 @@ def test_runtime_target_contract_and_provenance_edges(
     def required_extra(argv, extra):
         return None
 
-    with pytest.raises(ValueError, match="must accept argv"):
+    with pytest.raises(ValueError, match="required positional arguments beyond argv"):
         validate_callable_runtime(required_extra, "selected", "main")
 
     def valid_string_annotation(argv) -> int | None:
@@ -875,6 +871,27 @@ def test_runtime_target_contract_and_provenance_edges(
 
     def valid_target(argv):
         return None
+
+    class BindingSignature:
+        parameters: typing.ClassVar = {
+            "argv": inspect.Parameter(
+                "argv",
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                default=None,
+            )
+        }
+        return_annotation = inspect.Signature.empty
+
+        def bind(self, args):
+            raise TypeError("cannot bind")
+
+    with monkeypatch.context() as context:
+        context.setattr(
+            "atlas.target_contract.inspect.signature",
+            lambda target: BindingSignature(),
+        )
+        with pytest.raises(ValueError, match="must accept argv"):
+            validate_callable_runtime(valid_target, "selected", "main")
 
     with pytest.raises(ValueError, match="signature is unavailable"):
         monkeypatch.setattr(
@@ -1041,7 +1058,6 @@ def test_load_manifest_rejects_invalid_shapes(
         ("../sample", "must be package.module:callable"),
         (r"commands\\sample", "must be package.module:callable"),
         ("missing:main", "target module not found"),
-        ("sample:missing", "target callable is not a function"),
     ],
 )
 def test_load_manifest_rejects_unsafe_targets(

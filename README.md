@@ -67,6 +67,9 @@ environment. A release source is separate from the installed copy: Atlas copies 
 to a content-addressed, never-replaced `/opt/atlas/releases/<release>/<version>-<content-digest>`
 snapshot and atomically switches `/opt/atlas/current/<release>` to that snapshot. Atlas rechecks the
 snapshot provenance before the child imports release code and forces `PYTHONDONTWRITEBYTECODE=1`.
+Installation uses that child in validate-only mode to import each manifest target and inspect its
+actual callable without invoking it; first-party module top-level code therefore runs during
+installation and may have import-time side effects.
 Snapshot modes are read-only for the normal runtime path, but a same-UID account can change them;
 this is a selected-release correctness boundary, not a hostile same-UID sandbox. Do not use either
 Atlas-managed directory as a release source.

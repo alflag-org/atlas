@@ -10,7 +10,7 @@ from typing import Any
 from .target_contract import (
     parse_target_spec,
     resolve_target_sources,
-    validate_callable_source,
+    validate_module_source,
 )
 from .yamlutil import load_yaml_file
 
@@ -133,7 +133,7 @@ def _parse_target(release_root: Path, value: Any, label: str) -> Target:
     target = Target(module, callable_name)
     try:
         sources = resolve_target_sources(release_root, target.module)
-        validate_callable_source(sources.source, target.callable_name)
+        validate_module_source(sources.source)
     except ValueError as exc:
         raise ValueError(f"{label}.target {exc}") from exc
     return target

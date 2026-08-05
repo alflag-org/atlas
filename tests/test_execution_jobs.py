@@ -116,9 +116,10 @@ def test_reinstall_same_version_keeps_running_snapshot_and_correlates_digest(
         "from pathlib import Path\n"
         "MARKER = 'OLD'\n"
         "var = Path(os.environ['ATLAS_VAR_DIR'])\n"
-        "(var / 'old-import-ready').write_text(MARKER)\n"
-        "while not (var / 'old-import-continue').exists():\n"
-        "    time.sleep(0.01)\n"
+        "if os.environ.get('ATLAS_RELEASE_DIGEST'):\n"
+        "    (var / 'old-import-ready').write_text(MARKER)\n"
+        "    while not (var / 'old-import-continue').exists():\n"
+        "        time.sleep(0.01)\n"
         "def main(argv=None):\n"
         "    (var / f'executed-{MARKER}').write_text(os.environ['ATLAS_RELEASE_DIGEST'])\n"
         "    return 0\n",

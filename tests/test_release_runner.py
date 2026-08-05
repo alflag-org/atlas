@@ -163,8 +163,8 @@ def test_runner_rejects_digest_named_for_another_snapshot(
 @pytest.mark.parametrize(
     ("callable_name", "message"),
     [
-        ("missing", "target callable is not a function"),
-        ("NotAFunction", "target callable is not a function"),
+        ("missing", "target is not callable"),
+        ("NotAFunction", "must accept argv"),
         ("no_args", "target callable must accept argv"),
         ("required_positional", "required positional arguments beyond argv"),
         ("required_keyword", "required keyword-only arguments"),
@@ -180,33 +180,71 @@ def test_runner_rejects_invalid_callables(
         release_runner.run_target(f"runner_target:{callable_name}", [])
 
 
-def test_runner_rejects_static_contract_bypasses_before_import(
+def test_runner_validate_only_imports_without_invoking(
+    selected_release: Path,
+    tmp_path: Path,
+) -> None:
+    modules = selected_release / "modules"
+    marker = tmp_path / "invoked"
+    (modules / "runner_validate.py").write_text(
+        "from pathlib import Path\n"
+        f"MARKER = Path({str(marker)!r})\n"
+        "def main(argv):\n"
+        "    MARKER.write_text('called')\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+
+    assert release_runner.main(["--validate-only", "runner_validate:main"]) == 0
+    assert not marker.exists()
+    assert release_runner.run_target("runner_validate:main", []) == 0
+    assert marker.read_text(encoding="utf-8") == "called"
+
+
+def test_runner_invokes_the_object_returned_by_validator(
+    monkeypatch: pytest.MonkeyPatch,
+    selected_release: Path,
+) -> None:
+    def replacement(argv):
+        return 91
+
+    original = release_runner.validate_callable_runtime
+
+    def validate_and_replace(target, module_name, callable_name):
+        original(target, module_name, callable_name)
+        return replacement
+
+    monkeypatch.setattr(
+        release_runner,
+        "validate_callable_runtime",
+        validate_and_replace,
+    )
+    assert release_runner.run_target("runner_target:returns_int", []) == 91
+
+
+def test_runner_accepts_decorated_and_wildcard_targets(
     selected_release: Path,
 ) -> None:
     modules = selected_release / "modules"
     (modules / "runner_decorated.py").write_text(
         "def decorate(function):\n"
-        "    return function\n\n"
+        "    return lambda argv: 47\n\n"
         "@decorate\n"
         "def main(argv):\n"
         "    return 0\n",
         encoding="utf-8",
     )
     (modules / "runner_wildcard.py").write_text(
-        "from runner_dependency import *\n\n"
-        "def main(argv):\n"
-        "    return 0\n",
+        "from runner_dependency import *\n",
         encoding="utf-8",
     )
     (modules / "runner_dependency.py").write_text(
-        "value = 1\n",
+        "def main(argv):\n"
+        "    return 53\n",
         encoding="utf-8",
     )
-
-    with pytest.raises(ValueError, match="decorators are not allowed"):
-        release_runner.run_target("runner_decorated:main", [])
-    with pytest.raises(ValueError, match="wildcard import"):
-        release_runner.run_target("runner_wildcard:main", [])
+    assert release_runner.run_target("runner_decorated:main", []) == 47
+    assert release_runner.run_target("runner_wildcard:main", []) == 53
 
 
 def test_runner_rejects_import_failures_and_unselected_modules(
@@ -299,6 +337,34 @@ def test_runner_import_and_path_validation_edges(
         release_runner._load_callable("runner_target", "returns_int")
 
 
+def test_runner_cache_cleanup_tolerates_disappeared_module_origins(
+    monkeypatch: pytest.MonkeyPatch,
+    selected_release: Path,
+) -> None:
+    source = selected_release / "modules/cached.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    cached = ModuleType("cached")
+    cached.__file__ = str(source)
+    sys.modules["cached"] = cached
+    original_resolve = Path.resolve
+
+    def fail_origin(path: Path, *args, **kwargs):
+        if path == source:
+            raise OSError("source disappeared")
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fail_origin)
+    try:
+        release_runner._purge_target_modules(
+            "unrelated",
+            (),
+            selected_release / "modules",
+        )
+        release_runner._remember_selected_modules(selected_release / "modules")
+    finally:
+        sys.modules.pop("cached", None)
+
+
 def test_standalone_runner_fails_closed_when_contract_helper_cannot_load(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -385,6 +451,14 @@ def test_runner_main_uses_supplied_and_process_arguments(
     selected_release: Path,
 ) -> None:
     assert release_runner.main(["runner_target:returns_int", "one"]) == 7
+    assert release_runner.main(["--validate-only", "runner_target:returns_int"]) == 0
+    with pytest.raises(ValueError, match="validate-only target is required"):
+        release_runner.main(["--validate-only"])
+    with pytest.raises(
+        ValueError,
+        match=escape("target must be package.module:callable"),
+    ):
+        release_runner.validate_target("runner_target.returns_int")
     monkeypatch.setattr(
         sys,
         "argv",

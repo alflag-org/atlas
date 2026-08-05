@@ -518,8 +518,8 @@ def test_install_release_rejects_changed_staged_content(
     source = _release(tmp_path / "source")
     original_validate = releases_module.validate_release
 
-    def changed_staging(root: Path):
-        validated = original_validate(root)
+    def changed_staging(root: Path, **kwargs):
+        validated = original_validate(root, **kwargs)
         if ".tmp." in root.name:
             return replace(validated, content_digest="0" * 64)
         return validated
@@ -559,9 +559,9 @@ def test_release_snapshot_revalidates_after_immutability_transition(
     original_validate = releases_module.validate_release
     calls = 0
 
-    def mutate_after_read_only(root: Path):
+    def mutate_after_read_only(root: Path, **kwargs):
         nonlocal calls
-        validated = original_validate(root)
+        validated = original_validate(root, **kwargs)
         if ".tmp." in root.name:
             calls += 1
             if calls == 2:
@@ -571,6 +571,23 @@ def test_release_snapshot_revalidates_after_immutability_transition(
     monkeypatch.setattr(releases_module, "validate_release", mutate_after_read_only)
     with pytest.raises(ValueError, match="staged release content changed"):
         install_release(source, tmp_path / "releases", tmp_path / "current")
+
+
+def test_release_target_validation_reports_empty_child_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = _release(tmp_path / "source")
+    monkeypatch.setattr(
+        "atlas.releases.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=1,
+            stderr="",
+            stdout="",
+        ),
+    )
+    with pytest.raises(ValueError, match="child exited with status 1"):
+        validate_release(source)
 
 
 def test_release_transient_helpers_reject_links_and_preserve_existing_target(

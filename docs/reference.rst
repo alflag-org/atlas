@@ -201,16 +201,23 @@ Identifiers use lowercase letters, digits, and single hyphens. Command and job n
 overlap within a release. ``atlas`` and ``artifact-runner`` are reserved command names.
 
 Atlas rejects unknown manifest keys, malformed or missing targets, targets outside the selected
-release, missing dotted parent package initializers, ambiguous module paths, symlinks, wildcard or
-dynamic imports, decorated targets, malformed service references, invalid unit suffixes, and
-duplicate public command names across active releases. A target uses the
-``package.module:callable`` form. Atlas resolves the final module and every parent package below
-the selected release's ``modules/`` directory without importing release code. The child runner
-loads those exact source files in order, then checks the same callable contract: one unambiguous
-top-level synchronous function that accepts ``argv`` and returns an integer or ``None``. Required
-arguments beyond ``argv``, duplicate definitions, rebindings, async functions, and incompatible
-return annotations are rejected. An expression the source validator cannot prove safe is rejected
-at install time, and the runtime repeats the contract check before calling the function.
+release, missing dotted parent package initializers, ambiguous module paths, symlinks, malformed
+service references, invalid unit suffixes, and duplicate public command names across active
+releases. A target uses the ``package.module:callable`` form. Atlas resolves the final module and
+every parent package below the selected release's ``modules/`` directory. During installation, a
+separate validate-only child uses the same selected-release import path as runtime to import each
+manifest target and inspect the actual module attribute; it does not invoke the target. This
+import executes first-party module top-level code, so release import-time side effects can occur
+during installation. Release code and the Atlas operating-system account are trusted first-party
+components; this boundary is not a hostile same-UID sandbox.
+
+The shared callable contract requires an existing callable target that is synchronous, accepts
+``argv`` as its first positional argument, and has an ``int`` or ``None`` return annotation when
+annotated. Missing or non-callable attributes, coroutine functions, required arguments beyond
+``argv``, required keyword-only arguments, and incompatible return annotations are rejected with
+the same validator at installation and runtime. Runtime invokes the exact object returned by that
+validation. Snapshot digest and provenance checks run before import and reject a modified or
+unselected snapshot.
 
 The selected release's ``modules/`` directory is first on ``PYTHONPATH``, followed by Atlas's
 support packages. The caller's ``PYTHONPATH`` and other active releases are not exposed to the

@@ -6,6 +6,8 @@ import hashlib
 import os
 import shutil
 import stat
+import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -14,7 +16,7 @@ from uuid import uuid4
 
 from .files import remove_path
 from .locks import acquire_lock
-from .manifests import ReleaseManifest, load_manifest
+from .manifests import ReleaseManifest, Target, load_manifest
 
 
 @dataclass(frozen=True)
@@ -63,7 +65,62 @@ def release_digest(release_root: Path) -> str:
     return digest.hexdigest()
 
 
-def validate_release(source: Path) -> ValidatedRelease:
+def _manifest_targets(manifest: ReleaseManifest) -> Iterator[Target]:
+    for artifact in (*manifest.commands.values(), *manifest.jobs.values()):
+        yield artifact.target
+
+
+def _validate_targets_in_child(
+    release: ValidatedRelease,
+    *,
+    runtime_python: Path | None,
+    runner_path: Path | None,
+) -> None:
+    """Validate manifest callables through the production release runner."""
+    executable = (
+        runtime_python
+        if runtime_python is not None and runtime_python.is_file()
+        else Path(sys.executable)
+    )
+    runner = (
+        runner_path
+        if runner_path is not None and runner_path.is_file()
+        else Path(__file__).with_name("release_runner.py")
+    )
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    environment["ATLAS_RELEASE_ROOT"] = str(release.root)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    if release.root.name == _snapshot_name(release):
+        environment["ATLAS_RELEASE_DIGEST"] = release.content_digest
+    else:
+        environment.pop("ATLAS_RELEASE_DIGEST", None)
+
+    for target in _manifest_targets(release.manifest):
+        completed = subprocess.run(
+            [str(executable), str(runner), "--validate-only", target.spec],
+            capture_output=True,
+            check=False,
+            env=environment,
+            text=True,
+        )
+        if completed.returncode == 0:
+            continue
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        if not detail:
+            detail = f"child exited with status {completed.returncode}"
+        raise ValueError(
+            f"release target validation failed for {target.spec}: {detail}"
+        )
+
+
+def validate_release(
+    source: Path,
+    *,
+    validate_targets: bool = True,
+    runtime_python: Path | None = None,
+    runner_path: Path | None = None,
+) -> ValidatedRelease:
     """Validate a release directory and its explicit command manifest."""
     if not source.is_dir() or source.is_symlink():
         raise ValueError(f"release directory not found: {source}")
@@ -71,12 +128,19 @@ def validate_release(source: Path) -> ValidatedRelease:
         if item.is_symlink():
             raise ValueError(f"symlink is not allowed in release: {item}")
     root = source.resolve()
-    return ValidatedRelease(
+    release = ValidatedRelease(
         root=root,
         version=read_version(root),
         manifest=load_manifest(root),
         content_digest=release_digest(root),
     )
+    if validate_targets:
+        _validate_targets_in_child(
+            release,
+            runtime_python=runtime_python,
+            runner_path=runner_path,
+        )
+    return release
 
 
 def _snapshot_name(release: ValidatedRelease) -> str:
@@ -111,7 +175,7 @@ def _current_target(link: Path, releases_root: Path) -> Path | None:
         raise ValueError(f"current entry escapes releases root: {link}")
     if not target.is_dir():
         raise ValueError(f"active release target not found: {link}")
-    active = validate_release(target)
+    active = validate_release(target, validate_targets=False)
     expected_parent = resolved_releases / active.manifest.name
     if target.parent != expected_parent or target.name != _snapshot_name(active):
         raise ValueError(f"current entry is not a validated release snapshot: {link}")
@@ -145,7 +209,7 @@ def _stage_snapshot(
     if target.is_symlink() or (target.exists() and not target.is_dir()):
         raise ValueError(f"release snapshot must be a directory: {target}")
     if target.exists():
-        existing = validate_release(target)
+        existing = validate_release(target, validate_targets=False)
         if existing.content_digest != source.content_digest:
             raise ValueError(f"release snapshot digest mismatch: {target}")
         _make_tree_read_only(target)
@@ -155,7 +219,7 @@ def _stage_snapshot(
     remove_path(staging)
     try:
         shutil.copytree(source.root, staging)
-        staged = validate_release(staging)
+        staged = validate_release(staging, validate_targets=False)
         if (
             staged.version != source.version
             or staged.manifest.name != source.manifest.name
@@ -163,7 +227,7 @@ def _stage_snapshot(
         ):
             raise ValueError(f"staged release content changed: {source.manifest.name}")
         _make_tree_read_only(staging)
-        verified = validate_release(staging)
+        verified = validate_release(staging, validate_targets=False)
         if verified.content_digest != source.content_digest:
             raise ValueError(f"staged release content changed: {source.manifest.name}")
         staging.rename(target)
@@ -178,9 +242,20 @@ def reversible_release_install(
     source: Path,
     releases_root: Path,
     current_root: Path,
+    *,
+    runtime_python: Path | None = None,
+    runner_path: Path | None = None,
 ) -> Iterator[Path]:
     """Activate one never-replaced snapshot under a per-release transaction lock."""
-    release = validate_release(source)
+    validation_options = {
+        key: value
+        for key, value in (
+            ("runtime_python", runtime_python),
+            ("runner_path", runner_path),
+        )
+        if value is not None
+    }
+    release = validate_release(source, **validation_options)
     if releases_root.is_symlink() or (
         releases_root.exists() and not releases_root.is_dir()
     ):
@@ -228,7 +303,20 @@ def reversible_release_install(
             raise
 
 
-def install_release(source: Path, releases_root: Path, current_root: Path) -> Path:
+def install_release(
+    source: Path,
+    releases_root: Path,
+    current_root: Path,
+    *,
+    runtime_python: Path | None = None,
+    runner_path: Path | None = None,
+) -> Path:
     """Install and atomically activate one content-addressed snapshot."""
-    with reversible_release_install(source, releases_root, current_root) as target:
+    with reversible_release_install(
+        source,
+        releases_root,
+        current_root,
+        runtime_python=runtime_python,
+        runner_path=runner_path,
+    ) as target:
         return target

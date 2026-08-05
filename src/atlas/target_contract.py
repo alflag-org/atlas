@@ -149,162 +149,6 @@ def resolve_target_sources(release_root: Path, module_name: str) -> TargetSource
     )
 
 
-def _bound_names(node: ast.AST) -> list[str]:
-    if isinstance(node, ast.Name):
-        return [node.id]
-    if isinstance(node, (ast.Tuple, ast.List)):
-        return [name for item in node.elts for name in _bound_names(item)]
-    if isinstance(node, ast.Starred):
-        return _bound_names(node.value)
-    return []
-
-
-class _ModuleRebindingVisitor(ast.NodeVisitor):
-    """Find module-scope binding sites inside executable statements."""
-
-    def __init__(self) -> None:
-        self.bindings: list[tuple[str, str, ast.AST]] = []
-
-    def visit_Name(self, node: ast.Name) -> None:
-        if isinstance(node.ctx, (ast.Store, ast.Del)):
-            self.bindings.append((node.id, "rebind", node))
-
-    def visit_Attribute(self, node: ast.Attribute) -> None:
-        if isinstance(node.ctx, (ast.Store, ast.Del)):
-            self.bindings.append(("<attribute>", "dynamic", node))
-        self.generic_visit(node)
-
-    def visit_Subscript(self, node: ast.Subscript) -> None:
-        if isinstance(node.ctx, (ast.Store, ast.Del)):
-            self.bindings.append(("<subscript>", "dynamic", node))
-        self.generic_visit(node)
-
-    def visit_Import(self, node: ast.Import) -> None:
-        for alias in node.names:
-            name = alias.asname or alias.name.split(".")[0]
-            self.bindings.append((name, "rebind", node))
-
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        for alias in node.names:
-            name = alias.asname or alias.name
-            kind = "wildcard" if alias.name == "*" else "rebind"
-            self.bindings.append((name, kind, node))
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self.bindings.append((node.name, "rebind", node))
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self.bindings.append((node.name, "rebind", node))
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        self.bindings.append((node.name, "rebind", node))
-
-    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
-        if node.name is not None:
-            self.bindings.append((node.name, "rebind", node))
-        self.generic_visit(node)
-
-    def visit_Match(self, node: ast.Match) -> None:
-        self.visit(node.subject)
-        for case in node.cases:
-            for pattern_node in ast.walk(case.pattern):
-                for attribute in ("name", "rest"):
-                    name = getattr(pattern_node, attribute, None)
-                    if isinstance(name, str):
-                        self.bindings.append((name, "rebind", pattern_node))
-            if case.guard is not None:
-                self.visit(case.guard)
-            for statement in case.body:
-                self.visit(statement)
-
-
-def _module_bindings(tree: ast.Module) -> list[tuple[str, str, ast.AST]]:
-    bindings: list[tuple[str, str, ast.AST]] = []
-    visitor = _ModuleRebindingVisitor()
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef):
-            bindings.append((node.name, "function", node))
-        elif isinstance(node, ast.AsyncFunctionDef):
-            bindings.append((node.name, "async", node))
-        elif isinstance(node, ast.ClassDef):
-            bindings.append((node.name, "other", node))
-        else:
-            visitor.visit(node)
-    bindings.extend(visitor.bindings)
-    return bindings
-
-
-_DYNAMIC_BINDING_CALLS = {
-    "__import__",
-    "delattr",
-    "eval",
-    "exec",
-    "getattr",
-    "globals",
-    "import_module",
-    "locals",
-    "reload",
-    "setattr",
-    "vars",
-}
-_DYNAMIC_ATTRIBUTE_CALLS = _DYNAMIC_BINDING_CALLS | {
-    "__delattr__",
-    "__getattribute__",
-    "__setattr__",
-}
-
-
-class _ModuleDynamicBindingVisitor(ast.NodeVisitor):
-    """Reject module expressions whose bindings cannot be proven statically."""
-
-    def __init__(self) -> None:
-        self.bindings: list[tuple[str, str, ast.AST]] = []
-        self._dynamic_module_aliases: set[str] = set()
-        self._dynamic_callable_aliases: set[str] = set()
-
-    def visit_Import(self, node: ast.Import) -> None:
-        for alias in node.names:
-            if alias.name.split(".", 1)[0] in {"builtins", "importlib"}:
-                self._dynamic_module_aliases.add(alias.asname or alias.name.split(".", 1)[0])
-
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        if node.module in {"builtins", "importlib"}:
-            for alias in node.names:
-                if alias.name == "*":
-                    self.bindings.append(("*", "wildcard", node))
-                else:
-                    alias_name = alias.asname or alias.name
-                    self._dynamic_module_aliases.add(alias_name)
-                    if node.module == "importlib" or alias.name in _DYNAMIC_BINDING_CALLS:
-                        self._dynamic_callable_aliases.add(alias_name)
-        elif any(alias.name == "*" for alias in node.names):
-            self.bindings.append(("*", "wildcard", node))
-
-    @staticmethod
-    def _attribute_root(node: ast.AST) -> str | None:
-        while isinstance(node, ast.Attribute):
-            node = node.value
-        return node.id if isinstance(node, ast.Name) else None
-
-    def visit_Call(self, node: ast.Call) -> None:
-        dynamic_name: str | None = None
-        if isinstance(node.func, ast.Name) and (
-            node.func.id in _DYNAMIC_BINDING_CALLS
-            or node.func.id in self._dynamic_callable_aliases
-        ):
-            dynamic_name = node.func.id
-        elif isinstance(node.func, ast.Attribute):
-            if node.func.attr in _DYNAMIC_ATTRIBUTE_CALLS:
-                dynamic_name = node.func.attr
-            elif self._attribute_root(node.func) in self._dynamic_module_aliases:
-                dynamic_name = node.func.attr
-        elif isinstance(node.func, ast.Subscript):
-            dynamic_name = "subscript callable"
-        if dynamic_name is not None:
-            self.bindings.append((dynamic_name, "dynamic", node))
-        self.generic_visit(node)
-
-
 def _annotation_is_int_or_none(annotation: ast.expr) -> bool:
     if isinstance(annotation, ast.Name):
         return annotation.id == "int"
@@ -332,47 +176,12 @@ def _annotation_is_int_or_none(annotation: ast.expr) -> bool:
     return False
 
 
-def validate_callable_source(source: Path, callable_name: str) -> None:
-    """Validate one target's static callable contract without importing it."""
+def validate_module_source(source: Path) -> None:
+    """Validate that a selected module is readable Python source."""
     try:
-        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+        ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
     except (OSError, SyntaxError, UnicodeDecodeError) as exc:
         raise ValueError("target module cannot be parsed") from exc
-    bindings = _module_bindings(tree)
-    dynamic = _ModuleDynamicBindingVisitor()
-    dynamic.visit(tree)
-    bindings.extend(dynamic.bindings)
-    if any(kind == "wildcard" for _, kind, _ in bindings):
-        raise ValueError("target module uses an unverifiable wildcard import")
-    if any(kind == "dynamic" for _, kind, _ in bindings):
-        raise ValueError("target module uses an unverifiable dynamic binding")
-    matches = [binding for binding in bindings if binding[0] == callable_name]
-    if any(kind == "async" for _, kind, _ in matches):
-        raise ValueError(
-            f"target callable must be a synchronous function: {callable_name}"
-        )
-    if not matches or any(kind != "function" for _, kind, _ in matches) or len(matches) != 1:
-        raise ValueError(f"target callable is not a function: {callable_name}")
-    function = matches[0][2]
-    assert isinstance(function, ast.FunctionDef)
-    if function.decorator_list:
-        raise ValueError(f"target callable decorators are not allowed: {callable_name}")
-    positional = [*function.args.posonlyargs, *function.args.args]
-    if not positional:
-        raise ValueError(f"target callable must accept argv: {callable_name}")
-    required_positional = len(positional) - len(function.args.defaults)
-    if required_positional > 1:
-        raise ValueError(
-            f"target callable has required positional arguments beyond argv: {callable_name}"
-        )
-    if any(default is None for default in function.args.kw_defaults):
-        raise ValueError(
-            f"target callable has required keyword-only arguments: {callable_name}"
-        )
-    if function.returns is not None and not _annotation_is_int_or_none(function.returns):
-        raise ValueError(
-            f"target callable return annotation must be int or None: {callable_name}"
-        )
 
 
 def _runtime_annotation_is_int_or_none(annotation: Any) -> bool:
@@ -389,11 +198,14 @@ def validate_callable_runtime(
     target: Any,
     module_name: str,
     callable_name: str,
-) -> None:
+) -> Any:
     """Validate the imported callable against the same runtime contract."""
-    if not inspect.isfunction(target):
-        raise ValueError(f"target is not a function: {module_name}:{callable_name}")
-    if inspect.iscoroutinefunction(target):
+    if not callable(target):
+        raise ValueError(  # noqa: TRY004 - contract failures share one ValueError boundary
+            f"target is not callable: {module_name}:{callable_name}"
+        )
+    call_method = inspect.getattr_static(type(target), "__call__", None)
+    if inspect.iscoroutinefunction(target) or inspect.iscoroutinefunction(call_method):
         raise ValueError(
             f"target callable must be a synchronous function: {module_name}:{callable_name}"
         )
@@ -433,12 +245,30 @@ def validate_callable_runtime(
         raise ValueError(
             f"target callable must accept argv: {module_name}:{callable_name}"
         )
+    required_positional = sum(
+        parameter.default is inspect.Parameter.empty for parameter in positional
+    )
+    if required_positional > 1:
+        raise ValueError(
+            "target callable has required positional arguments beyond argv: "
+            f"{module_name}:{callable_name}"
+        )
+    if any(
+        parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        and parameter.default is inspect.Parameter.empty
+        for parameter in signature.parameters.values()
+    ):
+        raise ValueError(
+            "target callable has required keyword-only arguments: "
+            f"{module_name}:{callable_name}"
+        )
     try:
         signature.bind([])
     except TypeError as exc:
         raise ValueError(
             f"target callable must accept argv: {module_name}:{callable_name}"
         ) from exc
+    return target
 
 
 def validate_selected_module(module: ModuleType, sources: TargetSources) -> bool:

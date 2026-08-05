@@ -13,13 +13,14 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+_RELEASE_MODULE_NAMES: set[str] = set()
+
 if __package__:
     from .target_contract import (
         TargetResolutionError,
         parse_target_spec,
         resolve_target_sources,
         validate_callable_runtime,
-        validate_callable_source,
         validate_selected_module,
     )
 else:
@@ -35,7 +36,6 @@ else:
     TargetResolutionError = _contract_module.TargetResolutionError
     parse_target_spec = _contract_module.parse_target_spec
     resolve_target_sources = _contract_module.resolve_target_sources
-    validate_callable_source = _contract_module.validate_callable_source
     validate_callable_runtime = _contract_module.validate_callable_runtime
     validate_selected_module = _contract_module.validate_selected_module
 
@@ -124,14 +124,41 @@ def _selected_import_path(modules_root: Path) -> Iterator[None]:
         sys.path[:] = original
 
 
-def _purge_target_modules(module_name: str, package_names: tuple[str, ...]) -> None:
-    prefixes = (module_name, *package_names)
+def _purge_target_modules(
+    module_name: str,
+    package_names: tuple[str, ...],
+    modules_root: Path,
+) -> None:
+    selected_root = modules_root.resolve()
+    prefixes = (module_name, *package_names, *_RELEASE_MODULE_NAMES)
     for loaded_name in tuple(sys.modules):
-        if any(
+        purge = any(
             loaded_name == prefix or loaded_name.startswith(f"{prefix}.")
             for prefix in prefixes
-        ):
+        )
+        if not purge:
+            loaded = sys.modules[loaded_name]
+            origin = getattr(loaded, "__file__", None)
+            if isinstance(origin, str):
+                try:
+                    purge = selected_root in Path(origin).resolve().parents
+                except OSError:
+                    purge = False
+        if purge:
             sys.modules.pop(loaded_name, None)
+
+
+def _remember_selected_modules(modules_root: Path) -> None:
+    selected_root = modules_root.resolve()
+    for loaded_name, loaded in sys.modules.items():
+        origin = getattr(loaded, "__file__", None)
+        if not isinstance(origin, str):
+            continue
+        try:
+            if selected_root in Path(origin).resolve().parents:
+                _RELEASE_MODULE_NAMES.add(loaded_name)
+        except OSError:
+            continue
 
 
 def _load_module(source: Path, module_name: str, *, is_package: bool) -> ModuleType:
@@ -193,9 +220,8 @@ def _external_target_source_exists(module_name: str, selected_modules: Path) -> 
 
 def _load_callable(module_name: str, callable_name: str) -> Callable[[list[str]], Any]:
     sources = _selected_target_sources(module_name)
-    validate_callable_source(sources.source, callable_name)
     package_names = tuple(name for name, _ in sources.package_sources)
-    _purge_target_modules(module_name, package_names)
+    _purge_target_modules(module_name, package_names, sources.modules_root)
     with _selected_import_path(sources.modules_root):
         for package_name, package_source in sources.package_sources:
             _load_module(package_source, package_name, is_package=True)
@@ -208,9 +234,9 @@ def _load_callable(module_name: str, callable_name: str) -> Callable[[list[str]]
             raise ValueError(
                 f"target module is outside the selected release: {module_name}"
             )
+        _remember_selected_modules(sources.modules_root)
         target = getattr(module, callable_name, None)
-        validate_callable_runtime(target, module_name, callable_name)
-        return target
+        return validate_callable_runtime(target, module_name, callable_name)
 
 
 def run_target(spec: str, args: list[str]) -> int:
@@ -220,10 +246,8 @@ def run_target(spec: str, args: list[str]) -> int:
     if parts is None:
         raise ValueError(f"target must be package.module:callable: {spec}")
     module_name, callable_name = parts
-    sources = _selected_target_sources(module_name)
-    with _selected_import_path(sources.modules_root):
-        target = _load_callable(module_name, callable_name)
-        result = target(args)
+    target = _load_callable(module_name, callable_name)
+    result = target(args)
     if result is None:
         return 0
     if isinstance(result, bool) or not isinstance(result, int):
@@ -231,11 +255,25 @@ def run_target(spec: str, args: list[str]) -> int:
     return result
 
 
+def validate_target(spec: str) -> None:
+    """Import and validate a target without invoking it."""
+    _verify_release_provenance()
+    parts = _target_parts(spec)
+    if parts is None:
+        raise ValueError(f"target must be package.module:callable: {spec}")
+    _load_callable(*parts)
+
+
 def main(argv: list[str] | None = None) -> int:
-    """Run the target named by the first argument."""
+    """Validate or run the target named by the first argument."""
     supplied = sys.argv[1:] if argv is None else argv
     if not supplied:
         raise ValueError("target is required")
+    if supplied[0] == "--validate-only":
+        if len(supplied) != 2:
+            raise ValueError("validate-only target is required")
+        validate_target(supplied[1])
+        return 0
     return run_target(supplied[0], supplied[1:])
 
 

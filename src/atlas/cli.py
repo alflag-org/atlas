@@ -131,11 +131,16 @@ def cmd_release_install(args: argparse.Namespace) -> int:
     paths = get_paths()
     ensure_dirs(paths)
     source = resolve_source(args.source, cache_dir=paths.cache)
-    release = validate_release(source)
     with _host_artifact_transaction(paths):
         try:
-            with reversible_release_install(source, paths.releases_root, paths.current_root):
+            with reversible_release_install(
+                source,
+                paths.releases_root,
+                paths.current_root,
+                runtime_python=paths.runtime_python,
+            ) as target:
                 names = _refresh_host_artifacts(paths)
+            release = validate_release(target, validate_targets=False)
         except Exception:
             try:
                 _refresh_host_artifacts(paths)
@@ -165,7 +170,7 @@ def cmd_release_update(args: argparse.Namespace) -> int:
             if configured is None:
                 raise ValueError(f"release is not configured: {name}")
             source = resolve_source(configured.source, cache_dir=paths.cache)
-            release = validate_release(source)
+            release = validate_release(source, validate_targets=False)
             if release.manifest.name != name:
                 raise ValueError(
                     f"configured release name mismatch: {name} != {release.manifest.name}"
@@ -187,6 +192,7 @@ def cmd_release_update(args: argparse.Namespace) -> int:
                                 source,
                                 paths.releases_root,
                                 paths.current_root,
+                                runtime_python=paths.runtime_python,
                             )
                         )
                     _refresh_host_artifacts(paths)

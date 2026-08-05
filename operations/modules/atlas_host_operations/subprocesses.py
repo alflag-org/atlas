@@ -106,9 +106,9 @@ def _groups_alive(groups: set[int]) -> bool:
 
 def _terminate_process_group(process: subprocess.Popen[str]) -> None:
     """Stop the child and any separately-created descendant process groups."""
-    if process.poll() is not None:
-        return
     groups, has_descendants = _process_groups_for_tree(process.pid)
+    if process.poll() is not None and not has_descendants:
+        return
     _signal_process_groups(groups, signal.SIGTERM)
     try:
         process.wait(timeout=_TERMINATE_GRACE_SECONDS)

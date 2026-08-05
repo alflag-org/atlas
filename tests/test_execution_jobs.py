@@ -951,6 +951,26 @@ def test_process_group_termination_handles_descendants_after_parent_exit(
     assert sleeps == [5]
     assert signals == [signal.SIGTERM, signal.SIGKILL]
 
+    signals.clear()
+    sleeps.clear()
+
+    class AlreadyExitedParent:
+        pid = 34
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(
+        "atlas.execution._process_groups_for_tree",
+        lambda pid: ({34, 45}, True),
+    )
+    _terminate_process_group(AlreadyExitedParent())
+    assert sleeps == [5]
+    assert signals == [signal.SIGTERM, signal.SIGKILL]
+
 
 def test_forward_termination_uses_process_group_termination_for_real_processes(
     monkeypatch: pytest.MonkeyPatch,

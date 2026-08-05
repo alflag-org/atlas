@@ -237,9 +237,9 @@ def _terminate_process_group(
     *,
     initial_signal: int = signal.SIGTERM,
 ) -> None:
-    if process.poll() is not None:
-        return
     groups, has_descendants = _process_groups_for_tree(process.pid)
+    if process.poll() is not None and not has_descendants:
+        return
     try:
         _signal_process_groups(groups, initial_signal)
     except ProcessLookupError:

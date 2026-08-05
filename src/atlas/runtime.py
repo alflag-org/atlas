@@ -6,13 +6,19 @@ import os
 import shutil
 import stat
 import subprocess
-from collections.abc import Iterable
+import sys
+import threading
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from .files import remove_path
 
 RUNTIME_PROVIDER = "pyenv"
+_EMPTY_VALIDATION_RUNTIMES: dict[Path, tuple[TemporaryDirectory, Path]] = {}
+_EMPTY_VALIDATION_RUNTIME_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -65,6 +71,13 @@ def _requirements_candidates(release_root: Path) -> list[Path]:
     ]
 
 
+def _requirements_file(release_root: Path) -> Path | None:
+    for candidate in _requirements_candidates(release_root):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _normalize_roots(release_roots: Iterable[Path] | Path | None) -> list[Path] | None:
     if release_roots is None:
         return None
@@ -79,11 +92,88 @@ def _runtime_requirements(release_roots: Iterable[Path] | None) -> list[str]:
     if normalized is None:
         return requirements
     for release_root in normalized:
-        for candidate in _requirements_candidates(release_root):
-            if candidate.exists():
-                requirements.extend(["-r", str(candidate)])
-                break
+        candidate = _requirements_file(release_root)
+        if candidate is not None:
+            requirements.extend(["-r", str(candidate)])
     return requirements
+
+
+def _install_release_requirements(python: Path, requirement: Path) -> None:
+    _run_checked(
+        [
+            str(python),
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--no-input",
+            "-r",
+            str(requirement),
+        ]
+    )
+
+
+def _empty_validation_runtime(base_python: Path) -> Path:
+    key = base_python.resolve()
+    with _EMPTY_VALIDATION_RUNTIME_LOCK:
+        cached = _EMPTY_VALIDATION_RUNTIMES.get(key)
+        if cached is not None and python_bin(cached[1]).is_file():
+            return python_bin(cached[1])
+        temporary = TemporaryDirectory(prefix="atlas-validation-empty.")
+        temporary_root = Path(temporary.name)
+        _run_checked(
+            [
+                str(base_python),
+                "-m",
+                "venv",
+                "--system-site-packages",
+                str(temporary_root),
+            ]
+        )
+        _EMPTY_VALIDATION_RUNTIMES[key] = (temporary, temporary_root)
+        return python_bin(temporary_root)
+
+
+@contextmanager
+def candidate_validation_runtime(
+    release_root: Path,
+    *,
+    base_python: Path | None = None,
+) -> Iterator[Path]:
+    """Provide a child interpreter containing only the candidate requirements.
+
+    A configured runtime is used directly after the candidate requirements are
+    installed into it. When no configured runtime exists, a temporary venv is
+    built from the Atlas process interpreter with the Atlas installation's
+    dependencies visible and populated from the candidate's requirements file.
+    Release code runs in that child venv, never in the bootstrap interpreter.
+    """
+    requirement = _requirements_file(release_root)
+    if base_python is not None and base_python.is_file():
+        if requirement is not None:
+            _install_release_requirements(base_python, requirement)
+        yield base_python
+        return
+
+    if requirement is None:
+        yield _empty_validation_runtime(Path(sys.executable))
+        return
+
+    bootstrap = Path(sys.executable)
+    with TemporaryDirectory(prefix="atlas-validation.") as temporary:
+        validation_root = Path(temporary)
+        _run_checked(
+            [
+                str(bootstrap),
+                "-m",
+                "venv",
+                "--system-site-packages",
+                str(validation_root),
+            ]
+        )
+        validation_python = python_bin(validation_root)
+        _install_release_requirements(validation_python, requirement)
+        yield validation_python
 
 
 def _runtime_install_env(

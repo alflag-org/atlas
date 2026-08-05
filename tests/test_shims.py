@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -18,6 +17,9 @@ def _set_env(monkeypatch, home: Path, etc: Path, var: Path) -> None:
     monkeypatch.setenv("ATLAS_ETC_DIR", str(etc))
     monkeypatch.setenv("ATLAS_VAR_DIR", str(var))
     monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
+    runtime_python = home / "runtime/python/envs/scripts/bin/python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.symlink_to(Path(sys.executable))
 
 
 def test_shims_symlink_to_artifact_runner(monkeypatch, tmp_path: Path) -> None:
@@ -98,10 +100,8 @@ def test_shim_executes_command(monkeypatch, tmp_path: Path) -> None:
 
     _set_env(monkeypatch, home, etc, var)
     runtime_python = home / "runtime/python/envs/scripts/bin/python"
-    runtime_python.parent.mkdir(parents=True, exist_ok=True)
-    python3 = shutil.which("python3")
-    assert python3 is not None
-    runtime_python.symlink_to(Path(python3))
+    runtime_python.unlink()
+    runtime_python.symlink_to(Path(sys.executable))
 
     release_src = Path("examples/basic-release").resolve()
     assert main(["release", "install", str(release_src)]) == 0

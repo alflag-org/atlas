@@ -74,13 +74,21 @@ Snapshot modes are read-only for the normal runtime path, but a same-UID account
 this is a selected-release correctness boundary, not a hostile same-UID sandbox. Do not use either
 Atlas-managed directory as a release source.
 
-Install the releases and shared runtime:
+Install the release and then build the shared runtime:
 
 ```bash
 atlas release install /srv/atlas/source/operations
 atlas runtime install
 atlas status
 ```
+
+Release installation does not require an existing shared runtime. When one exists, Atlas installs the
+candidate's `requirements.lock` or `requirements.txt` into that runtime before validation; when
+it is absent, Atlas builds a temporary validation venv that inherits Atlas core's installed
+dependencies and adds the candidate requirements. The parent Atlas process is used only to bootstrap
+that venv, never to import release code. Run `atlas runtime install` after each release install or
+update so the shared runtime is rebuilt from all active snapshots. A new dependency introduced by an
+update is therefore validated from the candidate and then included in the rebuilt shared runtime.
 
 The first-party release exposes three commands:
 

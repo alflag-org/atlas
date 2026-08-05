@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from atlas.cli import main
@@ -10,6 +11,9 @@ def _set_env(monkeypatch, home: Path, etc: Path, var: Path) -> None:
     monkeypatch.setenv("ATLAS_ETC_DIR", str(etc))
     monkeypatch.setenv("ATLAS_VAR_DIR", str(var))
     monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
+    runtime_python = home / "runtime/python/envs/scripts/bin/python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.symlink_to(Path(sys.executable))
 
 
 def _write_release(path: Path, release_name: str, release_version: str, command_name: str) -> Path:
@@ -148,6 +152,109 @@ def test_release_install_reports_failed_host_artifact_restore(
         in capsys.readouterr().err
     )
     assert not (home / "current/sample").exists()
+
+
+def test_release_install_final_validation_failure_does_not_publish_artifacts(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    etc.mkdir(parents=True)
+    _set_env(monkeypatch, home, etc, var)
+    source = _write_release(tmp_path / "source", "sample", "0.1.0", "sample-show")
+    validations: list[Path] = []
+    refreshes: list[Path] = []
+
+    def fail_validation(release, *, runtime_python, runner_path) -> None:
+        validations.append(release.root)
+        raise ValueError("final validation failed")
+
+    monkeypatch.setattr("atlas.releases._validate_targets_in_child", fail_validation)
+    monkeypatch.setattr(
+        "atlas.cli._refresh_host_artifacts",
+        lambda paths: refreshes.append(paths.artifact_root) or [],
+    )
+
+    assert main(["release", "install", str(source)]) == 2
+
+    assert len(validations) == 1
+    assert validations[0].parent == home / "releases/sample"
+    assert validations[0].name.startswith("0.1.0-")
+    assert refreshes == []
+    assert not (home / "current/sample").exists()
+    assert not list((home / "releases/sample").glob("0.1.0-*"))
+
+
+def test_release_install_final_validation_failure_preserves_previous_state(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    etc.mkdir(parents=True)
+    _set_env(monkeypatch, home, etc, var)
+    old_source = _write_release(tmp_path / "old", "sample", "0.1.0", "sample-show")
+    assert main(["release", "install", str(old_source)]) == 0
+    old_target = (home / "current/sample").resolve()
+    old_artifacts = (home / "artifacts/current").resolve()
+
+    new_source = _write_release(tmp_path / "new", "sample", "0.2.0", "sample-show")
+    refreshes: list[Path] = []
+
+    def fail_validation(release, *, runtime_python, runner_path) -> None:
+        raise ValueError("final validation failed")
+
+    monkeypatch.setattr("atlas.releases._validate_targets_in_child", fail_validation)
+    monkeypatch.setattr(
+        "atlas.cli._refresh_host_artifacts",
+        lambda paths: refreshes.append(paths.artifact_root) or [],
+    )
+
+    assert main(["release", "install", str(new_source)]) == 2
+
+    assert (home / "current/sample").resolve() == old_target
+    assert (home / "artifacts/current").resolve() == old_artifacts
+    assert refreshes == []
+    assert not list((home / "releases/sample").glob("0.2.0-*"))
+
+
+def test_release_update_final_validation_failure_does_not_publish_artifacts(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    etc.mkdir(parents=True)
+    _set_env(monkeypatch, home, etc, var)
+    source = _write_release(tmp_path / "source", "sample", "0.1.0", "sample-show")
+    (etc / "config.yml").write_text(
+        "runtime:\n"
+        "  python:\n"
+        '    version: "3.14"\n'
+        "releases:\n"
+        f'  sample:\n    source: "{source}"\n',
+        encoding="utf-8",
+    )
+    refreshes: list[Path] = []
+
+    def fail_validation(release, *, runtime_python, runner_path) -> None:
+        raise ValueError("final validation failed")
+
+    monkeypatch.setattr("atlas.releases._validate_targets_in_child", fail_validation)
+    monkeypatch.setattr(
+        "atlas.cli._refresh_host_artifacts",
+        lambda paths: refreshes.append(paths.artifact_root) or [],
+    )
+
+    assert main(["release", "update"]) == 2
+
+    assert refreshes == []
+    assert not (home / "current/sample").exists()
+    assert not list((home / "releases/sample").glob("0.1.0-*"))
 
 
 def test_release_update_reports_failed_host_artifact_restore(

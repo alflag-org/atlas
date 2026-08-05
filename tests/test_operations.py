@@ -5,6 +5,7 @@ import io
 import json
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import atlas_configuration_operations.controller as controller_module
@@ -25,6 +26,15 @@ from atlas.manifests import load_manifest
 ROOT = Path(__file__).resolve().parents[1]
 OPERATIONS = ROOT / "operations"
 PROVISIONING_FIXTURE = ROOT / "tests/fixtures/provisioning"
+
+
+@pytest.fixture(autouse=True)
+def _release_validation_runtime(monkeypatch: pytest.MonkeyPatch):
+    @contextmanager
+    def use_test_runtime(*args, **kwargs):
+        yield Path(sys.executable)
+
+    monkeypatch.setattr("atlas.releases.candidate_validation_runtime", use_test_runtime)
 
 
 def _load_job(name: str):

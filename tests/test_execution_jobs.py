@@ -118,14 +118,16 @@ def test_reinstall_same_version_keeps_running_snapshot_and_correlates_digest(
         "var = Path(os.environ['ATLAS_VAR_DIR'])\n"
         "if os.environ.get('ATLAS_RELEASE_DIGEST'):\n"
         "    (var / 'old-import-ready').write_text(MARKER)\n"
-        "    while not (var / 'old-import-continue').exists():\n"
-        "        time.sleep(0.01)\n"
+        "    if os.environ.get('ATLAS_RUN_ID'):\n"
+        "        while not (var / 'old-import-continue').exists():\n"
+        "            time.sleep(0.01)\n"
         "def main(argv=None):\n"
         "    (var / f'executed-{MARKER}').write_text(os.environ['ATLAS_RELEASE_DIGEST'])\n"
         "    return 0\n",
         encoding="utf-8",
     )
     _activate(atlas_paths, source)
+    (atlas_paths.var / "old-import-ready").unlink(missing_ok=True)
     old_command = resolve_command(
         atlas_paths.current_root,
         atlas_paths.releases_root,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -80,9 +81,7 @@ def test_run_and_logs(monkeypatch, tmp_path: Path) -> None:
     _set_env(monkeypatch, home, etc, var)
     runtime_python = home / "runtime/python/envs/scripts/bin/python"
     runtime_python.parent.mkdir(parents=True, exist_ok=True)
-    python3 = shutil.which("python3")
-    assert python3 is not None
-    runtime_python.symlink_to(Path(python3))
+    runtime_python.symlink_to(Path(sys.executable))
 
     release_src = Path("examples/basic-release").resolve()
     assert main(["release", "install", str(release_src)]) == 0
@@ -112,9 +111,7 @@ def test_run_sets_release_env_and_pythonpath_order(monkeypatch, tmp_path: Path, 
     monkeypatch.setenv("PYTHONPATH", "/existing/pythonpath")
     runtime_python = home / "runtime/python/envs/scripts/bin/python"
     runtime_python.parent.mkdir(parents=True, exist_ok=True)
-    python3 = shutil.which("python3")
-    assert python3 is not None
-    runtime_python.symlink_to(Path(python3))
+    runtime_python.symlink_to(Path(sys.executable))
 
     alpha = _write_release(tmp_path / "alpha", "0.1.0", "alpha", "alpha")
     beta = _write_release(tmp_path / "beta", "0.2.0", "beta", "beta")
@@ -189,7 +186,11 @@ def test_run_fails_when_runtime_python_is_missing(monkeypatch, tmp_path: Path, c
     _set_env(monkeypatch, home, etc, var)
 
     release_src = Path("examples/basic-release").resolve()
+    runtime_python = home / "runtime/python/envs/scripts/bin/python"
+    runtime_python.parent.mkdir(parents=True, exist_ok=True)
+    runtime_python.symlink_to(Path(sys.executable))
     assert main(["release", "install", str(release_src)]) == 0
+    runtime_python.unlink()
 
     assert main(["run", "sample", "hello", "--name=test"]) == 2
     assert "runtime python executable not found" in capsys.readouterr().err

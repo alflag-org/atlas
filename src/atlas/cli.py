@@ -132,6 +132,7 @@ def cmd_release_install(args: argparse.Namespace) -> int:
     ensure_dirs(paths)
     source = resolve_source(args.source, cache_dir=paths.cache)
     with _host_artifact_transaction(paths):
+        refresh_started = False
         try:
             with reversible_release_install(
                 source,
@@ -139,15 +140,17 @@ def cmd_release_install(args: argparse.Namespace) -> int:
                 paths.current_root,
                 runtime_python=paths.runtime_python,
             ) as target:
+                refresh_started = True
                 names = _refresh_host_artifacts(paths)
             release = validate_release(target, validate_targets=False)
         except Exception:
-            try:
-                _refresh_host_artifacts(paths)
-            except Exception as rollback_error:
-                raise RuntimeError(
-                    "release installation failed and host artifacts could not be restored"
-                ) from rollback_error
+            if refresh_started:
+                try:
+                    _refresh_host_artifacts(paths)
+                except Exception as rollback_error:
+                    raise RuntimeError(
+                        "release installation failed and host artifacts could not be restored"
+                    ) from rollback_error
             raise
     print(f"installed release: {release.manifest.name} {release.version}")
     print(f"commands: {len(names)}")
@@ -184,6 +187,7 @@ def cmd_release_update(args: argparse.Namespace) -> int:
             shutil.copytree(release.root, temporary_source)
             sources.append(temporary_source)
         with _host_artifact_transaction(paths):
+            refresh_started = False
             try:
                 with ExitStack() as installations:  # pragma: no branch - interpreter-generated with entry arc
                     for source in sources:
@@ -195,14 +199,16 @@ def cmd_release_update(args: argparse.Namespace) -> int:
                                 runtime_python=paths.runtime_python,
                             )
                         )
+                    refresh_started = True
                     _refresh_host_artifacts(paths)
             except Exception:
-                try:
-                    _refresh_host_artifacts(paths)
-                except Exception as rollback_error:
-                    raise RuntimeError(
-                        "release update failed and host artifacts could not be restored"
-                    ) from rollback_error
+                if refresh_started:
+                    try:
+                        _refresh_host_artifacts(paths)
+                    except Exception as rollback_error:
+                        raise RuntimeError(
+                            "release update failed and host artifacts could not be restored"
+                        ) from rollback_error
                 raise
     return 0
 

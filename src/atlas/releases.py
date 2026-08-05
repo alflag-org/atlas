@@ -7,7 +7,6 @@ import os
 import shutil
 import stat
 import subprocess
-import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -17,6 +16,7 @@ from uuid import uuid4
 from .files import remove_path
 from .locks import acquire_lock
 from .manifests import ReleaseManifest, Target, load_manifest
+from .runtime import candidate_validation_runtime
 
 
 @dataclass(frozen=True)
@@ -77,41 +77,43 @@ def _validate_targets_in_child(
     runner_path: Path | None,
 ) -> None:
     """Validate manifest callables through the production release runner."""
-    executable = (
-        runtime_python
-        if runtime_python is not None and runtime_python.is_file()
-        else Path(sys.executable)
-    )
+    targets = tuple(_manifest_targets(release.manifest))
+    if not targets:
+        return
     runner = (
         runner_path
         if runner_path is not None and runner_path.is_file()
         else Path(__file__).with_name("release_runner.py")
     )
-    environment = os.environ.copy()
-    environment.pop("PYTHONPATH", None)
-    environment["ATLAS_RELEASE_ROOT"] = str(release.root)
-    environment["PYTHONDONTWRITEBYTECODE"] = "1"
-    if release.root.name == _snapshot_name(release):
-        environment["ATLAS_RELEASE_DIGEST"] = release.content_digest
-    else:
-        environment.pop("ATLAS_RELEASE_DIGEST", None)
+    with candidate_validation_runtime(
+        release.root,
+        base_python=runtime_python,
+    ) as executable:
+        environment = os.environ.copy()
+        environment.pop("PYTHONPATH", None)
+        environment["ATLAS_RELEASE_ROOT"] = str(release.root)
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        if release.root.name == _snapshot_name(release):
+            environment["ATLAS_RELEASE_DIGEST"] = release.content_digest
+        else:
+            environment.pop("ATLAS_RELEASE_DIGEST", None)
 
-    for target in _manifest_targets(release.manifest):
-        completed = subprocess.run(
-            [str(executable), str(runner), "--validate-only", target.spec],
-            capture_output=True,
-            check=False,
-            env=environment,
-            text=True,
-        )
-        if completed.returncode == 0:
-            continue
-        detail = completed.stderr.strip() or completed.stdout.strip()
-        if not detail:
-            detail = f"child exited with status {completed.returncode}"
-        raise ValueError(
-            f"release target validation failed for {target.spec}: {detail}"
-        )
+        for target in targets:
+            completed = subprocess.run(
+                [str(executable), str(runner), "--validate-only", target.spec],
+                capture_output=True,
+                check=False,
+                env=environment,
+                text=True,
+            )
+            if completed.returncode == 0:
+                continue
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            if not detail:
+                detail = f"child exited with status {completed.returncode}"
+            raise ValueError(
+                f"release target validation failed for {target.spec}: {detail}"
+            )
 
 
 def validate_release(
@@ -205,6 +207,9 @@ def _make_tree_writable(root: Path) -> None:
 def _stage_snapshot(
     source: ValidatedRelease,
     target: Path,
+    *,
+    runtime_python: Path | None,
+    runner_path: Path | None,
 ) -> None:
     if target.is_symlink() or (target.exists() and not target.is_dir()):
         raise ValueError(f"release snapshot must be a directory: {target}")
@@ -217,6 +222,7 @@ def _stage_snapshot(
 
     staging = target.parent / f".{target.name}.tmp.{uuid4().hex}"
     remove_path(staging)
+    published = False
     try:
         shutil.copytree(source.root, staging)
         staged = validate_release(staging, validate_targets=False)
@@ -231,6 +237,24 @@ def _stage_snapshot(
         if verified.content_digest != source.content_digest:
             raise ValueError(f"staged release content changed: {source.manifest.name}")
         staging.rename(target)
+        published = True
+        final = validate_release(target, validate_targets=False)
+        if (
+            final.version != source.version
+            or final.manifest.name != source.manifest.name
+            or final.content_digest != source.content_digest
+        ):
+            raise ValueError(f"final release snapshot changed: {source.manifest.name}")
+        _validate_targets_in_child(
+            final,
+            runtime_python=runtime_python,
+            runner_path=runner_path,
+        )
+    except BaseException:
+        if published and target.exists() and not target.is_symlink():
+            _make_tree_writable(target)
+            remove_path(target)
+        raise
     finally:
         if staging.exists():
             _make_tree_writable(staging)
@@ -247,15 +271,7 @@ def reversible_release_install(
     runner_path: Path | None = None,
 ) -> Iterator[Path]:
     """Activate one never-replaced snapshot under a per-release transaction lock."""
-    validation_options = {
-        key: value
-        for key, value in (
-            ("runtime_python", runtime_python),
-            ("runner_path", runner_path),
-        )
-        if value is not None
-    }
-    release = validate_release(source, **validation_options)
+    release = validate_release(source, validate_targets=False)
     if releases_root.is_symlink() or (
         releases_root.exists() and not releases_root.is_dir()
     ):
@@ -274,7 +290,12 @@ def reversible_release_install(
         previous_target = _current_target(link, releases_root)
         target.parent.mkdir(parents=True, exist_ok=True)
         target_existed = target.exists()
-        _stage_snapshot(release, target)
+        _stage_snapshot(
+            release,
+            target,
+            runtime_python=runtime_python,
+            runner_path=runner_path,
+        )
         activated = False
         try:
             current_root.mkdir(parents=True, exist_ok=True)
@@ -291,7 +312,7 @@ def reversible_release_install(
                     if not target_existed:
                         _make_tree_writable(target)
                         remove_path(target)
-                elif not activated and not target_existed:
+                elif not activated and not target_existed and target.exists():
                     _make_tree_writable(target)
                     remove_path(target)
             except Exception as rollback_error:

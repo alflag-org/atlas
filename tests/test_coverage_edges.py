@@ -77,6 +77,31 @@ def _release(
     return path
 
 
+def _wheel(path: Path, package: str, version: str, value: str) -> Path:
+    distribution = f"{package}-{version}"
+    dist_info = f"{distribution}.dist-info"
+    wheel = path / f"{distribution}-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(f"{package}/__init__.py", f"VALUE = {value!r}\n")
+        archive.writestr(
+            f"{dist_info}/METADATA",
+            f"Metadata-Version: 2.1\nName: {package}\nVersion: {version}\n",
+        )
+        archive.writestr(
+            f"{dist_info}/WHEEL",
+            "Wheel-Version: 1.0\nGenerator: atlas-test\n"
+            "Root-Is-Purelib: true\nTag: py3-none-any\n",
+        )
+        archive.writestr(
+            f"{dist_info}/RECORD",
+            f"{package}/__init__.py,,\n"
+            f"{dist_info}/METADATA,,\n"
+            f"{dist_info}/WHEEL,,\n"
+            f"{dist_info}/RECORD,,\n",
+        )
+    return wheel
+
+
 def _fake_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[list[str]]:
     calls: list[list[str]] = []
     pyenv_root = tmp_path / "pyenv/versions/3.12.3"
@@ -527,6 +552,106 @@ def test_install_release_rejects_changed_staged_content(
     monkeypatch.setattr(releases_module, "validate_release", changed_staging)
     with pytest.raises(ValueError, match="staged release content changed"):
         install_release(source, tmp_path / "releases", tmp_path / "current")
+
+
+def test_release_validation_uses_candidate_requirements_without_runtime(
+    tmp_path: Path,
+) -> None:
+    dependency = _wheel(tmp_path, "candidate_dependency", "1.0.0", "one")
+    source = _release(tmp_path / "source")
+    (source / "requirements.txt").write_text(f"{dependency}\n", encoding="utf-8")
+    (source / "modules/sample.py").write_text(
+        "from candidate_dependency import VALUE\n"
+        "def main(argv: list[str] | None = None) -> int:\n"
+        "    return 0 if VALUE == 'one' else 1\n",
+        encoding="utf-8",
+    )
+
+    target = install_release(source, tmp_path / "releases", tmp_path / "current")
+
+    assert (tmp_path / "current/default").resolve() == target
+
+
+def test_release_validation_inherits_atlas_core_dependencies_without_runtime(
+    tmp_path: Path,
+) -> None:
+    source = _release(tmp_path / "source")
+    (source / "modules/sample.py").write_text(
+        "import yaml\n"
+        "def main(argv: list[str] | None = None) -> int:\n"
+        "    return 0 if yaml.__name__ == 'yaml' else 1\n",
+        encoding="utf-8",
+    )
+
+    target = install_release(source, tmp_path / "releases", tmp_path / "current")
+
+    assert (tmp_path / "current/default").resolve() == target
+
+
+def test_release_update_validates_a_new_candidate_dependency_without_runtime(
+    tmp_path: Path,
+) -> None:
+    first_dependency = _wheel(tmp_path, "candidate_dependency", "1.0.0", "one")
+    second_dependency = _wheel(tmp_path, "candidate_dependency", "2.0.0", "two")
+    source = _release(tmp_path / "source")
+    requirements = source / "requirements.txt"
+    module = source / "modules/sample.py"
+    requirements.write_text(f"{first_dependency}\n", encoding="utf-8")
+    module.write_text(
+        "from candidate_dependency import VALUE\n"
+        "def main(argv: list[str] | None = None) -> int:\n"
+        "    return 0 if VALUE == 'one' else 1\n",
+        encoding="utf-8",
+    )
+    releases = tmp_path / "releases"
+    current = tmp_path / "current"
+    install_release(source, releases, current)
+
+    requirements.write_text(f"{second_dependency}\n", encoding="utf-8")
+    module.write_text(
+        "from candidate_dependency import VALUE\n"
+        "def main(argv: list[str] | None = None) -> int:\n"
+        "    return 0 if VALUE == 'two' else 1\n",
+        encoding="utf-8",
+    )
+
+    replacement = install_release(source, releases, current)
+
+    assert (current / "default").resolve() == replacement
+    snapshots = list((releases / "default").glob("0.1.0-*"))
+    assert len(snapshots) == 2
+    assert replacement in snapshots
+
+
+def test_release_final_snapshot_is_rechecked_after_publish(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = _release(tmp_path / "source")
+    releases = tmp_path / "releases"
+    current = tmp_path / "current"
+    original_rename = Path.rename
+
+    def mutate_published_snapshot(path: Path, destination: Path) -> Path:
+        result = original_rename(path, destination)
+        if ".tmp." in path.name:
+            module = destination / "modules/sample.py"
+            mode = stat.S_IMODE(module.stat().st_mode)
+            module.chmod(mode | stat.S_IWUSR)
+            module.write_text(
+                "def main(argv: list[str] | None = None) -> int:\n    return 1\n",
+                encoding="utf-8",
+            )
+            module.chmod(mode)
+        return result
+
+    monkeypatch.setattr(Path, "rename", mutate_published_snapshot)
+
+    with pytest.raises(ValueError, match="final release snapshot changed"):
+        install_release(source, releases, current)
+
+    assert not (current / "default").exists()
+    assert not list((releases / "default").glob("0.1.0-*"))
 
 
 def test_release_snapshot_rejects_existing_digest_mismatch(tmp_path: Path) -> None:

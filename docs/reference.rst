@@ -131,12 +131,12 @@ transaction uses ``$ATLAS_HOME/releases/.locks/<release>.lock``. The
 .. code-block:: bash
 
    atlas release install /srv/atlas/source/operations
-   atlas release list --verbose
    atlas runtime install
+   atlas release list --verbose
    atlas status
 
    atlas release update
-   atlas release update operations
+   atlas runtime install
 
 Atlas validates every requested source, copies it to a staged content-addressed snapshot below
 ``$ATLAS_HOME/releases``, revalidates the staged tree, and then atomically switches the link below
@@ -155,6 +155,16 @@ fails.
 ``atlas runtime install`` reads ``requirements.lock`` when a release provides it, otherwise
 ``requirements.txt``. Only manifest commands receive shims below ``/opt/atlas/shims``. Jobs remain
 available through ``atlas job``.
+
+Release installation and update do not require the shared runtime to exist first. If a candidate has
+release requirements and the shared runtime exists, Atlas installs those requirements into that
+runtime before validation. Without a shared runtime, Atlas creates a temporary validation venv with
+Atlas core's installed dependencies visible, installs the candidate requirements, and runs the
+validate-only child against the exact staged snapshot. A dependency-free candidate uses the configured
+shared interpreter when it exists; otherwise Atlas creates the same temporary validation venv. The
+Atlas process is only the venv bootstrap and never imports release code. Run ``atlas runtime install``
+after every install or update to rebuild the shared runtime from the active snapshots, including
+dependencies introduced by the update.
 
 Write a release manifest
 ------------------------

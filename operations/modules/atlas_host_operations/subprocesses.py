@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import os
 import shlex
+import signal
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
+
+_TERMINATE_GRACE_SECONDS = 5
+_PR_SET_PDEATHSIG = 1
 
 
 @dataclass(frozen=True)
@@ -32,6 +37,90 @@ class CommandRunner(Protocol):
     ) -> ChildResult: ...
 
 
+def _parent_death_preexec() -> object | None:
+    """Return a Linux pre-exec hook that binds a child to this parent."""
+    if sys.platform != "linux":
+        return None
+    parent_pid = os.getpid()
+
+    def set_parent_death_signal() -> None:
+        import ctypes
+
+        libc = ctypes.CDLL(None)
+        if libc.prctl(_PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0) != 0:
+            os._exit(127)
+        if os.getppid() != parent_pid:
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    return set_parent_death_signal
+
+
+def _process_groups_for_tree(root_pid: int) -> tuple[set[int], bool]:
+    """Return process groups in a Linux descendant tree and whether it was read."""
+    try:
+        entries: dict[int, tuple[int, int]] = {}
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdecimal():
+                continue
+            try:
+                fields = (entry / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+                entries[int(entry.name)] = (int(fields[1]), int(fields[2]))
+            except (OSError, ValueError, IndexError):
+                continue
+    except OSError:
+        return {root_pid}, False
+
+    if root_pid not in entries:
+        return {root_pid}, False
+    descendants = {root_pid}
+    groups = {entries[root_pid][1]}
+    changed = True
+    while changed:
+        changed = False
+        for pid, (parent_pid, group_id) in entries.items():
+            if pid in descendants or parent_pid not in descendants:
+                continue
+            descendants.add(pid)
+            groups.add(group_id)
+            changed = True
+    return groups, len(descendants) > 1
+
+
+def _signal_process_groups(groups: set[int], signum: int) -> None:
+    for group_id in groups:
+        try:
+            os.killpg(group_id, signum)
+        except ProcessLookupError:
+            continue
+
+
+def _groups_alive(groups: set[int]) -> bool:
+    for group_id in groups:
+        try:
+            os.killpg(group_id, 0)
+        except ProcessLookupError:
+            continue
+        return True
+    return False
+
+
+def _terminate_process_group(process: subprocess.Popen[str]) -> None:
+    """Stop the child and any separately-created descendant process groups."""
+    if process.poll() is not None:
+        return
+    groups, has_descendants = _process_groups_for_tree(process.pid)
+    _signal_process_groups(groups, signal.SIGTERM)
+    try:
+        process.wait(timeout=_TERMINATE_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
+    if has_descendants and process.poll() is not None and _groups_alive(groups):
+        time.sleep(_TERMINATE_GRACE_SECONDS)
+    if process.poll() is None or (has_descendants and _groups_alive(groups)):
+        _signal_process_groups(groups, signal.SIGKILL)
+        process.wait()
+
+
 class SubprocessRunner:
     """Run one exact argv without exposing child stdout to artifact stdout."""
 
@@ -50,34 +139,38 @@ class SubprocessRunner:
             child_env = os.environ.copy()
             child_env.update(env)
         try:
-            process = subprocess.run(
+            process = subprocess.Popen(
                 argv,
                 cwd=cwd,
                 env=child_env,
-                input=input_text,
                 text=True,
-                capture_output=True,
-                timeout=timeout_seconds,
-                check=False,
+                stdin=subprocess.PIPE if input_text is not None else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+                preexec_fn=_parent_death_preexec(),
                 shell=False,
             )
+            stdout, stderr = process.communicate(input=input_text, timeout=timeout_seconds)
         except FileNotFoundError:
             return ChildResult(tuple(argv), 127, stderr=f"{argv[0]} command not found")
         except subprocess.TimeoutExpired as exc:
+            _terminate_process_group(process)
+            stdout, stderr = process.communicate()
             return ChildResult(
                 tuple(argv),
                 124,
-                stdout=_timeout_text(exc.stdout),
-                stderr=_timeout_text(exc.stderr),
+                stdout=_timeout_text(stdout if stdout is not None else exc.stdout),
+                stderr=_timeout_text(stderr if stderr is not None else exc.stderr),
                 timed_out=True,
             )
-        if process.stderr:
-            print(process.stderr.rstrip(), file=sys.stderr)
+        if stderr:
+            print(stderr.rstrip(), file=sys.stderr)
         return ChildResult(
             tuple(argv),
             process.returncode,
-            stdout=process.stdout,
-            stderr=process.stderr,
+            stdout=stdout,
+            stderr=stderr,
         )
 
 

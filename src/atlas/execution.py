@@ -25,6 +25,7 @@ _SENSITIVE_TOKENS = ("password", "token", "secret", "key")
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TIMEOUT_EXIT_CODE = 124
 _TERMINATE_GRACE_SECONDS = 5
+_PR_SET_PDEATHSIG = 1
 
 
 def redact_args(args: list[str]) -> list[str]:
@@ -164,20 +165,93 @@ def _environment(
     return env
 
 
-def _terminate_process_group(process: subprocess.Popen[str]) -> None:
+def _parent_death_preexec() -> object | None:
+    """Return a Linux pre-exec hook that binds a child to this parent."""
+    if sys.platform != "linux":
+        return None
+    parent_pid = os.getpid()
+
+    def set_parent_death_signal() -> None:
+        import ctypes
+
+        libc = ctypes.CDLL(None)
+        if libc.prctl(_PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0) != 0:
+            os._exit(127)
+        if os.getppid() != parent_pid:
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    return set_parent_death_signal
+
+
+def _process_groups_for_tree(root_pid: int) -> tuple[set[int], bool]:
+    """Return process groups in a Linux descendant tree and whether it was read."""
+    try:
+        entries: dict[int, tuple[int, int]] = {}
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdecimal():
+                continue
+            try:
+                fields = (entry / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+                entries[int(entry.name)] = (int(fields[1]), int(fields[2]))
+            except (OSError, ValueError, IndexError):
+                continue
+    except OSError:
+        return {root_pid}, False
+
+    if root_pid not in entries:
+        return {root_pid}, False
+    descendants = {root_pid}
+    groups = {entries[root_pid][1]}
+    changed = True
+    while changed:
+        changed = False
+        for pid, (parent_pid, group_id) in entries.items():
+            if pid in descendants or parent_pid not in descendants:
+                continue
+            descendants.add(pid)
+            groups.add(group_id)
+            changed = True
+    return groups, len(descendants) > 1
+
+
+def _signal_process_groups(groups: set[int], signum: int) -> None:
+    for group_id in groups:
+        try:
+            os.killpg(group_id, signum)
+        except ProcessLookupError:
+            continue
+
+
+def _groups_alive(groups: set[int]) -> bool:
+    for group_id in groups:
+        try:
+            os.killpg(group_id, 0)
+        except ProcessLookupError:
+            continue
+        return True
+    return False
+
+
+def _terminate_process_group(
+    process: subprocess.Popen[str],
+    *,
+    initial_signal: int = signal.SIGTERM,
+) -> None:
     if process.poll() is not None:
         return
+    groups, has_descendants = _process_groups_for_tree(process.pid)
     try:
-        os.killpg(process.pid, signal.SIGTERM)
+        _signal_process_groups(groups, initial_signal)
     except ProcessLookupError:
         return
     try:
         process.wait(timeout=_TERMINATE_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            return
+        pass
+    if has_descendants and process.poll() is not None and _groups_alive(groups):
+        time.sleep(_TERMINATE_GRACE_SECONDS)
+    if process.poll() is None or (has_descendants and _groups_alive(groups)):
+        _signal_process_groups(groups, signal.SIGKILL)
         process.wait()
 
 
@@ -186,10 +260,13 @@ def _forward_termination_signal(process: subprocess.Popen[str]) -> Iterator[None
     previous_handler = signal.getsignal(signal.SIGTERM)
 
     def forward(signum: int, _frame: object) -> None:
-        try:
-            os.killpg(process.pid, signum)
-        except ProcessLookupError:
-            pass
+        if hasattr(process, "poll") and hasattr(process, "wait"):
+            _terminate_process_group(process, initial_signal=signum)
+        else:
+            try:
+                os.killpg(process.pid, signum)
+            except ProcessLookupError:
+                pass
 
     signal.signal(signal.SIGTERM, forward)
     try:
@@ -285,6 +362,7 @@ def execute(
                 env=env,
                 text=True,
                 start_new_session=True,
+                preexec_fn=_parent_death_preexec(),
             )
         except FileNotFoundError as exc:
             raise ValueError(f"runtime executable not found: {paths.runtime_python}") from exc

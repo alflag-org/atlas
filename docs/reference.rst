@@ -317,8 +317,9 @@ The default layout is:
 
 Commands and jobs share one executor. Arguments remain a list and run with ``shell=False``. Atlas
 records read-only Git context for the working directory and starts the child in a new process
-group. A timeout sends SIGTERM, waits five seconds, then sends SIGKILL; its exit status is 124.
-A held non-blocking job-instance lock returns 75.
+group. A timeout or termination signal reaches descendant process groups as well: Atlas sends
+SIGTERM, allows five seconds for cleanup, then sends SIGKILL to groups that remain. A timeout's
+exit status is 124. A held non-blocking job-instance lock returns 75.
 
 Each run receives ``run_id``, ``parent_run_id``, and ``operation_id``. Nested Atlas execution records the
 caller as its parent while retaining the operation ID. Release code receives the same values as
@@ -365,7 +366,7 @@ Job lock conflict
    operating-system lock.
 
 Timed-out job
-   Atlas returns 124, records ``timed_out``, and terminates the process group.
+   Atlas returns 124, records ``timed_out``, and terminates the process group and its descendants.
 
 Systemd installation failure
    Check root permission, the unit files, destination symlinks, and

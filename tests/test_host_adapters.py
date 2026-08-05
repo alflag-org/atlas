@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -31,6 +35,12 @@ from atlas_host_operations.subprocesses import (
     ChildResult,
     RecordingRunner,
     SubprocessRunner,
+    _groups_alive,
+    _parent_death_preexec,
+    _process_groups_for_tree,
+    _signal_process_groups,
+    _terminate_process_group,
+    _timeout_text,
 )
 from atlas_operations.child import atlas_executable, job_argv
 
@@ -628,3 +638,178 @@ def test_subprocess_and_recording_runners(
     recording = RecordingRunner()
     with pytest.raises(AssertionError, match="no recorded result"):
         recording.run(["anything"])
+
+
+def test_subprocess_timeout_kills_a_separate_descendant_group(tmp_path: Path) -> None:
+    started = tmp_path / "descendant-started"
+    completed = tmp_path / "descendant-completed"
+    descendant = (
+        "import time\n"
+        "from pathlib import Path\n"
+        f"time.sleep(0.5)\nPath({str(completed)!r}).write_text('done')\n"
+    )
+    parent = (
+        "import subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        f"Path({str(started)!r}).write_text('started')\n"
+        f"subprocess.Popen([sys.executable, '-c', {descendant!r}], start_new_session=True)\n"
+        "time.sleep(30)\n"
+    )
+
+    result = SubprocessRunner().run(
+        [sys.executable, "-c", parent],
+        timeout_seconds=0.1,
+    )
+
+    assert result.timed_out and result.return_code == 124
+    assert started.exists()
+    time.sleep(0.7)
+    assert not completed.exists()
+
+
+def test_subprocess_helpers_cover_platform_proc_and_timeout_edges(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("atlas_host_operations.subprocesses.sys.platform", "darwin")
+    assert _parent_death_preexec() is None
+
+    monkeypatch.setattr("atlas_host_operations.subprocesses.sys.platform", "linux")
+    import ctypes
+
+    class Libc:
+        def __init__(self, result: int):
+            self.result = result
+
+        def prctl(self, *args):
+            return self.result
+
+    monkeypatch.setattr("atlas_host_operations.subprocesses.os.getppid", os.getpid)
+    monkeypatch.setattr(ctypes, "CDLL", lambda _: Libc(0))
+    hook = _parent_death_preexec()
+    assert callable(hook)
+    hook()
+
+    exits: list[int] = []
+    monkeypatch.setattr(ctypes, "CDLL", lambda _: Libc(1))
+    monkeypatch.setattr("atlas_host_operations.subprocesses.os._exit", exits.append)
+    hook = _parent_death_preexec()
+    assert callable(hook)
+    hook()
+    assert exits == [127]
+
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(ctypes, "CDLL", lambda _: Libc(0))
+    monkeypatch.setattr("atlas_host_operations.subprocesses.os.getppid", lambda: -1)
+    monkeypatch.setattr(
+        "atlas_host_operations.subprocesses.os.kill",
+        lambda pid, signum: killed.append((pid, signum)),
+    )
+    hook = _parent_death_preexec()
+    assert callable(hook)
+    hook()
+    assert killed == [(os.getpid(), signal.SIGTERM)]
+
+    monkeypatch.setattr(
+        Path,
+        "iterdir",
+        lambda self: (_ for _ in ()).throw(OSError("/proc unavailable")),
+    )
+    assert _process_groups_for_tree(99) == ({99}, False)
+
+    numeric = tmp_path / "123"
+    invalid = tmp_path / "124"
+    numeric.mkdir()
+    invalid.mkdir()
+    (numeric / "stat").write_text("invalid", encoding="utf-8")
+    (invalid / "stat").write_text("invalid", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def fail_one_stat(path: Path, *args, **kwargs):
+        if path == invalid / "stat":
+            raise OSError("stat disappeared")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_one_stat)
+    monkeypatch.setattr(Path, "iterdir", lambda self: [Path("not-a-pid"), numeric, invalid])
+    assert _process_groups_for_tree(123) == ({123}, False)
+
+    monkeypatch.setattr(
+        "atlas_host_operations.subprocesses.os.killpg",
+        lambda pid, signum: (_ for _ in ()).throw(ProcessLookupError),
+    )
+    _signal_process_groups({123}, signal.SIGTERM)
+    assert _groups_alive({123}) is False
+    monkeypatch.setattr(
+        "atlas_host_operations.subprocesses.os.killpg",
+        lambda pid, signum: None,
+    )
+    assert _groups_alive({123}) is True
+
+    class Finished:
+        pid = 10
+
+        def poll(self):
+            return 0
+
+    _terminate_process_group(Finished())
+
+    signals: list[int] = []
+
+    class NeedsKill:
+        pid = 11
+        waits = 0
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            self.waits += 1
+            if self.waits == 1:
+                raise subprocess.TimeoutExpired("child", timeout)
+            return 0
+
+    process = NeedsKill()
+    monkeypatch.setattr(
+        "atlas_host_operations.subprocesses._process_groups_for_tree",
+        lambda pid: ({11}, False),
+    )
+    monkeypatch.setattr(
+        "atlas_host_operations.subprocesses.os.killpg",
+        lambda pid, signum: signals.append(signum),
+    )
+    _terminate_process_group(process)
+    assert signals == [signal.SIGTERM, signal.SIGKILL]
+    assert process.waits == 2
+
+    descendant_signals: list[int] = []
+    sleeps: list[float] = []
+
+    class ExitedParent:
+        pid = 12
+        alive = True
+
+        def poll(self):
+            return None if self.alive else 0
+
+        def wait(self, timeout=None):
+            self.alive = False
+            return 0
+
+    monkeypatch.setattr(
+        "atlas_host_operations.subprocesses._process_groups_for_tree",
+        lambda pid: ({12, 13}, True),
+    )
+    monkeypatch.setattr(
+        "atlas_host_operations.subprocesses._groups_alive",
+        lambda groups: True,
+    )
+    monkeypatch.setattr(
+        "atlas_host_operations.subprocesses._signal_process_groups",
+        lambda groups, signum: descendant_signals.append(signum),
+    )
+    monkeypatch.setattr("atlas_host_operations.subprocesses.time.sleep", sleeps.append)
+    _terminate_process_group(ExitedParent())
+    assert sleeps == [5]
+    assert descendant_signals == [signal.SIGTERM, signal.SIGKILL]
+    assert _timeout_text(None) == ""

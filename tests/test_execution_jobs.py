@@ -18,6 +18,9 @@ from atlas.errors import LockUnavailableError
 from atlas.execution import (
     _append_run_log,
     _forward_termination_signal,
+    _groups_alive,
+    _parent_death_preexec,
+    _process_groups_for_tree,
     _pythonpath,
     _terminate_process_group,
     execute,
@@ -668,12 +671,22 @@ def test_advisory_lock_rejects_symlinks_and_non_files(atlas_paths, tmp_path: Pat
             pass
 
 
-def test_execute_timeout_terminates_process_group(atlas_paths, release_factory) -> None:
+def test_execute_timeout_terminates_process_group(
+    atlas_paths,
+    release_factory,
+    tmp_path: Path,
+) -> None:
     source = release_factory(name="worker", commands=(), jobs=("slow-job",))
+    marker = tmp_path / "nested-job-completed"
+    descendant = (
+        "import time; time.sleep(30); from pathlib import Path; "
+        f"Path({str(marker)!r}).write_text('done')"
+    )
     (source / "modules/slow_job_entry.py").write_text(
         "def main(argv=None):\n"
         "    import subprocess, sys, time\n"
-        "    subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        f"    subprocess.Popen([sys.executable, '-c', {descendant!r}], "
+        "start_new_session=True)\n"
         "    time.sleep(30)\n",
         encoding="utf-8",
     )
@@ -684,6 +697,8 @@ def test_execute_timeout_terminates_process_group(atlas_paths, release_factory) 
     assert execute(atlas_paths, job, [], timeout_seconds=1) == 124
 
     assert time.monotonic() - started < 8
+    time.sleep(0.7)
+    assert not marker.exists()
     record = _last_log(atlas_paths)
     assert record["timed_out"] is True
     assert record["timeout"] == 1
@@ -817,6 +832,157 @@ def test_process_group_termination_edges(monkeypatch: pytest.MonkeyPatch) -> Non
     _terminate_process_group(process)
     assert signals == [signal.SIGTERM, signal.SIGKILL]
     assert process.waits == 2
+
+
+def test_process_group_helpers_cover_platform_and_proc_failure_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("atlas.execution.sys.platform", "darwin")
+    assert _parent_death_preexec() is None
+
+    monkeypatch.setattr("atlas.execution.sys.platform", "linux")
+    import ctypes
+
+    class Libc:
+        def __init__(self, result: int):
+            self.result = result
+
+        def prctl(self, *args):
+            return self.result
+
+    monkeypatch.setattr("atlas.execution.os.getppid", os.getpid)
+    monkeypatch.setattr(ctypes, "CDLL", lambda _: Libc(0))
+    hook = _parent_death_preexec()
+    assert callable(hook)
+    hook()
+
+    exits: list[int] = []
+    monkeypatch.setattr(ctypes, "CDLL", lambda _: Libc(1))
+    monkeypatch.setattr("atlas.execution.os._exit", exits.append)
+    hook = _parent_death_preexec()
+    assert callable(hook)
+    hook()
+    assert exits == [127]
+
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(ctypes, "CDLL", lambda _: Libc(0))
+    monkeypatch.setattr("atlas.execution.os.getppid", lambda: -1)
+    monkeypatch.setattr("atlas.execution.os.kill", lambda pid, signum: killed.append((pid, signum)))
+    hook = _parent_death_preexec()
+    assert callable(hook)
+    hook()
+    assert killed == [(os.getpid(), signal.SIGTERM)]
+
+    monkeypatch.setattr(
+        Path,
+        "iterdir",
+        lambda self: (_ for _ in ()).throw(OSError("/proc unavailable")),
+    )
+    assert _process_groups_for_tree(99) == ({99}, False)
+
+    numeric = tmp_path / "123"
+    invalid = tmp_path / "124"
+    numeric.mkdir()
+    invalid.mkdir()
+    (numeric / "stat").write_text("invalid", encoding="utf-8")
+    (invalid / "stat").write_text("invalid", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def fail_one_stat(path: Path, *args, **kwargs):
+        if path == invalid / "stat":
+            raise OSError("stat disappeared")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_one_stat)
+    monkeypatch.setattr(Path, "iterdir", lambda self: [Path("not-a-pid"), numeric, invalid])
+    assert _process_groups_for_tree(123) == ({123}, False)
+
+    monkeypatch.setattr(
+        "atlas.execution.os.killpg",
+        lambda pid, signum: (_ for _ in ()).throw(ProcessLookupError),
+    )
+    assert _groups_alive({123}) is False
+    monkeypatch.setattr("atlas.execution.os.killpg", lambda pid, signum: None)
+    assert _groups_alive({123}) is True
+
+    class Running:
+        pid = 125
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            return None
+
+    monkeypatch.setattr("atlas.execution._process_groups_for_tree", lambda pid: ({125}, False))
+    monkeypatch.setattr(
+        "atlas.execution._signal_process_groups",
+        lambda groups, signum: (_ for _ in ()).throw(ProcessLookupError),
+    )
+    _terminate_process_group(Running())
+
+
+def test_process_group_termination_handles_descendants_after_parent_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signals: list[int] = []
+    sleeps: list[float] = []
+
+    class ExitedParent:
+        pid = 33
+        waits = 0
+        alive = True
+
+        def poll(self):
+            return None if self.alive else 0
+
+        def wait(self, timeout=None):
+            self.waits += 1
+            self.alive = False
+            return 0
+
+    process = ExitedParent()
+    monkeypatch.setattr("atlas.execution._process_groups_for_tree", lambda pid: ({33, 44}, True))
+    monkeypatch.setattr("atlas.execution._groups_alive", lambda groups: True)
+    monkeypatch.setattr("atlas.execution._signal_process_groups", lambda groups, signum: signals.append(signum))
+    monkeypatch.setattr("atlas.execution.time.sleep", sleeps.append)
+    _terminate_process_group(process)
+    assert sleeps == [5]
+    assert signals == [signal.SIGTERM, signal.SIGKILL]
+
+
+def test_forward_termination_uses_process_group_termination_for_real_processes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous = object()
+    handlers: list[object] = []
+    terminated: list[tuple[object, int]] = []
+
+    monkeypatch.setattr("atlas.execution.signal.getsignal", lambda signum: previous)
+    monkeypatch.setattr(
+        "atlas.execution.signal.signal",
+        lambda signum, handler: handlers.append(handler),
+    )
+    monkeypatch.setattr(
+        "atlas.execution._terminate_process_group",
+        lambda process, initial_signal: terminated.append((process, initial_signal)),
+    )
+
+    class RealProcessShape:
+        pid = 55
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            return None
+
+    process = RealProcessShape()
+    with _forward_termination_signal(process):
+        handlers[-1](signal.SIGTERM, None)
+
+    assert terminated == [(process, signal.SIGTERM)]
 
 
 def test_termination_signal_is_forwarded_and_handler_is_restored(

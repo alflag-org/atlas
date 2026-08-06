@@ -17,7 +17,7 @@ reads the checkout but does not pull, reset, or otherwise modify it.
 
 The host needs Git for Git-backed release sources and execution context. ``atlas release install`` and
 ``atlas runtime install`` require ``pyenv`` on ``PATH`` and the operating-system packages needed to
-build the configured Python version. ``atlas release update`` requires them when at least one enabled
+build the configured Python version. ``atlas release update`` requires them when at least one
 release is selected for update. The account running Atlas must be able to write the configured home, configuration,
 and state directories. Runtime execution starts the selected release in a separate child process with
 an exact argument vector and no shell.
@@ -50,9 +50,11 @@ Atlas reads ``/etc/atlas/config.yml``. The schema is strict and rejects unknown 
        enabled: false
 
 ``atlas release update`` updates every enabled entry. Naming one entry updates it even when
-``enabled`` is false. With no enabled entry, it exits successfully without provisioning a runtime or
-changing host artifacts. A source may be a local directory, ``file:`` URL, local archive, HTTP(S)
-archive, or ``git+https://github.com/example/operations.git#v1.0.0``.
+``enabled`` is false. On a default update with no enabled entry, Atlas parses the configuration and
+ensures its state directories, then exits successfully without resolving a source, provisioning a
+runtime, entering a release transaction or lock path, or publishing or refreshing host artifacts. A
+source may be a local directory, ``file:`` URL, local archive, HTTP(S) archive, or
+``git+https://github.com/example/operations.git#v1.0.0``.
 
 ``/etc/atlas/host.yml`` supplies metadata to release code. ``name`` is required. ``site``, ``zone``,
 ``role``, ``environment``, and ``runtime_kind`` are optional strings; ``tags`` is a list of strings.

@@ -332,12 +332,88 @@ def test_cli_release_update_with_no_enabled_releases_is_a_noop(
     _set_env(monkeypatch, home, etc, var)
 
     def fail_if_called(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("empty release update must not perform side effects")
+        raise AssertionError(
+            "empty default release update must not resolve a source, provision a runtime, "
+            "enter a release transaction or lock path, or publish or refresh host artifacts"
+        )
 
+    monkeypatch.setattr(cli, "resolve_source", fail_if_called)
     monkeypatch.setattr(runtime_module, "_ensure_pyenv_runtime", fail_if_called)
+    monkeypatch.setattr(cli, "reversible_release_transaction", fail_if_called)
+    monkeypatch.setattr(cli, "_host_artifact_transaction", fail_if_called)
     monkeypatch.setattr(cli, "_refresh_host_artifacts", fail_if_called)
 
     assert cli.main(["release", "update"]) == 0
+
+
+def test_cli_release_update_ignores_configured_disabled_release_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    etc.mkdir(parents=True)
+    source = tmp_path / "disabled-source"
+    (etc / "config.yml").write_text(
+        "runtime:\n  python:\n    version: '3.12.3'\n"
+        "releases:\n"
+        f"  disabled:\n    source: '{source}'\n    enabled: false\n",
+        encoding="utf-8",
+    )
+    _set_env(monkeypatch, home, etc, var)
+
+    def fail_if_called(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError(
+            "disabled default release update must not resolve a source, provision a runtime, "
+            "enter a release transaction or lock path, or publish or refresh host artifacts"
+        )
+
+    monkeypatch.setattr(cli, "resolve_source", fail_if_called)
+    monkeypatch.setattr(runtime_module, "_ensure_pyenv_runtime", fail_if_called)
+    monkeypatch.setattr(cli, "reversible_release_transaction", fail_if_called)
+    monkeypatch.setattr(cli, "_host_artifact_transaction", fail_if_called)
+    monkeypatch.setattr(cli, "_refresh_host_artifacts", fail_if_called)
+
+    assert cli.main(["release", "update"]) == 0
+
+    paths = get_paths()
+    assert paths.releases_root.is_dir()
+    assert paths.current_root.is_dir()
+
+
+def test_cli_release_update_named_disabled_release_is_selected(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    etc.mkdir(parents=True)
+    source = _release(tmp_path / "source", release_name="maintenance")
+    (etc / "config.yml").write_text(
+        "runtime:\n  python:\n    version: '3.12.3'\n"
+        "releases:\n"
+        f"  maintenance:\n    source: '{source}'\n    enabled: false\n",
+        encoding="utf-8",
+    )
+    _set_env(monkeypatch, home, etc, var)
+    selected: list[tuple[str, bool]] = []
+
+    @contextmanager
+    def record_transaction(
+        sources: list[Path], *_args: object, **_kwargs: object
+    ):
+        selected.extend(
+            (source.name, (source / "release.yml").is_file()) for source in sources
+        )
+        yield {}
+
+    monkeypatch.setattr(cli, "reversible_release_transaction", record_transaction)
+    monkeypatch.setattr(cli, "_refresh_host_artifacts", lambda _paths: [])
+
+    assert cli.main(["release", "update", "maintenance"]) == 0
+    assert selected == [("maintenance", True)]
 
 
 def test_release_shims_is_not_a_public_command() -> None:

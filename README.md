@@ -75,8 +75,9 @@ Snapshot modes are read-only for the normal runtime path, but a same-UID account
 this is a selected-release correctness boundary, not a hostile same-UID sandbox. Do not use either
 Atlas-managed directory as a release source.
 
-With no enabled release, `atlas release update` exits successfully without provisioning a runtime or
-changing host artifacts.
+On a default update with no enabled release, Atlas parses the configuration and ensures its state
+directories, then exits successfully without resolving a source, provisioning a runtime, entering a
+release transaction or lock path, or publishing or refreshing host artifacts.
 
 Install the release. The install builds and publishes the runtime needed by the complete active
 release set:

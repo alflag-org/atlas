@@ -76,8 +76,9 @@ this is a selected-release correctness boundary, not a hostile same-UID sandbox.
 Atlas-managed directory as a release source.
 
 On a default update with no enabled release, Atlas parses the configuration and ensures its state
-directories, then exits successfully without resolving a source, provisioning a runtime, entering a
-release transaction or lock path, or publishing or refreshing host artifacts.
+directories, then exits successfully without resolving a source, provisioning a runtime, starting a
+release transaction, acquiring a host-artifact or per-release lock, or publishing or refreshing host
+artifacts.
 
 Install the release. The install builds and publishes the runtime needed by the complete active
 release set:

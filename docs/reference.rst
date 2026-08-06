@@ -52,8 +52,9 @@ Atlas reads ``/etc/atlas/config.yml``. The schema is strict and rejects unknown 
 ``atlas release update`` updates every enabled entry. Naming one entry updates it even when
 ``enabled`` is false. On a default update with no enabled entry, Atlas parses the configuration and
 ensures its state directories, then exits successfully without resolving a source, provisioning a
-runtime, entering a release transaction or lock path, or publishing or refreshing host artifacts. A
-source may be a local directory, ``file:`` URL, local archive, HTTP(S) archive, or
+runtime, starting a release transaction, acquiring a host-artifact or per-release lock, or publishing
+or refreshing host artifacts. A source may be a local directory, ``file:`` URL, local archive,
+HTTP(S) archive, or
 ``git+https://github.com/example/operations.git#v1.0.0``.
 
 ``/etc/atlas/host.yml`` supplies metadata to release code. ``name`` is required. ``site``, ``zone``,

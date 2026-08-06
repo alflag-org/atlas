@@ -334,7 +334,8 @@ def test_cli_release_update_with_no_enabled_releases_is_a_noop(
     def fail_if_called(*_args: object, **_kwargs: object) -> None:
         raise AssertionError(
             "empty default release update must not resolve a source, provision a runtime, "
-            "enter a release transaction or lock path, or publish or refresh host artifacts"
+            "start a release transaction, acquire a host-artifact or per-release lock, or "
+            "publish or refresh host artifacts"
         )
 
     monkeypatch.setattr(cli, "resolve_source", fail_if_called)
@@ -366,7 +367,8 @@ def test_cli_release_update_ignores_configured_disabled_release_by_default(
     def fail_if_called(*_args: object, **_kwargs: object) -> None:
         raise AssertionError(
             "disabled default release update must not resolve a source, provision a runtime, "
-            "enter a release transaction or lock path, or publish or refresh host artifacts"
+            "start a release transaction, acquire a host-artifact or per-release lock, or "
+            "publish or refresh host artifacts"
         )
 
     monkeypatch.setattr(cli, "resolve_source", fail_if_called)

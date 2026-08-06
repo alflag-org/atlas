@@ -189,6 +189,8 @@ def cmd_release_update(args: argparse.Namespace) -> int:
         name for name, release in config.releases.items() if release.enabled
     ]
     names.sort()
+    if not names:
+        return 0
     with ExitStack() as temporary_sources:
         sources: list[Path] = []
         for name in names:

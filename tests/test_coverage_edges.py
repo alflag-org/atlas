@@ -331,6 +331,12 @@ def test_cli_release_update_with_no_enabled_releases_is_a_noop(
     )
     _set_env(monkeypatch, home, etc, var)
 
+    def fail_if_called(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("empty release update must not perform side effects")
+
+    monkeypatch.setattr(runtime_module, "_ensure_pyenv_runtime", fail_if_called)
+    monkeypatch.setattr(cli, "_refresh_host_artifacts", fail_if_called)
+
     assert cli.main(["release", "update"]) == 0
 
 

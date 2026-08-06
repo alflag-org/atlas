@@ -31,10 +31,11 @@ python -m pip install /srv/atlas/source
 Another durable checkout path is valid. Use that same path for the release sources below. Atlas
 reads the checkout but does not pull, reset, or otherwise modify it.
 
-`atlas release install`, `atlas release update`, and `atlas runtime install` require `pyenv` on
-`PATH` and the operating-system packages needed to build the configured Python version. The account
-running Atlas must be able to write its configured home, configuration, and state directories. The
-defaults are `/opt/atlas`, `/etc/atlas`, and `/var/lib/atlas`. Keep `ATLAS_HOME=/opt/atlas` when
+`atlas release install` and `atlas runtime install` require `pyenv` on `PATH` and the operating-system
+packages needed to build the configured Python version. `atlas release update` requires them when at
+least one release is selected for update. The account running Atlas must be able to write its configured
+home, configuration, and state directories. The defaults are `/opt/atlas`, `/etc/atlas`, and
+`/var/lib/atlas`. Keep `ATLAS_HOME=/opt/atlas` when
 using the bundled systemd artifacts because they use `/opt/atlas/bin/atlas` as the stable launcher.
 
 Each command or job runs in a separate child process with an exact argument vector and no shell.
@@ -73,6 +74,9 @@ installation and may have import-time side effects.
 Snapshot modes are read-only for the normal runtime path, but a same-UID account can change them;
 this is a selected-release correctness boundary, not a hostile same-UID sandbox. Do not use either
 Atlas-managed directory as a release source.
+
+With no enabled release, `atlas release update` exits successfully without provisioning a runtime or
+changing host artifacts.
 
 Install the release. The install builds and publishes the runtime needed by the complete active
 release set:

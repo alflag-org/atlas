@@ -15,11 +15,12 @@ Atlas supports Python 3.11 through 3.14 on Linux. This guide uses
 Another durable checkout path is valid. Use that same path in release source configuration. Atlas
 reads the checkout but does not pull, reset, or otherwise modify it.
 
-The host needs Git for Git-backed release sources and execution context. ``atlas release install``,
-``atlas release update``, and ``atlas runtime install`` require ``pyenv`` on ``PATH`` and the
-operating-system packages needed to build the configured Python version. The account running Atlas
-must be able to write the configured home, configuration, and state directories. Runtime execution
-starts the selected release in a separate child process with an exact argument vector and no shell.
+The host needs Git for Git-backed release sources and execution context. ``atlas release install`` and
+``atlas runtime install`` require ``pyenv`` on ``PATH`` and the operating-system packages needed to
+build the configured Python version. ``atlas release update`` requires them when at least one enabled
+release is selected for update. The account running Atlas must be able to write the configured home, configuration,
+and state directories. Runtime execution starts the selected release in a separate child process with
+an exact argument vector and no shell.
 Atlas preserves stdout, stderr, exit status, timeout handling, signal forwarding, execution logs, and
 parent/child run correlation.
 
@@ -49,7 +50,8 @@ Atlas reads ``/etc/atlas/config.yml``. The schema is strict and rejects unknown 
        enabled: false
 
 ``atlas release update`` updates every enabled entry. Naming one entry updates it even when
-``enabled`` is false. A source may be a local directory, ``file:`` URL, local archive, HTTP(S)
+``enabled`` is false. With no enabled entry, it exits successfully without provisioning a runtime or
+changing host artifacts. A source may be a local directory, ``file:`` URL, local archive, HTTP(S)
 archive, or ``git+https://github.com/example/operations.git#v1.0.0``.
 
 ``/etc/atlas/host.yml`` supplies metadata to release code. ``name`` is required. ``site``, ``zone``,

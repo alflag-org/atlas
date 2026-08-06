@@ -38,12 +38,13 @@ jobs:
       - name: Configure the selected Python as the CI runtime provider
         run: |
           ci_python="$(python -c 'import sys; print(sys.executable)')"
-          echo "ATLAS_CI_PYTHON=$ci_python" >> "$GITHUB_ENV"
-          echo "ATLAS_CI_PYTHON_VERSION=${{ matrix.python-version }}" >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/atlas-bin"
-          cat > "$RUNNER_TEMP/atlas-bin/pyenv" <<'PYENV'
-          #!/usr/bin/env bash
-          set -euo pipefail
+          {
+            printf '%s\n' '#!/usr/bin/env bash'
+            printf '%s\n' 'set -euo pipefail'
+            printf 'ATLAS_CI_PYTHON=%q\n' "$ci_python"
+            printf 'ATLAS_CI_PYTHON_VERSION=%q\n' "${{ matrix.python-version }}"
+            cat <<'PYENV'
           case "${1:-}" in
             install)
               [[ "${2:-}" == "-s" && "${3:-}" == "$ATLAS_CI_PYTHON_VERSION" ]]
@@ -59,7 +60,10 @@ jobs:
               ;;
           esac
           PYENV
+          } > "$RUNNER_TEMP/atlas-bin/pyenv"
           chmod +x "$RUNNER_TEMP/atlas-bin/pyenv"
+          "$RUNNER_TEMP/atlas-bin/pyenv" install -s "${{ matrix.python-version }}"
+          test "$("$RUNNER_TEMP/atlas-bin/pyenv" prefix "${{ matrix.python-version }}")" = "$(dirname "$(dirname "$ci_python")")"
           echo "$RUNNER_TEMP/atlas-bin" >> "$GITHUB_PATH"
       - name: Validate Ansible fixture
         working-directory: tests/fixtures/provisioning

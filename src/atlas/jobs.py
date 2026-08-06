@@ -5,8 +5,13 @@ from __future__ import annotations
 import os
 import pwd
 
-from .catalog import ExecutableRef, active_releases, resolve_job
-from .execution import execute
+from .catalog import (
+    ExecutableRef,
+    active_releases,
+    resolve_job,
+    resolve_job_from_release,
+)
+from .execution import execute, pinned_execution_selection
 from .job_instances import JobInstance, load_job_instance
 from .paths import AtlasPaths
 
@@ -15,7 +20,7 @@ def list_jobs(paths: AtlasPaths, release_name: str | None = None) -> list[Execut
     """List jobs across active releases or within one release."""
     refs: list[ExecutableRef] = []
     found_release = release_name is None
-    for release in active_releases(paths.current_root):
+    for release in active_releases(paths.current_root, paths.releases_root):
         if release_name is not None and release.name != release_name:
             continue
         found_release = True
@@ -30,12 +35,22 @@ def list_jobs(paths: AtlasPaths, release_name: str | None = None) -> list[Execut
 
 def run_job(paths: AtlasPaths, release_name: str, job_name: str, args: list[str]) -> int:
     """Run one direct job in the caller's current working directory."""
-    job = resolve_job(paths.current_root, release_name, job_name)
+    def resolve_selected_job() -> ExecutableRef:
+        pinned = pinned_execution_selection(paths)
+        if pinned is not None:
+            if pinned.release.name != release_name:
+                raise ValueError(
+                    "nested execution cannot change the selected release: "
+                    f"{pinned.release.name} != {release_name}"
+                )
+            return resolve_job_from_release(pinned.release, job_name)
+        return resolve_job(paths.current_root, paths.releases_root, release_name, job_name)
+
     return execute(
         paths,
-        job,
+        resolve_selected_job,
         args,
-        timeout_seconds=job.artifact.default_timeout_seconds,
+        timeout_seconds=lambda job: job.artifact.default_timeout_seconds,
     )
 
 
@@ -52,18 +67,33 @@ def run_job_instance(paths: AtlasPaths, name: str) -> int:
     """Resolve and execute one ``jobs.d`` instance."""
     instance = load_job_instance(paths.jobs_dir, name)
     _validate_caller_user(instance)
-    job = resolve_job(paths.current_root, instance.release, instance.job)
-    timeout = (
-        instance.timeout_seconds
-        if instance.timeout_seconds is not None
-        else job.artifact.default_timeout_seconds
-    )
+    def resolve_instance_job():
+        pinned = pinned_execution_selection(paths)
+        if pinned is not None:
+            if pinned.release.name != instance.release:
+                raise ValueError(
+                    "nested execution cannot change the selected release: "
+                    f"{pinned.release.name} != {instance.release}"
+                )
+            return resolve_job_from_release(pinned.release, instance.job)
+        job = resolve_job(
+            paths.current_root,
+            paths.releases_root,
+            instance.release,
+            instance.job,
+        )
+        return job
+
     return execute(
         paths,
-        job,
+        resolve_instance_job,
         list(instance.arguments),
         cwd=instance.working_directory,
         environment_files=instance.environment_files,
-        timeout_seconds=timeout,
+        timeout_seconds=lambda job: (
+            instance.timeout_seconds
+            if instance.timeout_seconds is not None
+            else job.artifact.default_timeout_seconds
+        ),
         lock=instance.lock,
     )

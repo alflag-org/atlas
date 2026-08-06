@@ -1,18 +1,23 @@
 First-party controllers
 =======================
 
-Install both bundled releases and build the shared runtime:
+Install the bundled operations release. Installation builds the shared runtime for the active release
+set:
 
 .. code-block:: bash
 
-   atlas release install ./configuration-operations
-   atlas release install ./infrastructure-operations
-   atlas runtime install
+   atlas release install /srv/atlas/source/operations
    atlas command list
 
 The public commands are ``atlas-ansible``, ``hostctl``, and ``imagectl``. Provider validation,
 artifact validation, and lifecycle phases run at their consuming boundaries or as private jobs;
 they have no separate PATH entry.
+
+.. warning::
+
+   The domains under ``example.org``, addresses in ``192.0.2.0/24``, resource identifiers, paths,
+   user names, and SSH key below are examples. Replace every value and verify the resulting plan
+   before applying it. The documented endpoints and address range do not identify live services.
 
 Each controller parses a fixed set of subcommands and invokes a private job through
 ``atlas job run``. ``atlas-ansible diff-many`` invokes the private diff job once per target. Child
@@ -41,12 +46,12 @@ Run Ansible with Atlas
 
    * - Command
      - Native process
-   * - ``check site web01``
-     - ``ansible-playbook playbooks/site.yml --limit web01 --check``
-   * - ``diff site web01``
-     - ``ansible-playbook playbooks/site.yml --limit web01 --check --diff``
-   * - ``apply site web01``
-     - ``ansible-playbook playbooks/site.yml --limit web01``
+   * - ``check site web-01``
+     - ``ansible-playbook playbooks/site.yml --limit web-01 --check``
+   * - ``diff site web-01``
+     - ``ansible-playbook playbooks/site.yml --limit web-01 --check --diff``
+   * - ``apply site web-01``
+     - ``ansible-playbook playbooks/site.yml --limit web-01``
    * - ``inventory``
      - ``ansible-inventory --graph``
 
@@ -85,14 +90,14 @@ A ``ProxmoxVmCreate`` input describes one managed VM:
 
    schema: atlas.operation-input/v1
    kind: ProxmoxVmCreate
-   site: example
-   target: web01
+   site: site-a
+   target: web-01
    create_allowed: true
    rollback_delete_allowed: true
    vm:
      vmid: 121
-     name: web01
-     node: pve01
+     name: web-01
+     node: pve-01
      template_vmid: 9000
      template_name: tmpl-ubuntu-cloudinit
      full_clone: true
@@ -134,13 +139,13 @@ A ``ProxmoxVmTemplateCreate`` input describes one machine image:
 
    schema: atlas.operation-input/v1
    kind: ProxmoxVmTemplateCreate
-   site: example
+   site: site-a
    target: tmpl-ubuntu-2404
    create_allowed: true
    rollback_delete_allowed: true
    vmid: 9100
    name: tmpl-ubuntu-2404
-   node: pve01
+   node: pve-01
    image:
      url: https://images.example.org/ubuntu-24.04.img
      checksum: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
@@ -201,9 +206,9 @@ limited to localhost; ``development_identity`` is limited to Registry developmen
    kind: HostCreate
 
    resource:
-     id: host-web01
-     name: web01
-     site: topmost01
+     id: host-web-01
+     name: web-01
+     site: site-a
      zone: dmz
 
    registry:
@@ -212,17 +217,17 @@ limited to localhost; ``development_identity`` is limited to Registry developmen
    provider:
      adapter: proxmox
      definition: providers/proxmox.yml
-     input: hosts/web01.proxmox.yml
+     input: hosts/web-01.proxmox.yml
 
    configuration:
      adapter: ansible
      project_root: /srv/provisioning
-     target: web01
+     target: web-01
      bootstrap_playbook: bootstrap
      converge_playbook: site
 
    readiness:
-     address: 10.10.30.21
+     address: 192.0.2.21
      ssh_port: 22
      ssh_user: ops
      require_cloud_init: true
@@ -234,14 +239,14 @@ and guest-agent setting must agree across inputs.
 
 .. code-block:: bash
 
-   hostctl plan hosts/web01.yml > web01.plan.json
-   plan_id="$(jq -r .metadata.planId web01.plan.json)"
-   hostctl apply web01.plan.json --confirm "$plan_id" > web01.evidence.json
+   hostctl plan hosts/web-01.yml > web-01.plan.json
+   plan_id="$(jq -r .metadata.planId web-01.plan.json)"
+   hostctl apply web-01.plan.json --confirm "$plan_id" > web-01.evidence.json
 
-   hostctl status web01.plan.json
-   hostctl resume web01.plan.json --confirm "$plan_id" > web01.resume.json
-   ATLAS_REGISTRY_PROFILE=/etc/atlas/registry.yml hostctl verify host-web01
-   hostctl rollback web01.plan.json --confirm "$plan_id" > web01.rollback.json
+   hostctl status web-01.plan.json
+   hostctl resume web-01.plan.json --confirm "$plan_id" > web-01.resume.json
+   ATLAS_REGISTRY_PROFILE=/etc/atlas/registry.yml hostctl verify host-web-01
+   hostctl rollback web-01.plan.json --confirm "$plan_id" > web-01.rollback.json
 
 Apply runs ``validate``, ``reserve``, ``allocate``, ``provider-verify``, ``bind``, ``wait-ready``,
 ``bootstrap``, ``converge``, ``configuration-verify``, and ``activate`` in that order. Repeating apply
@@ -260,8 +265,8 @@ required. An active host is also retained.
 Run an image lifecycle with imagectl
 ------------------------------------
 
-``imagectl`` is the provider-independent Atlas image lifecycle boundary. The current
-``infrastructure-operations`` release implements this boundary with Proxmox VM-template jobs.
+``imagectl`` is the provider-independent Atlas image lifecycle boundary. The ``operations``
+release implements this boundary with an internal Proxmox adapter and VM-template jobs.
 
 .. code-block:: text
 

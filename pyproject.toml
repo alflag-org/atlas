@@ -5,10 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "atlas"
 version = "2.0.0"
+description = "Host runtime for versioned infrastructure operations"
+readme = "README.md"
 requires-python = ">=3.11"
-dependencies = [
-  "PyYAML==6.0.3",
-]
+dynamic = ["dependencies"]
 
 [project.optional-dependencies]
 dev = [
@@ -34,11 +34,16 @@ include = [
   "atlas_core.*",
 ]
 
+[tool.setuptools.dynamic]
+dependencies = {file = ["src/atlas/support-requirements.txt"]}
+
+[tool.setuptools.package-data]
+atlas = ["support-requirements.txt"]
+
 [tool.pytest.ini_options]
 pythonpath = [
   "src",
-  "configuration-operations/modules",
-  "infrastructure-operations/modules",
+  "operations/modules",
 ]
 
 [tool.ruff]
@@ -77,8 +82,7 @@ select = [
 branch = true
 source = [
   "src",
-  "configuration-operations",
-  "infrastructure-operations",
+  "operations",
 ]
 
 [tool.coverage.report]

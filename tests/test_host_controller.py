@@ -85,14 +85,11 @@ def _refingerprint(plan: HostOperationPlan, update) -> HostOperationPlan:
     return set_fingerprint(HostOperationPlan.model_validate(data))
 
 
-def test_infrastructure_manifest_exposes_controllers_and_private_jobs() -> None:
-    manifest = load_manifest(Path("infrastructure-operations"))
-    assert manifest.name == "infrastructure-operations"
-    assert list(manifest.commands) == [
-        "hostctl",
-        "imagectl",
-    ]
-    assert len(manifest.jobs) == 18
+def test_operations_manifest_exposes_controllers_and_private_jobs() -> None:
+    manifest = load_manifest(Path("operations"))
+    assert manifest.name == "operations"
+    assert list(manifest.commands) == ["atlas-ansible", "hostctl", "imagectl"]
+    assert len(manifest.jobs) == 24
     assert manifest.jobs["host-provider-allocate"].default_timeout_seconds == 1800
 
 
@@ -760,7 +757,7 @@ def test_subprocess_phase_executor_exact_job_argv_and_invalid_evidence(
         "/atlas",
         "job",
         "run",
-        "infrastructure-operations",
+        "operations",
         "host-registry-reserve",
         "--",
         "--plan",

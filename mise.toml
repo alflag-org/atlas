@@ -17,7 +17,7 @@ python -m coverage report
 
 [tasks.lint]
 description = "Run Ruff checks"
-run = "ruff check src configuration-operations infrastructure-operations tests"
+run = "ruff check src operations tests"
 
 [tasks.build]
 description = "Build package artifacts"

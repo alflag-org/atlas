@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import stat
 import subprocess
 from pathlib import Path
 
@@ -36,6 +37,7 @@ def _service(paths, release_factory):
     )
     return target, resolve_service(
         paths.current_root,
+        paths.releases_root,
         "worker",
         "refresh",
     )
@@ -78,6 +80,9 @@ def test_systemd_diff_install_and_remove(
     assert calls == [["fake-systemctl", "daemon-reload"]]
     assert adapter.diff(service) == ""
 
+    (source / "init/systemd/refresh.service").chmod(
+        (source / "init/systemd/refresh.service").stat().st_mode | stat.S_IWUSR
+    )
     (source / "init/systemd/refresh.service").write_text(
         "[Unit]\nDescription=Changed\n"
         "[Service]\nUser=ops\n"
@@ -137,7 +142,7 @@ def test_systemd_diff_install_and_remove(
             "refresh.service",
             "[Unit]\n[Service]\nUser=ops\n"
             "ExecStart=/opt/atlas/bin/atlas job instance run sample-instance\n"
-            "# /opt/atlas/releases/worker/1.0.0\n",
+            "# /opt/atlas/releases/worker/1.0.0-content-digest\n",
             "versioned release path",
         ),
         ("refresh.timer", "[Unit]\n", r"lacks \[Timer\]"),
@@ -156,7 +161,9 @@ def test_systemd_validation_rejects_bad_units(
     message: str,
 ) -> None:
     source, service = _service(atlas_paths, release_factory)
-    (source / "init/systemd" / filename).write_text(content, encoding="utf-8")
+    artifact = source / "init/systemd" / filename
+    artifact.chmod(artifact.stat().st_mode | stat.S_IWUSR)
+    artifact.write_text(content, encoding="utf-8")
     with pytest.raises(ValueError, match=message):
         SystemdAdapter(
             atlas_paths.var / "systemd",
@@ -248,6 +255,8 @@ def test_systemd_source_symlink_is_rejected(
 ) -> None:
     source, service = _service(atlas_paths, release_factory)
     unit = source / "init/systemd/refresh.service"
+    unit.parent.chmod(unit.parent.stat().st_mode | stat.S_IWUSR)
+    unit.chmod(unit.stat().st_mode | stat.S_IWUSR)
     unit.unlink()
     target = tmp_path / "unit"
     target.write_text(
@@ -328,6 +337,7 @@ def test_systemd_service_without_timer(
     )
     service = resolve_service(
         atlas_paths.current_root,
+        atlas_paths.releases_root,
         "worker",
         "refresh",
     )
@@ -377,12 +387,14 @@ def test_systemd_accepts_declared_command(
     )
     command_service = resolve_service(
         atlas_paths.current_root,
+        atlas_paths.releases_root,
         "reader",
         "status",
     )
     adapter.validate(command_service)
 
     installed_unit = command_service.service.systemd.service
+    installed_unit.chmod(installed_unit.stat().st_mode | stat.S_IWUSR)
     installed_unit.write_text(
         "[Unit]\nDescription=Wrong command\n"
         "[Service]\n"

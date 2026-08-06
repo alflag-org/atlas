@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,19 @@ def _set_env(monkeypatch, home: Path, etc: Path, var: Path) -> None:
     monkeypatch.setenv("ATLAS_ETC_DIR", str(etc))
     monkeypatch.setenv("ATLAS_VAR_DIR", str(var))
     monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
+    if not (etc / "config.yml").exists():
+        (etc / "config.yml").write_text(
+            f"runtime:\n  python:\n    version: '{sys.version_info.major}.{sys.version_info.minor}'\n"
+            "releases: {}\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(
+        "atlas.runtime._ensure_pyenv_runtime",
+        lambda version, env=None: Path(sys.executable),
+    )
+    runtime_python = home / "runtime/python/envs/scripts/bin/python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.symlink_to(Path(sys.executable))
 
 
 def test_install_list_commands_and_which(monkeypatch, tmp_path: Path, capsys) -> None:
@@ -34,7 +48,7 @@ def test_install_list_commands_and_which(monkeypatch, tmp_path: Path, capsys) ->
     assert "group-nested-sample" in commands
 
     assert main(["which", "sample"]) == 0
-    assert capsys.readouterr().out.strip().endswith("/commands/sample.py")
+    assert capsys.readouterr().out.strip() == "sample_command:main"
 
 
 def test_update_list_verbose_and_status_with_multiple_releases(

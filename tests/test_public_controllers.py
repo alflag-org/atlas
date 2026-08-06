@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import runpy
-import sys
 from pathlib import Path
 
-import atlas_infrastructure_operations.child as child_module
-import atlas_infrastructure_operations.imagectl as imagectl_module
+import atlas_image_operations.imagectl as imagectl_module
+import atlas_operations.child as child_module
 import pytest
 
+from atlas.manifests import load_manifest
+
 ROOT = Path(__file__).resolve().parents[1]
-INFRASTRUCTURE_OPERATIONS = ROOT / "infrastructure-operations"
+OPERATIONS = ROOT / "operations"
 
 
 def test_imagectl_dispatches_private_jobs(
@@ -59,7 +59,7 @@ def test_imagectl_dispatches_private_jobs(
         assert raised.value.code == 2
 
 
-def test_infrastructure_child_contract(
+def test_operations_child_contract(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -70,7 +70,7 @@ def test_infrastructure_child_contract(
         "/custom/atlas",
         "job",
         "run",
-        "infrastructure-operations",
+        "operations",
         "vm-template-create-plan",
         "--",
         "provider.yml",
@@ -106,19 +106,10 @@ def test_infrastructure_child_contract(
     assert "missing command not found" in capsys.readouterr().err
 
 
-def test_infrastructure_controller_entrypoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    entrypoint = INFRASTRUCTURE_OPERATIONS / "commands/imagectl.py"
-    namespace = runpy.run_path(
-        str(entrypoint),
-        run_name="infrastructure_entrypoint_test",
+def test_image_controller_is_manifest_target() -> None:
+    assert load_manifest(OPERATIONS).commands["imagectl"].target.spec == (
+        "atlas_image_operations.imagectl:main"
     )
-    assert namespace["__name__"] == "infrastructure_entrypoint_test"
-    monkeypatch.setattr(imagectl_module, "main", lambda: 7)
-    with pytest.raises(SystemExit) as raised:
-        runpy.run_path(str(entrypoint), run_name="__main__")
-    assert raised.value.code == 7
 
 
 @pytest.mark.parametrize(
@@ -134,25 +125,24 @@ def test_infrastructure_controller_entrypoint(
         "vm-template-create-rollback",
     ],
 )
-def test_infrastructure_diagnostic_job_entrypoints_show_help(
+def test_operation_diagnostic_job_targets_show_help(
     job_name: str,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(sys, "argv", [job_name, "--help"])
+    job = load_manifest(OPERATIONS).jobs[job_name]
+    module_name = job.target.module
+    callable_name = job.target.callable_name
+    module = __import__(module_name, fromlist=[callable_name])
+    target = getattr(module, callable_name)
     with pytest.raises(SystemExit) as raised:
-        runpy.run_path(
-            str(INFRASTRUCTURE_OPERATIONS / "jobs" / f"{job_name}.py"),
-            run_name="__main__",
-        )
+        target(["--help"])
     assert raised.value.code == 0
 
 
 def test_public_controllers_do_not_import_operation_implementations() -> None:
     for path in (
-        INFRASTRUCTURE_OPERATIONS
-        / "modules/atlas_infrastructure_operations/imagectl.py",
+        OPERATIONS / "modules/atlas_image_operations/imagectl.py",
         ROOT
-        / "configuration-operations/modules/atlas_configuration_operations/controller.py",
+        / "operations/modules/atlas_configuration_operations/controller.py",
     ):
         source = path.read_text(encoding="utf-8")
         assert "atlas_operations.operation" not in source

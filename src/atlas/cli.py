@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -23,18 +23,23 @@ from .catalog import (
 )
 from .config import load_config
 from .errors import AtlasError
-from .execution import execute
+from .execution import execute, resolve_command_for_execution
 from .init import SystemdAdapter
 from .job_instances import list_job_instances, load_job_instance
 from .jobs import list_jobs, run_job, run_job_instance
 from .launchers import (
-    ensure_artifact_runner,
-    ensure_atlas_launcher,
-    regenerate_shims,
-    sync_atlas_core,
+    capture_host_artifact_state,
+    publish_host_artifacts,
+    restore_host_artifact_state,
 )
+from .locks import acquire_lock
 from .paths import AtlasPaths, ensure_dirs, get_paths
-from .releases import reversible_release_install, validate_release
+from .releases import (
+    reversible_release_install,
+    reversible_release_transaction,
+    validate_release,
+    validate_release_targets,
+)
 from .runtime import install_runtime, runtime_status
 from .sources import resolve_source
 
@@ -44,19 +49,23 @@ def _bool_text(value: bool) -> str:
 
 
 def _refresh_host_artifacts(paths: AtlasPaths) -> list[str]:
-    sync_atlas_core(paths.home)
-    atlas_launcher = paths.bin_dir / "atlas"
-    ensure_atlas_launcher(atlas_launcher)
-    ensure_artifact_runner(paths.artifact_runner, atlas_launcher)
-    return regenerate_shims(paths.current_root, paths.shims, paths.artifact_runner)
+    return publish_host_artifacts(paths, _lock_held=True)
+
+
+@contextmanager
+def _host_artifact_transaction(paths: AtlasPaths):
+    """Serialize host publication before per-release activation locks."""
+    # Lock order is fixed: host-artifacts, then sorted release locks.
+    with acquire_lock(paths.locks, "host-artifacts", wait=True):
+        yield
 
 
 def cmd_status(_: argparse.Namespace) -> int:
     """Print current host and artifact status."""
     paths = get_paths()
     ensure_dirs(paths)
-    releases = active_releases(paths.current_root)
-    commands = command_index(paths.current_root)
+    releases = active_releases(paths.current_root, paths.releases_root)
+    commands = command_index(paths.current_root, paths.releases_root)
     host_file = paths.etc / "host.yml"
     host_name = "unknown"
     if host_file.exists():
@@ -71,7 +80,10 @@ def cmd_status(_: argparse.Namespace) -> int:
     print(f"current root: {paths.current_root}")
     print(f"active releases count: {len(releases)}")
     for release in releases:
-        print(f"release: {release.name} {release.version} {release.root}")
+        print(
+            f"release: {release.name} {release.version} {release.content_digest} "
+            f"{release.root}"
+        )
     print(f"commands count: {len(commands)}")
     print(f"jobs count: {sum(len(release.manifest.jobs) for release in releases)}")
     print(f"services count: {sum(len(release.manifest.services) for release in releases)}")
@@ -107,14 +119,26 @@ def cmd_runtime_install(_: argparse.Namespace) -> int:
     paths = get_paths()
     ensure_dirs(paths)
     config = load_config(paths.etc / "config.yml")
-    roots = [release.root for release in active_releases(paths.current_root)]
-    runtime_python = install_runtime(
-        paths.runtime,
-        config.runtime.python_version,
-        roots or None,
-        tmp_dir=paths.tmp,
-        python_build_cache_path=paths.cache / "python-build",
-    )
+    with _host_artifact_transaction(paths):
+        roots = [
+            release.root
+            for release in active_releases(paths.current_root, paths.releases_root)
+        ]
+        runtime_python = install_runtime(
+            paths.runtime,
+            config.runtime.python_version,
+            roots or None,
+            tmp_dir=paths.tmp,
+            python_build_cache_path=paths.cache / "python-build",
+            validate_candidate=(
+                lambda candidate: validate_release_targets(
+                    roots,
+                    runtime_python=candidate.python,
+                )
+            )
+            if roots
+            else None,
+        )
     print(f"installed runtime python: {runtime_python}")
     print(f"configured python version: {config.runtime.python_version}")
     return 0
@@ -124,19 +148,33 @@ def cmd_release_install(args: argparse.Namespace) -> int:
     """Install one release using its manifest name."""
     paths = get_paths()
     ensure_dirs(paths)
+    config = load_config(paths.etc / "config.yml")
     source = resolve_source(args.source, cache_dir=paths.cache)
-    release = validate_release(source)
-    try:
-        with reversible_release_install(source, paths.releases_root, paths.current_root):
-            names = _refresh_host_artifacts(paths)
-    except Exception:
-        try:
-            _refresh_host_artifacts(paths)
-        except Exception as rollback_error:
-            raise RuntimeError(
-                "release installation failed and host artifacts could not be restored"
-            ) from rollback_error
-        raise
+    with _host_artifact_transaction(paths):
+        with capture_host_artifact_state(paths) as artifact_state:
+            refresh_started = False
+            try:
+                with reversible_release_install(
+                    source,
+                    paths.releases_root,
+                    paths.current_root,
+                    runtime_root=paths.runtime,
+                    python_version=config.runtime.python_version,
+                    tmp_dir=paths.tmp,
+                    python_build_cache_path=paths.cache / "python-build",
+                ) as target:
+                    refresh_started = True
+                    names = _refresh_host_artifacts(paths)
+                release = validate_release(target, validate_targets=False)
+            except Exception:
+                if refresh_started:
+                    try:
+                        restore_host_artifact_state(paths, artifact_state)
+                    except Exception as rollback_error:
+                        raise RuntimeError(
+                            "release installation failed and host artifacts could not be restored"
+                        ) from rollback_error
+                raise
     print(f"installed release: {release.manifest.name} {release.version}")
     print(f"commands: {len(names)}")
     return 0
@@ -150,6 +188,9 @@ def cmd_release_update(args: argparse.Namespace) -> int:
     names = [args.release_name] if args.release_name else [
         name for name, release in config.releases.items() if release.enabled
     ]
+    names.sort()
+    if not names:
+        return 0
     with ExitStack() as temporary_sources:
         sources: list[Path] = []
         for name in names:
@@ -157,7 +198,7 @@ def cmd_release_update(args: argparse.Namespace) -> int:
             if configured is None:
                 raise ValueError(f"release is not configured: {name}")
             source = resolve_source(configured.source, cache_dir=paths.cache)
-            release = validate_release(source)
+            release = validate_release(source, validate_targets=False)
             if release.manifest.name != name:
                 raise ValueError(
                     f"configured release name mismatch: {name} != {release.manifest.name}"
@@ -170,34 +211,41 @@ def cmd_release_update(args: argparse.Namespace) -> int:
             temporary_source = temporary_root / name
             shutil.copytree(release.root, temporary_source)
             sources.append(temporary_source)
-        try:
-            with ExitStack() as installations:
-                for source in sources:
-                    installations.enter_context(
-                        reversible_release_install(
-                            source,
-                            paths.releases_root,
-                            paths.current_root,
-                        )
-                    )
-                _refresh_host_artifacts(paths)
-        except Exception:
-            try:
-                _refresh_host_artifacts(paths)
-            except Exception as rollback_error:
-                raise RuntimeError(
-                    "release update failed and host artifacts could not be restored"
-                ) from rollback_error
-            raise
+        with _host_artifact_transaction(paths):
+            with capture_host_artifact_state(paths) as artifact_state:  # pragma: no branch - contextmanager entry arc
+                refresh_started = False
+                try:
+                    with reversible_release_transaction(  # pragma: no branch - contextmanager entry arc
+                        sources,
+                        paths.releases_root,
+                        paths.current_root,
+                        runtime_root=paths.runtime,
+                        python_version=config.runtime.python_version,
+                        tmp_dir=paths.tmp,
+                        python_build_cache_path=paths.cache / "python-build",
+                    ):
+                        refresh_started = True
+                        _refresh_host_artifacts(paths)
+                except Exception:
+                    if refresh_started:
+                        try:
+                            restore_host_artifact_state(paths, artifact_state)
+                        except Exception as rollback_error:
+                            raise RuntimeError(
+                                "release update failed and host artifacts could not be restored"
+                            ) from rollback_error
+                    raise
     return 0
 
 
 def cmd_release_list(args: argparse.Namespace) -> int:
     """List active releases."""
-    for release in active_releases(get_paths().current_root):
+    paths = get_paths()
+    for release in active_releases(paths.current_root, paths.releases_root):
         if args.verbose:
             print(
                 f"{release.name}\t{release.version}\t{release.root}\t"
+                f"digest={release.content_digest}\t"
                 f"commands={len(release.manifest.commands)}\t"
                 f"jobs={len(release.manifest.jobs)}\t"
                 f"services={len(release.manifest.services)}"
@@ -209,11 +257,12 @@ def cmd_release_list(args: argparse.Namespace) -> int:
 
 def cmd_command_list(args: argparse.Namespace) -> int:
     """List public commands."""
-    for name, command in command_index(get_paths().current_root).items():
+    paths = get_paths()
+    for name, command in command_index(paths.current_root, paths.releases_root).items():
         if args.verbose:
             print(
                 f"{name}\t{command.release.name}\t{command.release.version}\t"
-                f"{command.artifact.entrypoint}"
+                f"digest={command.release.content_digest}\t{command.artifact.target.spec}"
             )
         else:
             print(name)
@@ -226,15 +275,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     ensure_dirs(p)
     return execute(
         p,
-        resolve_command(p.current_root, args.command_name),
+        lambda: resolve_command_for_execution(p, args.command_name),
         args.args,
     )
 
 
 def cmd_which(args: argparse.Namespace) -> int:
-    """Print the entrypoint for one command."""
+    """Print the target for one command."""
     p = get_paths()
-    print(resolve_command(p.current_root, args.command_name).artifact.entrypoint)
+    print(
+        resolve_command(p.current_root, p.releases_root, args.command_name)
+        .artifact.target.spec
+    )
     return 0
 
 
@@ -247,13 +299,12 @@ def cmd_job_list(args: argparse.Namespace) -> int:
 
 def _job_data(release_name: str, job_name: str) -> dict[str, object]:
     paths = get_paths()
-    job = resolve_job(paths.current_root, release_name, job_name)
+    job = resolve_job(paths.current_root, paths.releases_root, release_name, job_name)
     return {
         "release": job.release.name,
         "version": job.release.version,
         "job": job.artifact.name,
-        "runtime": job.artifact.runtime,
-        "entrypoint": str(job.artifact.entrypoint),
+        "target": job.artifact.target.spec,
         "default_timeout_seconds": job.artifact.default_timeout_seconds,
     }
 
@@ -274,7 +325,12 @@ def cmd_job_instance_list(_: argparse.Namespace) -> int:
     """List configured job instances whose jobs exist."""
     paths = get_paths()
     for instance in list_job_instances(paths.jobs_dir):
-        resolve_job(paths.current_root, instance.release, instance.job)
+        resolve_job(
+            paths.current_root,
+            paths.releases_root,
+            instance.release,
+            instance.job,
+        )
         print(instance.name)
     return 0
 
@@ -282,7 +338,12 @@ def cmd_job_instance_list(_: argparse.Namespace) -> int:
 def _instance_data(name: str) -> dict[str, object]:
     paths = get_paths()
     instance = load_job_instance(paths.jobs_dir, name)
-    resolve_job(paths.current_root, instance.release, instance.job)
+    resolve_job(
+        paths.current_root,
+        paths.releases_root,
+        instance.release,
+        instance.job,
+    )
     return {
         "schema": "atlas.job-instance/v1",
         "release": instance.release,
@@ -309,7 +370,8 @@ def cmd_job_instance_run(args: argparse.Namespace) -> int:
 
 def cmd_systemd_list(args: argparse.Namespace) -> int:
     """List Atlas-owned systemd services."""
-    releases = release_index(get_paths().current_root)
+    paths = get_paths()
+    releases = release_index(paths.current_root, paths.releases_root)
     if args.release is not None and args.release not in releases:
         raise ValueError(f"unknown release: {args.release}")
     for release in releases.values():
@@ -325,6 +387,7 @@ def cmd_systemd_diff(args: argparse.Namespace) -> int:
     paths = get_paths()
     service = resolve_service(
         paths.current_root,
+        paths.releases_root,
         args.release,
         args.service,
     )
@@ -337,6 +400,7 @@ def cmd_systemd_install(args: argparse.Namespace) -> int:
     paths = get_paths()
     service = resolve_service(
         paths.current_root,
+        paths.releases_root,
         args.release,
         args.service,
     )
@@ -350,6 +414,7 @@ def cmd_systemd_remove(args: argparse.Namespace) -> int:
     paths = get_paths()
     service = resolve_service(
         paths.current_root,
+        paths.releases_root,
         args.release,
         args.service,
     )
@@ -451,7 +516,7 @@ def main(argv: list[str] | None = None) -> int:
     except AtlasError as exc:
         print(f"atlas: {exc}", file=sys.stderr)
         return exc.exit_code
-    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+    except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
         print(f"atlas: {exc}", file=sys.stderr)
         return 2
 

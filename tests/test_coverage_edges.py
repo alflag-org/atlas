@@ -48,7 +48,9 @@ from atlas.launchers import (
     _ensure_generation_link,
     _restore_launcher,
     _stage_generation,
+    capture_host_artifact_state,
     publish_host_artifacts,
+    restore_host_artifact_state,
 )
 from atlas.manifests import validate_name
 from atlas.paths import ensure_dirs, get_paths
@@ -2482,6 +2484,25 @@ def test_validate_release_targets_accepts_no_active_releases(tmp_path: Path) -> 
     validate_release_targets([], runtime_python=tmp_path / "python")
 
 
+def test_validate_release_targets_validates_each_release(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = _release(tmp_path / "source")
+    runtime = tmp_path / "python"
+    calls: list[tuple[str, Path, Path | None]] = []
+
+    def record_validation(release, *, runtime_python, runner_path) -> None:
+        calls.append((release.manifest.name, runtime_python, runner_path))
+
+    monkeypatch.setattr(
+        "atlas.releases._validate_targets_in_child", record_validation
+    )
+    validate_release_targets([source], runtime_python=runtime)
+
+    assert calls == [("default", runtime, None)]
+
+
 def test_catalog_rejects_invalid_current_root_and_entries(tmp_path: Path) -> None:
     releases = tmp_path / "releases"
     releases.mkdir()
@@ -2928,6 +2949,77 @@ def test_host_artifact_state_copy_rejects_special_files(tmp_path: Path) -> None:
     os.mkfifo(source)
     with pytest.raises(ValueError, match="not a regular path"):
         _copy_state_entry(source, tmp_path / "backup/fifo")
+
+
+def test_host_artifact_state_validates_roots_and_cleans_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    _set_env(monkeypatch, home, etc, var)
+    paths = get_paths()
+    ensure_dirs(paths)
+    generations = paths.artifact_root / "generations"
+
+    generations.rmdir()
+    generations.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(
+        ValueError, match="artifact generations path must be a directory"
+    ):
+        with capture_host_artifact_state(paths):
+            pass
+
+    generations.unlink()
+    capture_target = tmp_path / "capture-target"
+    capture_target.mkdir()
+    generations.symlink_to(capture_target, target_is_directory=True)
+    with pytest.raises(
+        ValueError, match="artifact generations path must be a directory"
+    ):
+        with capture_host_artifact_state(paths):
+            pass
+
+    generations.unlink()
+    generations.mkdir()
+    with capture_host_artifact_state(paths) as state:
+        generations.rmdir()
+        generations.write_text("not a directory", encoding="utf-8")
+        restore_host_artifact_state(paths, state)
+
+    generations.unlink()
+    generations.mkdir()
+    with capture_host_artifact_state(paths) as state:
+        generations.rmdir()
+        restore_target = tmp_path / "restore-target"
+        restore_target.mkdir()
+        generations.symlink_to(restore_target, target_is_directory=True)
+        restore_host_artifact_state(paths, state)
+
+    generations.unlink()
+    generations.mkdir()
+    stable = generations / "stable"
+    stable.mkdir()
+    with capture_host_artifact_state(paths) as state:
+        candidate = generations / "candidate"
+        candidate.mkdir()
+        hidden = generations / ".temporary"
+        hidden.mkdir()
+        external = tmp_path / "external-generation"
+        external.mkdir()
+        symlink = generations / "symlink"
+        symlink.symlink_to(external, target_is_directory=True)
+        regular = generations / "regular"
+        regular.write_text("ignored", encoding="utf-8")
+
+        restore_host_artifact_state(paths, state)
+
+    assert not candidate.exists()
+    assert stable.is_dir()
+    assert hidden.is_dir()
+    assert symlink.is_symlink()
+    assert regular.is_file()
 
 
 def test_host_artifact_publication_reports_rollback_errors(

@@ -20,6 +20,7 @@ def test_runtime_install_requires_pyenv(monkeypatch, tmp_path: Path) -> None:
 
 def test_runtime_install_recreates_venv_and_installs_base_packages(monkeypatch, tmp_path: Path) -> None:
     calls: list[list[str]] = []
+    validated: list[Path] = []
     runtime = tmp_path / "runtime"
     artifacts_venv = runtime / "python/envs/scripts"
     pyenv_root = tmp_path / "pyenv/versions/3.12.3"
@@ -55,9 +56,18 @@ def test_runtime_install_recreates_venv_and_installs_base_packages(monkeypatch, 
 
     monkeypatch.setattr("atlas.runtime.subprocess.run", fake_run)
 
-    runtime_python = install_runtime(runtime, "3.12.3")
+    def validate_candidate(candidate) -> None:
+        validated.append(candidate.root)
+
+    runtime_python = install_runtime(
+        runtime,
+        "3.12.3",
+        validate_candidate=validate_candidate,
+    )
 
     assert runtime_python == artifacts_venv / "bin/python"
+    assert len(validated) == 1
+    assert validated[0].is_dir()
     assert not marker.exists()
     assert calls[0:2] == [
         ["pyenv", "install", "-s", "3.12.3"],

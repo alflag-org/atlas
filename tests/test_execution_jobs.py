@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from atlas.jobs import list_jobs, run_job, run_job_instance
 from atlas.launchers import publish_host_artifacts
 from atlas.locks import acquire_lock
 from atlas.releases import install_release, release_digest
+from atlas.runtime import RuntimeCandidate
 
 
 def _activate(paths, source: Path) -> None:
@@ -1097,6 +1099,39 @@ def test_execute_reports_popen_missing_after_precheck(
 
     monkeypatch.setattr("atlas.execution.subprocess.Popen", missing)
     with pytest.raises(ValueError, match="runtime executable not found"):
+        execute(atlas_paths, command, [])
+
+
+def test_execute_propagates_lease_ack_pipe_failure(
+    atlas_paths,
+    release_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = release_factory()
+
+    @contextmanager
+    def prepared(*args, **kwargs):
+        root = (
+            atlas_paths.runtime / "python/envs/generations/scripts.pipe-failure"
+        )
+        (root / "bin").mkdir(parents=True, exist_ok=True)
+        (root / "bin/python").symlink_to(Path(sys.executable))
+        yield RuntimeCandidate(root=root, python=Path(sys.executable))
+
+    monkeypatch.setattr("atlas.releases.prepared_runtime", prepared)
+    monkeypatch.setattr(
+        "atlas.releases._validate_targets_in_child", lambda *args, **kwargs: None
+    )
+    _activate(atlas_paths, source)
+    command = resolve_command(
+        atlas_paths.current_root, atlas_paths.releases_root, "sample-show"
+    )
+
+    def fail_pipe(*args, **kwargs):
+        raise OSError("ack pipe failed")
+
+    monkeypatch.setattr("atlas.execution.os.pipe2", fail_pipe)
+    with pytest.raises(OSError, match="ack pipe failed"):
         execute(atlas_paths, command, [])
 
 

@@ -22,6 +22,6 @@ services:
       sh -c "atlas status
       && atlas runtime status
       && atlas run sample hello --name=docker-check
-      && ruff check src configuration-operations infrastructure-operations tests
+      && ruff check src operations tests
       && pytest -q
       && python -m build"

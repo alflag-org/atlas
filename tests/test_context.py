@@ -10,7 +10,7 @@ from atlas_core.context import get_context
 
 def _context_env(tmp_path: Path) -> dict[str, str]:
     host = tmp_path / "host.yml"
-    host.write_text("name: test-host\nsite: kng01\n", encoding="utf-8")
+    host.write_text("name: test-host\nsite: site-a\n", encoding="utf-8")
     return {
         "ATLAS_HOME": str(tmp_path / "opt"),
         "ATLAS_ETC_DIR": str(tmp_path / "etc"),
@@ -34,7 +34,7 @@ def test_get_context_from_env_mapping_returns_host_paths_and_artifact(tmp_path: 
     ctx = get_context(env=env)
 
     assert ctx.host.name == "test-host"
-    assert ctx.host.site == "kng01"
+    assert ctx.host.site == "site-a"
     assert ctx.paths.home == tmp_path / "opt"
     assert ctx.artifact.name == "sample"
     assert ctx.artifact.artifact_type == "command"

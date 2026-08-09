@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -31,9 +32,8 @@ from atlas_host_operations.subprocesses import (
     ChildResult,
     RecordingRunner,
     SubprocessRunner,
-    atlas_executable,
-    job_argv,
 )
+from atlas_operations.child import atlas_executable, job_argv
 
 from .test_host_operations_support import make_host_fixture
 
@@ -208,7 +208,7 @@ def test_proxmox_adapter_exact_argv_and_successful_lifecycle(
         "/opt/atlas/bin/atlas",
         "job",
         "run",
-        "infrastructure-operations",
+        "operations",
         "vm-create-plan",
         "--",
         plan.sources.provider_definition.path,
@@ -218,7 +218,7 @@ def test_proxmox_adapter_exact_argv_and_successful_lifecycle(
         "/opt/atlas/bin/atlas",
         "job",
         "run",
-        "infrastructure-operations",
+        "operations",
         "vm-create-apply",
         "--",
         plan.sources.provider_definition.path,
@@ -466,7 +466,7 @@ def test_ansible_adapter_exact_argv_and_results(
         "/opt/atlas/bin/atlas",
         "job",
         "run",
-        "configuration-operations",
+        "operations",
         "ansible-syntax-check",
         "--",
         "bootstrap",
@@ -475,7 +475,7 @@ def test_ansible_adapter_exact_argv_and_results(
         "/opt/atlas/bin/atlas",
         "job",
         "run",
-        "configuration-operations",
+        "operations",
         "config-apply",
         "--",
         "bootstrap",
@@ -487,7 +487,7 @@ def test_ansible_adapter_exact_argv_and_results(
         "/opt/atlas/bin/atlas",
         "job",
         "run",
-        "configuration-operations",
+        "operations",
         "config-check",
         "--",
         "site",
@@ -497,7 +497,7 @@ def test_ansible_adapter_exact_argv_and_results(
         "/opt/atlas/bin/atlas",
         "job",
         "run",
-        "configuration-operations",
+        "operations",
         "config-check",
         "--",
         "bootstrap",
@@ -589,11 +589,11 @@ def test_subprocess_and_recording_runners(
 ) -> None:
     monkeypatch.setenv("ATLAS_EXECUTABLE", "/custom/atlas")
     assert atlas_executable() == "/custom/atlas"
-    assert job_argv("configuration-operations", "config-check", ["site"]) == [
+    assert job_argv("config-check", ["site"]) == [
         "/custom/atlas",
         "job",
         "run",
-        "configuration-operations",
+        "operations",
         "config-check",
         "--",
         "site",
@@ -629,3 +629,21 @@ def test_subprocess_and_recording_runners(
     recording = RecordingRunner()
     with pytest.raises(AssertionError, match="no recorded result"):
         recording.run(["anything"])
+
+
+def test_threaded_controller_child_launches_do_not_deadlock(
+    tmp_path: Path,
+) -> None:
+    def run_one(index: int) -> ChildResult:
+        return SubprocessRunner().run(
+            [sys.executable, "-c", f"print('thread-{index}')"],
+            cwd=tmp_path,
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(run_one, range(8)))
+
+    assert [result.return_code for result in results] == [0] * 8
+    assert [result.stdout.strip() for result in results] == [
+        f"thread-{index}" for index in range(8)
+    ]

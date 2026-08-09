@@ -20,6 +20,7 @@ def test_runtime_install_requires_pyenv(monkeypatch, tmp_path: Path) -> None:
 
 def test_runtime_install_recreates_venv_and_installs_base_packages(monkeypatch, tmp_path: Path) -> None:
     calls: list[list[str]] = []
+    validated: list[Path] = []
     runtime = tmp_path / "runtime"
     artifacts_venv = runtime / "python/envs/scripts"
     pyenv_root = tmp_path / "pyenv/versions/3.12.3"
@@ -55,21 +56,43 @@ def test_runtime_install_recreates_venv_and_installs_base_packages(monkeypatch, 
 
     monkeypatch.setattr("atlas.runtime.subprocess.run", fake_run)
 
-    runtime_python = install_runtime(runtime, "3.12.3")
+    def validate_candidate(candidate) -> None:
+        assert artifacts_venv.is_dir()
+        assert not artifacts_venv.is_symlink()
+        assert marker.exists()
+        validated.append(candidate.root)
+
+    runtime_python = install_runtime(
+        runtime,
+        "3.12.3",
+        validate_candidate=validate_candidate,
+    )
 
     assert runtime_python == artifacts_venv / "bin/python"
+    assert len(validated) == 1
+    assert validated[0].is_dir()
+    assert artifacts_venv.is_symlink()
+    assert artifacts_venv.resolve() == validated[0].resolve()
     assert not marker.exists()
     assert calls[0:2] == [
         ["pyenv", "install", "-s", "3.12.3"],
         ["pyenv", "prefix", "3.12.3"],
     ]
     assert calls[2][:3] == [str(pyenv_python), "-m", "venv"]
-    assert calls[3][0].endswith("/bin/python")
-    assert calls[3][1:] == ["-m", "pip", "install", "--upgrade", "pip"]
-    assert calls[4][0].endswith("/bin/python")
-    assert calls[4][1:] == ["-m", "pip", "install", "PyYAML"]
-    assert calls[5][0].endswith("/bin/python")
-    assert calls[5][1:] == ["-m", "pip", "check"]
+    pip_calls = [call for call in calls if len(call) > 2 and call[1:3] == ["-m", "pip"]]
+    assert pip_calls[0][1:] == [
+        "-m",
+        "pip",
+        "install",
+        "--isolated",
+        "--disable-pip-version-check",
+        "--no-input",
+        "--no-user",
+        "--index-url",
+        "https://pypi.org/simple",
+        "PyYAML==6.0.3",
+    ]
+    assert pip_calls[1][1:] == ["-m", "pip", "--isolated", "check"]
 
 
 def test_runtime_install_sets_default_temp_environment(monkeypatch, tmp_path: Path) -> None:
@@ -81,6 +104,15 @@ def test_runtime_install_sets_default_temp_environment(monkeypatch, tmp_path: Pa
     pyenv_python = pyenv_root / "bin/python"
     pyenv_python.parent.mkdir(parents=True)
     pyenv_python.write_text("", encoding="utf-8")
+    for key in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "VIRTUAL_ENV",
+        "PIP_PREFIX",
+        "PIP_TARGET",
+        "PIP_USER",
+    ):
+        monkeypatch.setenv(key, f"/outer/{key.lower()}")
     monkeypatch.delenv("TMPDIR", raising=False)
     monkeypatch.delenv("PYTHON_BUILD_CACHE_PATH", raising=False)
     monkeypatch.setattr("atlas.runtime.shutil.which", lambda _: "/usr/bin/pyenv")
@@ -112,6 +144,19 @@ def test_runtime_install_sets_default_temp_environment(monkeypatch, tmp_path: Pa
     assert envs
     assert all(env["TMPDIR"] == str(atlas_tmp) for env in envs)
     assert all(env["PYTHON_BUILD_CACHE_PATH"] == str(build_cache) for env in envs)
+    assert all(
+        key not in env
+        for env in envs
+        for key in (
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "VIRTUAL_ENV",
+            "PIP_PREFIX",
+            "PIP_TARGET",
+            "PIP_USER",
+        )
+    )
+    assert all(env["PIP_CONFIG_FILE"] == os.devnull for env in envs)
     assert atlas_tmp.is_dir()
     assert build_cache.is_dir()
 
@@ -155,9 +200,9 @@ def test_runtime_install_respects_explicit_tmpdir(monkeypatch, tmp_path: Path) -
     install_runtime(runtime, "3.12.3", tmp_dir=atlas_tmp, python_build_cache_path=build_cache)
 
     assert envs
-    assert all(env["TMPDIR"] == str(explicit_tmp) for env in envs)
-    assert explicit_tmp.is_dir()
-    assert not atlas_tmp.exists()
+    assert all(env["TMPDIR"] == str(atlas_tmp) for env in envs)
+    assert atlas_tmp.is_dir()
+    assert not explicit_tmp.exists()
 
 
 def test_runtime_install_keeps_console_scripts_relocatable_and_executable(
@@ -188,7 +233,7 @@ def test_runtime_install_keeps_console_scripts_relocatable_and_executable(
             runtime_python = Path(cmd[3]) / "bin/python"
             runtime_python.parent.mkdir(parents=True, exist_ok=True)
             runtime_python.symlink_to(sys.executable)
-        if cmd[1:] == ["-m", "pip", "install", "PyYAML"]:
+        if "PyYAML==6.0.3" in cmd:
             console_script = Path(cmd[0]).parent / "atlas-sample"
             console_script.write_text(f"#!{cmd[0]}\nprint('console ok')\n", encoding="utf-8")
             console_script.chmod(console_script.stat().st_mode | stat.S_IXUSR)
@@ -200,7 +245,8 @@ def test_runtime_install_keeps_console_scripts_relocatable_and_executable(
 
     console_script = artifacts_venv / "bin/atlas-sample"
     shebang = console_script.read_text(encoding="utf-8").splitlines()[0]
-    assert shebang == f"#!{artifacts_venv / 'bin/python'}"
+    assert shebang.startswith("#!")
+    assert "/envs/generations/scripts." in shebang
     assert "scripts.tmp." not in shebang
     proc = original_run([str(console_script)], check=True, capture_output=True, text=True)
     assert proc.stdout == "console ok\n"
@@ -230,7 +276,7 @@ def test_runtime_install_rejects_stale_temp_shebang(monkeypatch: pytest.MonkeyPa
             runtime_python = Path(cmd[3]) / "bin/python"
             runtime_python.parent.mkdir(parents=True, exist_ok=True)
             runtime_python.write_text("", encoding="utf-8")
-        if cmd[1:] == ["-m", "pip", "install", "PyYAML"]:
+        if "PyYAML==6.0.3" in cmd:
             stale_python = runtime / "python/envs" / f"scripts.tmp.{os.getpid()}" / "bin/python"
             console_script = Path(cmd[0]).parent / "atlas-stale"
             console_script.write_text(f"#!{stale_python}\nprint('stale')\n", encoding="utf-8")
@@ -288,7 +334,13 @@ def test_runtime_install_prefers_requirements_lock(monkeypatch, tmp_path: Path) 
         "-m",
         "pip",
         "install",
-        "PyYAML",
+        "--isolated",
+        "--disable-pip-version-check",
+        "--no-input",
+        "--no-user",
+        "--index-url",
+        "https://pypi.org/simple",
+        "PyYAML==6.0.3",
         "-r",
         str(release_root / "requirements.lock"),
     ]
@@ -336,7 +388,13 @@ def test_runtime_install_falls_back_to_requirements_txt(monkeypatch, tmp_path: P
         "-m",
         "pip",
         "install",
-        "PyYAML",
+        "--isolated",
+        "--disable-pip-version-check",
+        "--no-input",
+        "--no-user",
+        "--index-url",
+        "https://pypi.org/simple",
+        "PyYAML==6.0.3",
         "-r",
         str(release_root / "requirements.txt"),
     ]
@@ -345,8 +403,8 @@ def test_runtime_install_falls_back_to_requirements_txt(monkeypatch, tmp_path: P
 def test_runtime_install_includes_requirements_from_all_active_releases(monkeypatch, tmp_path: Path) -> None:
     calls: list[list[str]] = []
     runtime = tmp_path / "runtime"
-    common = tmp_path / "releases/common/0.1.0"
-    kitsunebi = tmp_path / "releases/kitsunebi/0.2.0"
+    common = tmp_path / "releases/common/0.1.0-common-digest"
+    kitsunebi = tmp_path / "releases/kitsunebi/0.2.0-kitsunebi-digest"
     common.mkdir(parents=True)
     kitsunebi.mkdir(parents=True)
     (common / "requirements.lock").write_text("requests==2.32.3\n", encoding="utf-8")
@@ -387,7 +445,13 @@ def test_runtime_install_includes_requirements_from_all_active_releases(monkeypa
         "-m",
         "pip",
         "install",
-        "PyYAML",
+        "--isolated",
+        "--disable-pip-version-check",
+        "--no-input",
+        "--no-user",
+        "--index-url",
+        "https://pypi.org/simple",
+        "PyYAML==6.0.3",
         "-r",
         str(common / "requirements.lock"),
         "-r",

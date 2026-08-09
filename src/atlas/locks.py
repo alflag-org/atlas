@@ -15,8 +15,13 @@ from .manifests import validate_name
 
 
 @contextmanager
-def acquire_lock(locks_root: Path, name: str) -> Iterator[Path]:
-    """Acquire an OS-level advisory lock without waiting."""
+def acquire_lock(
+    locks_root: Path,
+    name: str,
+    *,
+    wait: bool = False,
+) -> Iterator[Path]:
+    """Acquire an OS-level advisory lock, optionally waiting for ownership."""
     validate_name(name, kind="lock")
     if locks_root.is_symlink() or (locks_root.exists() and not locks_root.is_dir()):
         raise ValueError(f"locks path must be a directory: {locks_root}")
@@ -36,7 +41,8 @@ def acquire_lock(locks_root: Path, name: str) -> Iterator[Path]:
     handle: TextIO = os.fdopen(descriptor, "a+", encoding="utf-8")
     try:
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            flags = fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB
+            fcntl.flock(handle.fileno(), flags)
         except BlockingIOError as exc:
             raise LockUnavailableError(f"lock is already held: {name}") from exc
         yield path

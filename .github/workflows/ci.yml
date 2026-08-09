@@ -31,11 +31,40 @@ jobs:
           python -m pip install --upgrade pip==26.2
           python -m pip install \
             -e '.[dev]' \
-            -r configuration-operations/requirements.txt \
-            -r infrastructure-operations/requirements.txt \
+            -r operations/requirements.txt \
             -r examples/basic-release/requirements.txt \
             -r examples/companion-release/requirements.txt
           python -m pip check
+      - name: Configure the selected Python as the CI runtime provider
+        run: |
+          ci_python="$(python -c 'import sys; print(sys.executable)')"
+          mkdir -p "$RUNNER_TEMP/atlas-bin"
+          {
+            printf '%s\n' '#!/usr/bin/env bash'
+            printf '%s\n' 'set -euo pipefail'
+            printf 'ATLAS_CI_PYTHON=%q\n' "$ci_python"
+            printf 'ATLAS_CI_PYTHON_VERSION=%q\n' "${{ matrix.python-version }}"
+            cat <<'PYENV'
+          case "${1:-}" in
+            install)
+              [[ "${2:-}" == "-s" && "${3:-}" == "$ATLAS_CI_PYTHON_VERSION" ]]
+              exit 0
+              ;;
+            prefix)
+              [[ "${2:-}" == "$ATLAS_CI_PYTHON_VERSION" ]]
+              exec "$ATLAS_CI_PYTHON" -c 'from pathlib import Path; import sys; print(Path(sys.executable).parent.parent)'
+              ;;
+            *)
+              echo "unsupported CI pyenv operation" >&2
+              exit 2
+              ;;
+          esac
+          PYENV
+          } > "$RUNNER_TEMP/atlas-bin/pyenv"
+          chmod +x "$RUNNER_TEMP/atlas-bin/pyenv"
+          "$RUNNER_TEMP/atlas-bin/pyenv" install -s "${{ matrix.python-version }}"
+          test "$("$RUNNER_TEMP/atlas-bin/pyenv" prefix "${{ matrix.python-version }}")" = "$(dirname "$(dirname "$ci_python")")"
+          echo "$RUNNER_TEMP/atlas-bin" >> "$GITHUB_PATH"
       - name: Validate Ansible fixture
         working-directory: tests/fixtures/provisioning
         run: ansible-playbook --syntax-check playbooks/site.yml
@@ -43,7 +72,7 @@ jobs:
           python -m coverage run -m pytest -q
           python -m coverage report
       - run: >-
-          ruff check src configuration-operations infrastructure-operations tests
+          ruff check src operations tests
       - run: python -m build
       - if: matrix.python-version == '3.14'
         run: make clean-docs html SPHINXOPTS=-W
@@ -75,15 +104,7 @@ jobs:
               source: "file://examples/basic-release"
           C
           atlas release install examples/basic-release
-          atlas release install configuration-operations
-          atlas release install infrastructure-operations
-          python -m venv "$ATLAS_RUNTIME_DIR/python/envs/scripts"
-          "$ATLAS_RUNTIME_DIR/python/envs/scripts/bin/python" -m pip install --upgrade pip==26.2
-          "$ATLAS_RUNTIME_DIR/python/envs/scripts/bin/python" -m pip install \
-            PyYAML==6.0.3 \
-            -r configuration-operations/requirements.txt \
-            -r infrastructure-operations/requirements.txt \
-            -r examples/basic-release/requirements.txt
+          atlas release install operations
           atlas release list
           atlas command list
           diff -u \
@@ -93,13 +114,12 @@ jobs:
             <(atlas command list)
           atlas which sample
           atlas which group-nested-sample
-          atlas run sample hello --name=hoge
+          atlas run sample hello --name=ci-user
           atlas run group-nested-sample show-context
           atlas which hostctl
           atlas which atlas-ansible
           atlas which imagectl
-          atlas job list configuration-operations
-          atlas job list infrastructure-operations
+          atlas job list operations
           "$ATLAS_HOME/shims/atlas-ansible" --help
           "$ATLAS_HOME/shims/hostctl" --help
           "$ATLAS_HOME/shims/imagectl" --help

@@ -1,10 +1,38 @@
 Atlas reference
 ===============
 
+Install Atlas
+-------------
+
+Atlas supports Python 3.11 through 3.14 on Linux. This guide uses
+``/srv/atlas/source`` for an operator-managed checkout:
+
+.. code-block:: bash
+
+   git clone https://github.com/alflag-org/atlas.git /srv/atlas/source
+   python -m pip install /srv/atlas/source
+
+Another durable checkout path is valid. Use that same path in release source configuration. Atlas
+reads the checkout but does not pull, reset, or otherwise modify it.
+
+The host needs Git for Git-backed release sources and execution context. ``atlas release install`` and
+``atlas runtime install`` require ``pyenv`` on ``PATH`` and the operating-system packages needed to
+build the configured Python version. ``atlas release update`` requires them when at least one
+release is selected for update. The account running Atlas must be able to write the configured home, configuration,
+and state directories. Runtime execution starts the selected release in a separate child process with
+an exact argument vector and no shell.
+Atlas preserves stdout, stderr, exit status, timeout handling, signal forwarding, execution logs, and
+parent/child run correlation.
+
 Configure an Atlas host
 -----------------------
 
 Atlas reads ``/etc/atlas/config.yml``. The schema is strict and rejects unknown keys.
+
+.. note::
+
+   Resource names and release source values in these examples are placeholders. Replace them with
+   values for your environment.
 
 .. code-block:: yaml
 
@@ -13,8 +41,8 @@ Atlas reads ``/etc/atlas/config.yml``. The schema is strict and rejects unknown 
        version: "3.14.6"
 
    releases:
-     configuration-operations:
-       source: "/srv/releases/configuration-operations"
+     operations:
+       source: "/srv/atlas/source/operations"
        enabled: true
 
      maintenance:
@@ -22,8 +50,12 @@ Atlas reads ``/etc/atlas/config.yml``. The schema is strict and rejects unknown 
        enabled: false
 
 ``atlas release update`` updates every enabled entry. Naming one entry updates it even when
-``enabled`` is false. A source may be a local directory, ``file:`` URL, local archive, HTTP(S)
-archive, or ``git+https://github.com/example/project.git#ref``.
+``enabled`` is false. On a default update with no enabled entry, Atlas parses the configuration and
+ensures its state directories, then exits successfully without resolving a source, provisioning a
+runtime, starting a release transaction, acquiring a host-artifact or per-release lock, or publishing
+or refreshing host artifacts. A source may be a local directory, ``file:`` URL, local archive,
+HTTP(S) archive, or
+``git+https://github.com/example/operations.git#v1.0.0``.
 
 ``/etc/atlas/host.yml`` supplies metadata to release code. ``name`` is required. ``site``, ``zone``,
 ``role``, ``environment``, and ``runtime_kind`` are optional strings; ``tags`` is a list of strings.
@@ -31,7 +63,7 @@ archive, or ``git+https://github.com/example/project.git#ref``.
 .. code-block:: yaml
 
    name: control-01
-   site: kng01
+   site: site-a
    zone: management
    role: control
    environment: production
@@ -57,29 +89,106 @@ These environment variables change host-side paths:
    * - ``ATLAS_TMP_DIR``
      - ``$ATLAS_HOME/tmp``
 
+Keep source and installed paths separate
+----------------------------------------
+
+The default paths have distinct owners and purposes:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Path
+     - Managed by
+     - Purpose
+   * - ``/srv/atlas/source``
+     - Operator
+     - Example checkout containing release sources; another durable path is valid.
+   * - ``/etc/atlas``
+     - Operator
+     - Host configuration, job instances, and child-process environment files.
+   * - ``/opt/atlas/releases/<release>/<version>-<content-digest>``
+     - Atlas
+     - Validated, digest-addressed snapshot of one release source; an installed snapshot is never replaced.
+   * - ``/opt/atlas/current/<release>``
+     - Atlas
+     - Symbolic link selecting the active installed release.
+   * - ``/opt/atlas/bin`` and ``/opt/atlas/shims``
+     - Atlas
+     - Stable launchers and public command shims.
+   * - ``/opt/atlas/runtime``
+     - Atlas
+     - Shared Python runtime; ``python/envs/scripts`` points to one immutable generation below ``python/envs/generations`` and child leases are stored under ``python/envs/leases``.
+   * - ``/opt/atlas/artifacts``
+     - Atlas
+     - Immutable host-artifact generations, the ``artifacts/current`` link used by child processes, and leases under ``artifacts/leases``.
+   * - ``/var/lib/atlas``
+     - Atlas
+     - Execution records, host-artifact and job locks, and source or build caches.
+
+Do not configure ``/opt/atlas/releases`` or ``/opt/atlas/current`` as a release source. Atlas
+replaces content below those directories during installation and activation. The bundled systemd
+artifacts and adapter use ``/opt/atlas/bin/atlas`` as the stable launcher, so hosts that install
+them must keep the default ``ATLAS_HOME=/opt/atlas``.
+
 Install and update releases
 ---------------------------
 
-The manifest supplies a release name; ``atlas release install`` has no name override.
+The manifest supplies a release name; ``atlas release install`` has no name override. Each release
+transaction uses ``$ATLAS_HOME/releases/.locks/<release>.lock``. The
+``$ATLAS_VAR_DIR/locks`` directory contains the global host-artifact lock and job locks.
 
 .. code-block:: bash
 
-   atlas release install ./configuration-operations
+   atlas release install /srv/atlas/source/operations
    atlas release list --verbose
-   atlas runtime install
    atlas status
 
    atlas release update
-   atlas release update configuration-operations
 
-Atlas copies and validates every requested source before activation. Release directories, active
-links, launchers, and command shims change as one operation. A failed install or update leaves the
-active set unchanged. Runtime installation restores the active environment when dependency
-installation or validation fails.
+Atlas validates every requested source, copies it to a staged content-addressed snapshot below
+``$ATLAS_HOME/releases``, revalidates the staged tree, and then atomically switches the link below
+``$ATLAS_HOME/current``. Installed snapshots are never replaced, so a running child keeps its
+selected tree while a later install activates a new snapshot. Runtime and host-artifact generations
+are also never replaced. A child captures concrete runtime and artifact generation paths before
+spawning. Parent lease descriptors cross exec and remain open until the release child has acquired
+both child-owned leases and acknowledged readiness; the child then holds its leases until it exits.
+This handoff keeps in-flight generations protected even if the waiting Atlas parent is hard-killed.
+Nested private jobs inherit the parent release snapshot and generation paths instead of resolving
+current links again.
+Snapshot modes are read-only after staging for the normal runtime path, and the child forces
+``PYTHONDONTWRITEBYTECODE=1``. The
+runtime account can still change its own modes; this is a release-selection correctness boundary,
+not a hostile same-UID sandbox. Atlas rechecks the selected snapshot's path and content digest
+before importing release code. A per-release lock serializes installs. Host artifact publication
+uses a separate global lock, acquired before release locks; update acquires release locks in sorted
+manifest-name order. Activation rollback restores the previous link only when it still points to the
+failed transaction's target. Command and job execution takes that global lock while resolving and
+spawning, then releases it while the leased child runs. Candidate ownership transfers to the active
+link only after activation succeeds; previous generations remain available until lease-aware garbage
+collection. Rollback restores mutable selection links and stable launchers without copying or deleting
+pre-existing generations or lease state, and cleans only candidates created by the failed transaction
+when they are unleased. Garbage collection runs after child completion, is best-effort, and leaves a
+generation in place when cleanup fails. Atlas does not remove installed release snapshots automatically.
+Candidate runtime publication restores the active generation when dependency installation or release
+validation fails, and host-artifact publication restores the previous generation and stable launchers
+if a later publication step fails.
 
 ``atlas runtime install`` reads ``requirements.lock`` when a release provides it, otherwise
 ``requirements.txt``. Only manifest commands receive shims below ``/opt/atlas/shims``. Jobs remain
 available through ``atlas job``.
+
+Release installation and update do not require the shared runtime to exist first. Atlas selects the
+configured ``pyenv`` Python and builds a clean candidate venv without system-site packages. It copies
+the Atlas core support package into that venv, installs Atlas's declared support requirements and the
+requirements from every intended active release, and runs isolated ``pip check``. The validate-only
+child uses the same sanitized environment boundary and then imports each target from the exact
+staged snapshot using that candidate runtime. Only after dependency installation, digest checks, and
+callable validation succeed does Atlas publish the candidate runtime generation and switch the requested
+release links; host-artifact publication is part of the same transaction. A failure restores the
+previous runtime, release links, and host artifacts. The Atlas process bootstraps the configured
+interpreter but never imports release code. ``atlas runtime install`` separately rebuilds the runtime
+for every current active snapshot, validates every command and job with the candidate Python before
+switching the runtime link, and does not change release links.
 
 Write a release manifest
 ------------------------
@@ -89,29 +198,29 @@ through Atlas.
 
 .. code-block:: text
 
-   configuration-operations/
+   operations/
    ├── VERSION
    ├── release.yml
    ├── requirements.txt
-   ├── commands/
-   ├── jobs/
    ├── init/systemd/
    └── modules/
+       ├── atlas_configuration_operations/
+       ├── atlas_host_operations/
+       ├── atlas_image_operations/
+       └── atlas_operations/
 
 .. code-block:: yaml
 
    schema: atlas.release/v1
-   name: configuration-operations
+   name: operations
 
    commands:
      atlas-ansible:
-       runtime: python
-       entrypoint: commands/atlas-ansible.py
+       target: atlas_configuration_operations.controller:main
 
    jobs:
      inventory-refresh:
-       runtime: python
-       entrypoint: jobs/inventory-refresh.py
+       target: atlas_configuration_operations.inventory_refresh:main
        default_timeout_seconds: 300
 
    services:
@@ -125,13 +234,28 @@ through Atlas.
 Identifiers use lowercase letters, digits, and single hyphens. Command and job names may not
 overlap within a release. ``atlas`` and ``artifact-runner`` are reserved command names.
 
-Atlas rejects unknown manifest keys, unsupported runtimes, missing files, absolute or traversing
-entrypoints, release symlinks, malformed service references, invalid unit suffixes, and duplicate
-public command names across active releases.
+Atlas rejects unknown manifest keys, malformed or missing targets, targets outside the selected
+release, missing dotted parent package initializers, ambiguous module paths, symlinks, malformed
+service references, invalid unit suffixes, and duplicate public command names across active
+releases. A target uses the ``package.module:callable`` form. Atlas resolves the final module and
+every parent package below the selected release's ``modules/`` directory. During installation, a
+separate validate-only child uses the same selected-release import path as runtime to import each
+manifest target and inspect the actual module attribute; it does not invoke the target. This
+import executes first-party module top-level code, so release import-time side effects can occur
+during installation. Release code and the Atlas operating-system account are trusted first-party
+components; this boundary is not a hostile same-UID sandbox.
 
-The selected release's ``modules/`` directory is first on ``PYTHONPATH``. Module directories from
-other active releases follow in release-name order, then the Atlas runtime package path and the
-incoming ``PYTHONPATH``. Release code imports its context from ``atlas_core``:
+The shared callable contract requires an existing callable target that is synchronous, accepts
+``argv`` as its first positional argument, and has an ``int`` or ``None`` return annotation when
+annotated. Missing or non-callable attributes, coroutine functions, required arguments beyond
+``argv``, required keyword-only arguments, and incompatible return annotations are rejected with
+the same validator at installation and runtime. Runtime invokes the exact object returned by that
+validation. Snapshot digest and provenance checks run before import and reject a modified or
+unselected snapshot.
+
+The selected release's ``modules/`` directory is first on ``PYTHONPATH``, followed by Atlas's
+support packages. The caller's ``PYTHONPATH`` and other active releases are not exposed to the
+child. Release code imports its context from ``atlas_core``:
 
 .. code-block:: python
 
@@ -148,14 +272,14 @@ Run commands and jobs
 
    atlas command list --verbose
    atlas which atlas-ansible
-   atlas run atlas-ansible diff site web01
+   atlas run atlas-ansible diff site web-01
 
    export PATH="/opt/atlas/shims:$PATH"
-   atlas-ansible diff site web01
+   atlas-ansible diff site web-01
 
    atlas job list
-   atlas job inspect configuration-operations inventory-refresh
-   atlas job run configuration-operations inventory-refresh -- --site default
+   atlas job inspect operations inventory-refresh
+   atlas job run operations inventory-refresh -- --site default
 
 The shim invokes ``/opt/atlas/bin/artifact-runner``, which delegates to ``atlas run``. Arguments after
 ``--`` reach a job unchanged. Direct jobs inherit the caller's working directory.
@@ -165,10 +289,10 @@ A job instance binds a release job to host settings stored below ``/etc/atlas/jo
 .. code-block:: yaml
 
    schema: atlas.job-instance/v1
-   release: configuration-operations
+   release: operations
    job: inventory-refresh
    user: ops
-   working_directory: /home/ops/repos/provisioning
+   working_directory: /srv/provisioning
    arguments:
      - --site
      - default
@@ -187,19 +311,26 @@ Working directories and environment-file paths must be absolute. Atlas reads env
 only into the child process and does not put them in the run record. It does not switch users or
 invoke ``sudo``; direct execution fails when the declared user differs from the caller.
 
+The bundled inventory-refresh systemd service uses the ``ops`` account and the
+``provisioning-inventory-refresh`` job instance. Create that account and instance before installing
+the unit. A maintained release variant may use another account or instance name, but its ``User=``
+and job instance must change together.
+
 Install systemd files
 ---------------------
 
 .. code-block:: bash
 
-   atlas systemd list configuration-operations
-   atlas systemd diff configuration-operations inventory-refresh
-   sudo atlas systemd install configuration-operations inventory-refresh
-   sudo atlas systemd remove configuration-operations inventory-refresh
+   atlas systemd list operations
+   atlas systemd diff operations inventory-refresh
+   sudo atlas systemd install operations inventory-refresh
+   sudo atlas systemd remove operations inventory-refresh
 
 Each managed service has one ``ExecStart`` through ``/opt/atlas/bin/atlas``. It invokes a
 manifest command or a matching job instance. A job-backed service must use
 ``atlas job instance run``, and its ``User=`` value must match the instance user.
+The service unit must use the stable ``/opt/atlas/bin/atlas`` launcher and a manifest command or
+matching job instance. Copying an ``ExecStart`` with a versioned release path is invalid.
 
 Atlas writes ``atlas-<release>-<service>.service`` and an optional ``.timer`` with mode ``0644`` and
 owner ``root:root``, then runs ``systemctl daemon-reload``. It does not enable, start, stop, or restart
@@ -207,9 +338,9 @@ units. Review the diff before using native systemd commands:
 
 .. code-block:: bash
 
-   sudo systemctl enable --now atlas-configuration-operations-inventory-refresh.timer
-   systemctl status atlas-configuration-operations-inventory-refresh.timer
-   journalctl -u atlas-configuration-operations-inventory-refresh.service
+   sudo systemctl enable --now atlas-operations-inventory-refresh.timer
+   systemctl status atlas-operations-inventory-refresh.timer
+   journalctl -u atlas-operations-inventory-refresh.service
 
 Read execution state
 --------------------
@@ -227,21 +358,33 @@ The default layout is:
    /opt/atlas/
      bin/atlas
      bin/artifact-runner
-     runtime/
-     releases/<release>/<version>/
-     current/<release> -> ../releases/<release>/<version>
-     shims/
+     artifacts/current -> generations/<generation>
+     artifacts/current/python/atlas_release_runner.py
+     artifacts/current/python/target_contract.py
+     artifacts/current/python/atlas_core/
+     artifacts/current/shims/
+     artifacts/generations/<generation>/
+     lib/python -> artifacts/current/python
+     runtime/python/envs/generations/<generation>/
+     runtime/python/envs/scripts -> generations/<generation>
+     releases/<release>/<version>-<content-digest>/
+     current/<release> -> /opt/atlas/releases/<release>/<version>-<content-digest>
+     releases/.locks/<release>.lock
+     shims -> artifacts/current/shims
+     runtime/python/envs/leases/<lease>.lease
+     artifacts/leases/<lease>.lease
      tmp/
 
    /var/lib/atlas/
      logs/runs.jsonl
-     locks/
+     locks/host-artifacts.lock
+     locks/<job>.lock
      cache/
 
 Commands and jobs share one executor. Arguments remain a list and run with ``shell=False``. Atlas
-records read-only Git context for the working directory and starts the child in a new process
-group. A timeout sends SIGTERM, waits five seconds, then sends SIGKILL; its exit status is 124.
-A held non-blocking job-instance lock returns 75.
+records read-only Git context for the working directory and starts the standalone release runner in
+a new child session. A timeout follows the executor's normal child-process termination path and
+returns 124. A held non-blocking job-instance lock returns 75.
 
 Each run receives ``run_id``, ``parent_run_id``, and ``operation_id``. Nested Atlas execution records the
 caller as its parent while retaining the operation ID. Release code receives the same values as
@@ -262,12 +405,14 @@ caller as its parent while retaining the operation ID. Release code receives the
      - Manifest artifact name
    * - ``ATLAS_RELEASE_ROOT``
      - Installed directory used by the run
+   * - ``ATLAS_RELEASE_DIGEST``
+     - SHA-256 content identity of the installed snapshot used by the run
    * - ``ATLAS_HOST_FILE``
      - Resolved host profile path
 
-``/var/lib/atlas/logs/runs.jsonl`` stores artifact identity, correlation IDs, redacted arguments,
-working directory, Git context, exit status, duration, timeout state, and lock name. Rotate and
-collect it with the host's logging tools.
+``/var/lib/atlas/logs/runs.jsonl`` stores artifact identity, release content digest, correlation IDs,
+redacted arguments, working directory, Git context, exit status, duration, timeout state, and lock
+name. Rotate and collect it with the host's logging tools.
 
 Recover from failures
 ---------------------
@@ -286,7 +431,8 @@ Job lock conflict
    operating-system lock.
 
 Timed-out job
-   Atlas returns 124, records ``timed_out``, and terminates the process group.
+   Atlas returns 124 and records ``timed_out``. Inspect the run record and the child process state
+   before retrying a job whose target does not terminate promptly.
 
 Systemd installation failure
    Check root permission, the unit files, destination symlinks, and

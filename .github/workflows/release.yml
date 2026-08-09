@@ -22,27 +22,18 @@ jobs:
           python -m pip install --upgrade pip==26.2
           python -m pip install \
             -e '.[dev]' \
-            -r configuration-operations/requirements.txt \
-            -r infrastructure-operations/requirements.txt
+            -r operations/requirements.txt
           python -m pip check
       - run: pytest -q
       - run: python -m build
-      - name: Package configuration operations release
+      - name: Package operations release
         run: |
           set -euo pipefail
-          configuration_version="$(tr -d '\n' < configuration-operations/VERSION)"
+          operations_version="$(tr -d '\n' < operations/VERSION)"
           git archive \
             --format=tar.gz \
-            --output="dist/atlas-configuration-operations-${configuration_version}.tar.gz" \
-            HEAD:configuration-operations
-      - name: Package infrastructure operations release
-        run: |
-          set -euo pipefail
-          infrastructure_version="$(tr -d '\n' < infrastructure-operations/VERSION)"
-          git archive \
-            --format=tar.gz \
-            --output="dist/atlas-infrastructure-operations-${infrastructure_version}.tar.gz" \
-            HEAD:infrastructure-operations
+            --output="dist/atlas-operations-${operations_version}.tar.gz" \
+            HEAD:operations
       - run: sha256sum dist/* > release-checksums.txt
       - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:

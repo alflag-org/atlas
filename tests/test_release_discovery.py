@@ -17,24 +17,24 @@ from atlas.sources import resolve_source
 
 def _touch(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("print('x')\n", encoding="utf-8")
+    path.write_text(
+        "def main(argv: list[str] | None = None) -> int:\n    return 0\n",
+        encoding="utf-8",
+    )
 
 
 def test_install_rejects_release_symlink(tmp_path: Path) -> None:
     source = tmp_path / "source"
-    commands = source / "commands"
     modules = source / "modules"
-    commands.mkdir(parents=True)
     modules.mkdir(parents=True)
     (source / "VERSION").write_text("2026.05.10-001\n", encoding="utf-8")
-    _touch(commands / "sample.py")
+    _touch(modules / "sample.py")
     (source / "release.yml").write_text(
         "schema: atlas.release/v1\n"
         "name: default\n"
         "commands:\n"
         "  sample:\n"
-        "    runtime: python\n"
-        "    entrypoint: commands/sample.py\n",
+        "    target: sample:main\n",
         encoding="utf-8",
     )
     target = source / "target.txt"
@@ -47,32 +47,41 @@ def test_install_rejects_release_symlink(tmp_path: Path) -> None:
 
 def test_install_overwrites_same_version_atomically(tmp_path: Path) -> None:
     source = tmp_path / "source"
-    commands = source / "commands"
-    commands.mkdir(parents=True)
+    modules = source / "modules"
+    modules.mkdir(parents=True)
     (source / "VERSION").write_text("2026.05.10-001\n", encoding="utf-8")
-    (commands / "sample.py").write_text("print('v1')\n", encoding="utf-8")
+    (modules / "sample.py").write_text(
+        "def main(argv: list[str] | None = None) -> int:\n    return 1\n",
+        encoding="utf-8",
+    )
     (source / "release.yml").write_text(
         "schema: atlas.release/v1\n"
         "name: default\n"
         "commands:\n"
         "  sample:\n"
-        "    runtime: python\n"
-        "    entrypoint: commands/sample.py\n",
+        "    target: sample:main\n",
         encoding="utf-8",
     )
 
     releases = tmp_path / "releases"
     current = tmp_path / "current"
-    install_release(source, releases, current)
-    target = releases / "default/2026.05.10-001"
+    target = install_release(source, releases, current)
+    assert target.name.startswith("2026.05.10-001-")
     assert target.exists()
     assert (current / "default").resolve() == target
-    assert (target / "commands/sample.py").read_text(encoding="utf-8") == "print('v1')\n"
+    assert (target / "modules/sample.py").read_text(encoding="utf-8").endswith("return 1\n")
 
-    (commands / "sample.py").write_text("print('v2')\n", encoding="utf-8")
-    install_release(source, releases, current)
-    assert (current / "default").resolve() == target
-    assert (target / "commands/sample.py").read_text(encoding="utf-8") == "print('v2')\n"
+    (modules / "sample.py").write_text(
+        "def main(argv: list[str] | None = None) -> int:\n    return 2\n",
+        encoding="utf-8",
+    )
+    replacement = install_release(source, releases, current)
+    assert replacement != target
+    assert (current / "default").resolve() == replacement
+    assert (target / "modules/sample.py").read_text(encoding="utf-8").endswith("return 1\n")
+    assert (replacement / "modules/sample.py").read_text(encoding="utf-8").endswith(
+        "return 2\n"
+    )
 
 
 def test_install_cleans_staging_and_backup_paths(tmp_path: Path) -> None:
@@ -84,6 +93,7 @@ def test_install_cleans_staging_and_backup_paths(tmp_path: Path) -> None:
     install_release(source, releases, current)
 
     assert list((releases / "default").glob("*.tmp.*")) == []
+    assert list((releases / "default").glob(".*.tmp.*")) == []
     assert list((releases / "default").glob("*.bak.*")) == []
 
 
@@ -94,19 +104,16 @@ def _release(
     command_name: str = "sample",
     version: str = "2026.05.10-001",
 ) -> Path:
-    commands = path / "commands"
     modules = path / "modules"
-    commands.mkdir(parents=True)
     modules.mkdir(parents=True)
     (path / "VERSION").write_text(f"{version}\n", encoding="utf-8")
-    _touch(commands / f"{command_name}.py")
+    _touch(modules / f"{command_name.replace('-', '_')}.py")
     (path / "release.yml").write_text(
         "schema: atlas.release/v1\n"
         f"name: {release_name}\n"
         "commands:\n"
         f"  {command_name}:\n"
-        "    runtime: python\n"
-        f"    entrypoint: commands/{command_name}.py\n",
+        f"    target: {command_name.replace('-', '_')}:main\n",
         encoding="utf-8",
     )
     return path
@@ -131,12 +138,18 @@ def test_install_release_supports_multiple_active_releases(tmp_path: Path) -> No
     common_target = install_release(common, releases, current)
     kitsunebi_target = install_release(kitsunebi, releases, current)
 
-    assert common_target == releases / "common/0.1.0"
-    assert kitsunebi_target == releases / "kitsunebi/0.2.0"
+    assert common_target.name.startswith("0.1.0-")
+    assert kitsunebi_target.name.startswith("0.2.0-")
     assert (current / "common").resolve() == common_target
     assert (current / "kitsunebi").resolve() == kitsunebi_target
-    assert [release.name for release in active_releases(current)] == ["common", "kitsunebi"]
-    assert sorted(command_index(current)) == ["common-command", "kitsunebi-command"]
+    assert [release.name for release in active_releases(current, releases)] == [
+        "common",
+        "kitsunebi",
+    ]
+    assert sorted(command_index(current, releases)) == [
+        "common-command",
+        "kitsunebi-command",
+    ]
 
 
 def test_install_release_rejects_current_root_symlink(tmp_path: Path) -> None:
@@ -190,7 +203,7 @@ def test_resolve_local_zip_archive(tmp_path: Path) -> None:
     resolved = resolve_source(str(archive), cache_dir=tmp_path / "cache")
 
     assert (resolved / "VERSION").exists()
-    assert (resolved / "commands/sample.py").exists()
+    assert (resolved / "modules/sample.py").exists()
 
 
 def test_resolve_archive_rejects_path_traversal(tmp_path: Path) -> None:

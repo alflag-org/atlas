@@ -7,12 +7,11 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-project = "atlas"
-author = "atlas contributors"
+project = "Atlas"
+author = "Atlas contributors"
 language = "en"
 with (ROOT / "pyproject.toml").open("rb") as fh:
     release = tomllib.load(fh)["project"]["version"]
-html_baseurl = "https://atlas-docs.jp0.workers.dev/"
 
 extensions = [
     "sphinx.ext.autodoc",

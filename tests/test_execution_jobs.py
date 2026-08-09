@@ -5,7 +5,10 @@ import os
 import pwd
 import signal
 import subprocess
+import sys
 import time
+from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -16,20 +19,19 @@ from atlas.errors import LockUnavailableError
 from atlas.execution import (
     _append_run_log,
     _forward_termination_signal,
+    _pythonpath,
     _terminate_process_group,
     execute,
     git_context,
     redact_args,
 )
+from atlas.generations import collect_generation_garbage
 from atlas.job_instances import list_job_instances, load_job_instance
 from atlas.jobs import list_jobs, run_job, run_job_instance
-from atlas.launchers import (
-    ensure_artifact_runner,
-    ensure_atlas_launcher,
-    regenerate_shims,
-)
+from atlas.launchers import publish_host_artifacts
 from atlas.locks import acquire_lock
-from atlas.releases import install_release
+from atlas.releases import install_release, release_digest
+from atlas.runtime import RuntimeCandidate
 
 
 def _activate(paths, source: Path) -> None:
@@ -54,6 +56,12 @@ def _all_logs(paths) -> list[dict[str, object]]:
     ]
 
 
+def _acknowledge_fake_child(kwargs: dict[str, object]) -> None:
+    env = kwargs["env"]
+    assert isinstance(env, dict)
+    os.write(int(env["ATLAS_LEASE_HANDOFF_ACK_FD"]), b"1")
+
+
 def test_execute_sets_environment_and_logs_correlation(
     atlas_paths,
     release_factory,
@@ -61,17 +69,14 @@ def test_execute_sets_environment_and_logs_correlation(
     capfd,
 ) -> None:
     source = release_factory(name="sample", commands=("sample-show",))
-    modules = source / "modules"
-    modules.mkdir()
     other = release_factory(name="other", commands=())
-    (other / "modules").mkdir()
     _activate(atlas_paths, source)
     _activate(atlas_paths, other)
     monkeypatch.setenv("ATLAS_RUN_ID", "parent-run")
     monkeypatch.setenv("ATLAS_OPERATION_ID", "root-operation")
     monkeypatch.setenv("PYTHONPATH", "/existing")
-    command = resolve_command(atlas_paths.current_root, "sample-show")
-    atlas_paths.var.mkdir(parents=True)
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
+    atlas_paths.var.mkdir(parents=True, exist_ok=True)
 
     assert execute(
         atlas_paths,
@@ -99,13 +104,442 @@ def test_execute_sets_environment_and_logs_correlation(
 def test_execute_root_run_has_own_operation_id(atlas_paths, release_factory) -> None:
     source = release_factory()
     _activate(atlas_paths, source)
-    command = resolve_command(atlas_paths.current_root, "sample-show")
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
 
     assert execute(atlas_paths, command, []) == 0
 
     record = _last_log(atlas_paths)
     assert record["parent_run_id"] is None
     assert record["operation_id"] == record["run_id"]
+
+
+def test_reinstall_same_version_keeps_running_snapshot_and_correlates_digest(
+    atlas_paths,
+    release_factory,
+) -> None:
+    source = release_factory(name="worker")
+    module = source / "modules/sample_show_entry.py"
+    module.write_text(
+        "import os\n"
+        "import time\n"
+        "from pathlib import Path\n"
+        "MARKER = 'OLD'\n"
+        "var = Path(os.environ['ATLAS_VAR_DIR'])\n"
+        "if os.environ.get('ATLAS_RELEASE_DIGEST'):\n"
+        "    (var / 'old-import-ready').write_text(MARKER)\n"
+        "    if os.environ.get('ATLAS_RUN_ID'):\n"
+        "        while not (var / 'old-import-continue').exists():\n"
+        "            time.sleep(0.01)\n"
+        "def main(argv=None):\n"
+        "    (var / f'executed-{MARKER}').write_text(os.environ['ATLAS_RELEASE_DIGEST'])\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    _activate(atlas_paths, source)
+    (atlas_paths.var / "old-import-ready").unlink(missing_ok=True)
+    old_command = resolve_command(
+        atlas_paths.current_root,
+        atlas_paths.releases_root,
+        "sample-show",
+    )
+    atlas_paths.var.mkdir(parents=True, exist_ok=True)
+    runner = (
+        "from atlas.catalog import resolve_command\n"
+        "from atlas.execution import execute\n"
+        "from atlas.paths import get_paths\n"
+        "paths = get_paths()\n"
+        "command = resolve_command(paths.current_root, paths.releases_root, 'sample-show')\n"
+        "raise SystemExit(execute(paths, command, []))\n"
+    )
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = os.environ.copy()
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        [str(repo_root / "src"), str(repo_root / "operations/modules")]
+    )
+    old_process = subprocess.Popen(
+        [sys.executable, "-c", runner],
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    ready = atlas_paths.var / "old-import-ready"
+    deadline = time.monotonic() + 5
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ready.exists()
+
+    module.write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "MARKER = 'NEW'\n"
+        "var = Path(os.environ['ATLAS_VAR_DIR'])\n"
+        "def main(argv=None):\n"
+        "    (var / f'executed-{MARKER}').write_text(os.environ['ATLAS_RELEASE_DIGEST'])\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    new_target = install_release(
+        source,
+        atlas_paths.releases_root,
+        atlas_paths.current_root,
+    )
+    new_command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
+    assert new_target != old_command.release.root
+    assert new_command.release.root == new_target
+    assert execute(atlas_paths, new_command, []) == 0
+    assert (
+        (atlas_paths.var / "executed-NEW").read_text(encoding="utf-8")
+        == new_command.release.content_digest
+    )
+
+    (atlas_paths.var / "old-import-continue").write_text("continue")
+    stdout, stderr = old_process.communicate(timeout=5)
+    assert old_process.returncode == 0, stderr
+    assert stdout == ""
+    assert (
+        (atlas_paths.var / "executed-OLD").read_text(encoding="utf-8")
+        == old_command.release.content_digest
+    )
+    digests = {
+        record["release_digest"]
+        for record in _all_logs(atlas_paths)
+        if record["artifact"] == "sample-show"
+    }
+    assert digests == {
+        old_command.release.content_digest,
+        new_command.release.content_digest,
+    }
+
+
+def test_in_flight_child_keeps_concrete_runtime_and_artifact_generations(
+    atlas_paths,
+    release_factory,
+) -> None:
+    source = release_factory(name="lazy")
+    lazy_module = source / "modules/sample_show_entry.py"
+    lazy_module.write_text(
+        "import os\n"
+        "import time\n"
+        "from pathlib import Path\n"
+        "def main(argv=None):\n"
+        "    var = Path(os.environ['ATLAS_VAR_DIR'])\n"
+        "    (var / 'lazy-ready').write_text('ready')\n"
+        "    while not (var / 'lazy-continue').exists():\n"
+        "        time.sleep(0.01)\n"
+        "    import yaml\n"
+        "    (var / 'lazy-value').write_text(yaml.__version__)\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    _activate(atlas_paths, source)
+    publish_host_artifacts(atlas_paths)
+    old_runtime = (atlas_paths.runtime / "python/envs/scripts").resolve()
+    old_artifacts = atlas_paths.artifact_current.resolve()
+
+    runner = (
+        "from atlas.catalog import resolve_command\n"
+        "from atlas.execution import execute\n"
+        "from atlas.paths import get_paths\n"
+        "paths = get_paths()\n"
+        "command = resolve_command(paths.current_root, paths.releases_root, 'sample-show')\n"
+        "raise SystemExit(execute(paths, command, []))\n"
+    )
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = os.environ.copy()
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        [str(repo_root / "src"), str(repo_root / "operations/modules")]
+    )
+    old_process = subprocess.Popen(
+        [sys.executable, "-c", runner],
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    ready = atlas_paths.var / "lazy-ready"
+    deadline = time.monotonic() + 10
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ready.exists()
+
+    replacement = release_factory(name="lazy", version="2.0.0")
+    replacement_module = replacement / "modules/sample_show_entry.py"
+    replacement_module.write_text(lazy_module.read_text(encoding="utf-8"), encoding="utf-8")
+    _activate(atlas_paths, replacement)
+    publish_host_artifacts(atlas_paths)
+    new_runtime = (atlas_paths.runtime / "python/envs/scripts").resolve()
+    new_artifacts = atlas_paths.artifact_current.resolve()
+    assert new_runtime != old_runtime
+    assert new_artifacts != old_artifacts
+
+    collect_generation_garbage(
+        old_runtime.parent,
+        atlas_paths.runtime / "python/envs/scripts",
+        label="runtime generation",
+    )
+    collect_generation_garbage(
+        old_artifacts.parent,
+        atlas_paths.artifact_current,
+        label="artifact generation",
+    )
+    assert old_runtime.is_dir()
+    assert old_artifacts.is_dir()
+
+    (atlas_paths.var / "lazy-continue").write_text("continue", encoding="utf-8")
+    stdout, stderr = old_process.communicate(timeout=10)
+    assert old_process.returncode == 0, stderr
+    assert stdout == ""
+    assert (atlas_paths.var / "lazy-value").read_text(encoding="utf-8") == "6.0.3"
+    assert not old_runtime.exists()
+    assert not old_artifacts.exists()
+
+
+def test_child_owned_leases_survive_a_hard_killed_atlas_parent(
+    atlas_paths,
+    release_factory,
+) -> None:
+    source = release_factory(name="killed")
+    module = source / "modules/sample_show_entry.py"
+    module.write_text(
+        "import os\n"
+        "import time\n"
+        "from pathlib import Path\n"
+        "def main(argv=None):\n"
+        "    var = Path(os.environ['ATLAS_VAR_DIR'])\n"
+        "    (var / 'killed-ready').write_text('ready')\n"
+        "    while not (var / 'killed-continue').exists():\n"
+        "        time.sleep(0.01)\n"
+        "    (var / 'killed-done').write_text('done')\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    _activate(atlas_paths, source)
+    publish_host_artifacts(atlas_paths)
+    old_runtime = (atlas_paths.runtime / "python/envs/scripts").resolve()
+    old_artifacts = atlas_paths.artifact_current.resolve()
+
+    runner = (
+        "from atlas.catalog import resolve_command\n"
+        "from atlas.execution import execute\n"
+        "from atlas.paths import get_paths\n"
+        "paths = get_paths()\n"
+        "command = resolve_command(paths.current_root, paths.releases_root, 'sample-show')\n"
+        "raise SystemExit(execute(paths, command, []))\n"
+    )
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = os.environ.copy()
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        [str(repo_root / "src"), str(repo_root / "operations/modules")]
+    )
+    parent_process = subprocess.Popen(
+        [sys.executable, "-c", runner],
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    ready = atlas_paths.var / "killed-ready"
+    deadline = time.monotonic() + 10
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ready.exists()
+    parent_process.kill()
+    parent_process.wait(timeout=5)
+
+    replacement = release_factory(name="killed", version="2.0.0")
+    replacement_module = replacement / "modules/sample_show_entry.py"
+    replacement_module.write_text(module.read_text(encoding="utf-8"), encoding="utf-8")
+    _activate(atlas_paths, replacement)
+    publish_host_artifacts(atlas_paths)
+    new_runtime = (atlas_paths.runtime / "python/envs/scripts").resolve()
+    new_artifacts = atlas_paths.artifact_current.resolve()
+
+    collect_generation_garbage(
+        old_runtime.parent,
+        atlas_paths.runtime / "python/envs/scripts",
+        label="runtime generation",
+    )
+    collect_generation_garbage(
+        old_artifacts.parent,
+        atlas_paths.artifact_current,
+        label="artifact generation",
+    )
+    assert old_runtime.is_dir()
+    assert old_artifacts.is_dir()
+
+    (atlas_paths.var / "killed-continue").write_text("continue", encoding="utf-8")
+    parent_process.communicate(timeout=10)
+    assert (atlas_paths.var / "killed-done").read_text(encoding="utf-8") == "done"
+
+    collect_generation_garbage(
+        old_runtime.parent,
+        atlas_paths.runtime / "python/envs/scripts",
+        label="runtime generation",
+    )
+    collect_generation_garbage(
+        old_artifacts.parent,
+        atlas_paths.artifact_current,
+        label="artifact generation",
+    )
+    assert not old_runtime.exists()
+    assert not old_artifacts.exists()
+    assert new_runtime.is_dir()
+    assert new_artifacts.is_dir()
+
+
+def test_handoff_leases_survive_parent_kill_before_child_lease_acquisition(
+    atlas_paths,
+    release_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = release_factory(name="handoff")
+    module = source / "modules/sample_show_entry.py"
+    module.write_text(
+        "from pathlib import Path\n"
+        "import os\n"
+        "def main(argv=None):\n"
+        "    Path(os.environ['ATLAS_VAR_DIR'], 'handoff-done').write_text('done')\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    _activate(atlas_paths, source)
+    publish_host_artifacts(atlas_paths)
+    old_runtime = (atlas_paths.runtime / "python/envs/scripts").resolve()
+    old_artifacts = atlas_paths.artifact_current.resolve()
+
+    ready = atlas_paths.var / "handoff-wrapper-ready"
+    proceed = atlas_paths.var / "handoff-wrapper-proceed"
+    monkeypatch.setenv("ATLAS_HANDOFF_WRAPPER_READY", str(ready))
+    monkeypatch.setenv("ATLAS_HANDOFF_WRAPPER_PROCEED", str(proceed))
+    runtime_python = old_runtime / "bin/python"
+    runtime_python.unlink()
+    runtime_python.write_text(
+        f"#!{sys.executable}\n"
+        "import os\n"
+        "import sys\n"
+        "import time\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['ATLAS_HANDOFF_WRAPPER_READY']).write_text('ready')\n"
+        "while not Path(os.environ['ATLAS_HANDOFF_WRAPPER_PROCEED']).exists():\n"
+        "    time.sleep(0.01)\n"
+        "os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n",
+        encoding="utf-8",
+    )
+    runtime_python.chmod(0o755)
+
+    runner = (
+        "from atlas.catalog import resolve_command\n"
+        "from atlas.execution import execute\n"
+        "from atlas.paths import get_paths\n"
+        "paths = get_paths()\n"
+        "command = resolve_command(paths.current_root, paths.releases_root, 'sample-show')\n"
+        "raise SystemExit(execute(paths, command, []))\n"
+    )
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = os.environ.copy()
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        [str(repo_root / "src"), str(repo_root / "operations/modules")]
+    )
+    parent_process = subprocess.Popen(
+        [sys.executable, "-c", runner],
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists()
+        parent_process.kill()
+        parent_process.wait(timeout=5)
+
+        replacement = release_factory(name="handoff", version="2.0.0")
+        replacement_module = replacement / "modules/sample_show_entry.py"
+        replacement_module.write_text(module.read_text(encoding="utf-8"), encoding="utf-8")
+        _activate(atlas_paths, replacement)
+        publish_host_artifacts(atlas_paths)
+        new_runtime = (atlas_paths.runtime / "python/envs/scripts").resolve()
+        new_artifacts = atlas_paths.artifact_current.resolve()
+
+        collect_generation_garbage(
+            old_runtime.parent,
+            atlas_paths.runtime / "python/envs/scripts",
+            label="runtime generation",
+        )
+        collect_generation_garbage(
+            old_artifacts.parent,
+            atlas_paths.artifact_current,
+            label="artifact generation",
+        )
+        assert old_runtime.is_dir()
+        assert old_artifacts.is_dir()
+
+        proceed.write_text("proceed", encoding="utf-8")
+        stdout, stderr = parent_process.communicate(timeout=10)
+        assert parent_process.returncode == -signal.SIGKILL, stderr
+        assert stdout == ""
+        assert (atlas_paths.var / "handoff-done").read_text(encoding="utf-8") == "done"
+
+        collect_generation_garbage(
+            old_runtime.parent,
+            atlas_paths.runtime / "python/envs/scripts",
+            label="runtime generation",
+        )
+        collect_generation_garbage(
+            old_artifacts.parent,
+            atlas_paths.artifact_current,
+            label="artifact generation",
+        )
+        assert not old_runtime.exists()
+        assert not old_artifacts.exists()
+        assert new_runtime.is_dir()
+        assert new_artifacts.is_dir()
+    finally:
+        if parent_process.poll() is None:
+            parent_process.kill()
+        proceed.write_text("proceed", encoding="utf-8")
+        parent_process.communicate(timeout=5)
+
+
+def test_executed_snapshot_stays_unchanged_and_digest_stable(
+    atlas_paths,
+    release_factory,
+) -> None:
+    source = release_factory(name="unchanged")
+    target = install_release(source, atlas_paths.releases_root, atlas_paths.current_root)
+    before = {
+        item.relative_to(target): (item.read_bytes(), item.stat().st_mode & 0o777)
+        for item in target.rglob("*")
+        if item.is_file()
+    }
+    command = resolve_command(
+        atlas_paths.current_root,
+        atlas_paths.releases_root,
+        "sample-show",
+    )
+
+    assert execute(atlas_paths, command, []) == 0
+
+    after = {
+        item.relative_to(target): (item.read_bytes(), item.stat().st_mode & 0o777)
+        for item in target.rglob("*")
+        if item.is_file()
+    }
+    assert after == before
+    assert not any(item.name == "__pycache__" for item in target.rglob("*"))
+    assert release_digest(target) == target.name.rsplit("-", 1)[1]
+    assert release_digest(target) == command.release.content_digest
+    assert _last_log(atlas_paths)["release_digest"] == command.release.content_digest
+
+    assert install_release(source, atlas_paths.releases_root, atlas_paths.current_root) == target
+    assert {
+        item.relative_to(target): (item.read_bytes(), item.stat().st_mode & 0o777)
+        for item in target.rglob("*")
+        if item.is_file()
+    } == before
 
 
 def test_execute_handles_empty_caller_path(
@@ -117,7 +551,7 @@ def test_execute_handles_empty_caller_path(
     _activate(atlas_paths, source)
     monkeypatch.delenv("PATH", raising=False)
     monkeypatch.delenv("PYTHONPATH", raising=False)
-    command = resolve_command(atlas_paths.current_root, "sample-show")
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
     assert execute(atlas_paths, command, []) == 0
 
 
@@ -128,9 +562,7 @@ def test_execute_orders_path_and_preserves_caller_environment(
     tmp_path: Path,
 ) -> None:
     source = release_factory(name="selected")
-    (source / "modules").mkdir()
     other = release_factory(name="other", commands=())
-    (other / "modules").mkdir()
     _activate(atlas_paths, source)
     _activate(atlas_paths, other)
     monkeypatch.setenv("PATH", "/caller/bin")
@@ -157,6 +589,7 @@ def test_execute_orders_path_and_preserves_caller_environment(
     def fake_popen(command, **kwargs):
         captured["command"] = command
         captured.update(kwargs)
+        _acknowledge_fake_child(kwargs)
         return Finished()
 
     monkeypatch.setattr(
@@ -169,7 +602,7 @@ def test_execute_orders_path_and_preserves_caller_environment(
         },
     )
     monkeypatch.setattr("atlas.execution.subprocess.Popen", fake_popen)
-    command = resolve_command(atlas_paths.current_root, "sample-show")
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
 
     assert execute(
         atlas_paths,
@@ -180,19 +613,22 @@ def test_execute_orders_path_and_preserves_caller_environment(
 
     env = captured["env"]
     assert isinstance(env, dict)
+    runtime_generation = (atlas_paths.runtime / "python/envs/scripts").resolve()
+    artifact_generation = atlas_paths.artifact_current.resolve()
     assert env["PATH"].split(os.pathsep) == [
-        str(atlas_paths.shims),
-        str(atlas_paths.runtime_python.parent),
+        str(artifact_generation / "shims"),
+        str(runtime_generation / "bin"),
         "/caller/bin",
     ]
     assert env["PYTHONPATH"].split(os.pathsep) == [
         str((atlas_paths.current_root / "selected").resolve() / "modules"),
-        str((atlas_paths.current_root / "other").resolve() / "modules"),
-        str(atlas_paths.home / "lib/python"),
-        "/caller/python",
+        str(artifact_generation / "python"),
     ]
+    assert env["ATLAS_RUNTIME_GENERATION"] == str(runtime_generation)
+    assert env["ATLAS_ARTIFACT_GENERATION"] == str(artifact_generation)
     assert env["ATLAS_RELEASE_NAME"] == "selected"
     assert env["ATLAS_RELEASE_VERSION"] == "1.0.0"
+    assert env["ATLAS_RELEASE_DIGEST"] == command.release.content_digest
     assert env["ATLAS_RELEASE_ROOT"] == str(
         (atlas_paths.current_root / "selected").resolve()
     )
@@ -207,7 +643,6 @@ def test_execute_orders_path_and_preserves_caller_environment(
     ):
         assert legacy_name not in env
     assert captured["start_new_session"] is True
-    assert captured["text"] is True
 
 
 @pytest.mark.parametrize(
@@ -353,9 +788,19 @@ def test_direct_job_inherits_cwd_and_passthrough(
     with pytest.raises(ValueError, match="unknown release"):
         list_jobs(atlas_paths, "missing")
     with pytest.raises(ValueError, match="unknown release"):
-        resolve_job(atlas_paths.current_root, "missing", "collect")
+        resolve_job(
+            atlas_paths.current_root,
+            atlas_paths.releases_root,
+            "missing",
+            "collect",
+        )
     with pytest.raises(ValueError, match="unknown job"):
-        resolve_job(atlas_paths.current_root, "worker", "missing")
+        resolve_job(
+            atlas_paths.current_root,
+            atlas_paths.releases_root,
+            "worker",
+            "missing",
+        )
 
 
 def test_job_instance_uses_job_default_timeout(
@@ -385,7 +830,9 @@ def test_job_instance_uses_job_default_timeout(
 
     monkeypatch.setattr("atlas.jobs.execute", fake_execute)
     assert run_job_instance(atlas_paths, "default-timeout") == 0
-    assert calls[0]["timeout_seconds"] == 42
+    timeout = calls[0]["timeout_seconds"]
+    assert callable(timeout)
+    assert timeout(resolve_job(atlas_paths.current_root, atlas_paths.releases_root, "worker", "collect")) == 42
     assert calls[0]["lock"] == "default-timeout"
 
 
@@ -509,7 +956,12 @@ def test_job_instance_directory_and_symlink_fail_closed(atlas_paths, tmp_path: P
 def test_environment_file_validation(atlas_paths, release_factory, tmp_path: Path) -> None:
     source = release_factory(name="worker", commands=(), jobs=("collect",))
     _activate(atlas_paths, source)
-    job = resolve_job(atlas_paths.current_root, "worker", "collect")
+    job = resolve_job(
+        atlas_paths.current_root,
+        atlas_paths.releases_root,
+        "worker",
+        "collect",
+    )
     with pytest.raises(ValueError, match="must be absolute"):
         execute(atlas_paths, job, [], environment_files=(Path("relative"),))
     with pytest.raises(ValueError, match="not found"):
@@ -544,6 +996,8 @@ def test_advisory_lock_conflict_and_cli_exit(
 
 def test_advisory_lock_rejects_symlinks_and_non_files(atlas_paths, tmp_path: Path) -> None:
     atlas_paths.locks.parent.mkdir(parents=True, exist_ok=True)
+    (atlas_paths.locks / "host-artifacts.lock").unlink()
+    atlas_paths.locks.rmdir()
     real_locks = tmp_path / "real-locks"
     real_locks.mkdir()
     atlas_paths.locks.symlink_to(real_locks, target_is_directory=True)
@@ -579,34 +1033,16 @@ def test_advisory_lock_rejects_symlinks_and_non_files(atlas_paths, tmp_path: Pat
             pass
 
 
-def test_execute_timeout_terminates_process_group(atlas_paths, release_factory) -> None:
-    source = release_factory(name="worker", commands=(), jobs=("slow-job",))
-    (source / "jobs/slow-job.py").write_text(
-        "import subprocess, sys, time\n"
-        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
-        "time.sleep(30)\n",
-        encoding="utf-8",
-    )
-    _activate(atlas_paths, source)
-    job = resolve_job(atlas_paths.current_root, "worker", "slow-job")
-    started = time.monotonic()
-
-    assert execute(atlas_paths, job, [], timeout_seconds=1) == 124
-
-    assert time.monotonic() - started < 8
-    record = _last_log(atlas_paths)
-    assert record["timed_out"] is True
-    assert record["timeout"] == 1
-
-
 def test_execute_normalizes_signal_exit(atlas_paths, release_factory) -> None:
     source = release_factory(name="signals", commands=("signal-stop",))
-    (source / "commands/signal-stop.py").write_text(
-        "import os, signal\nos.kill(os.getpid(), signal.SIGTERM)\n",
+    (source / "modules/signal_stop_entry.py").write_text(
+        "def main(argv=None):\n"
+        "    import os, signal\n"
+        "    os.kill(os.getpid(), signal.SIGTERM)\n",
         encoding="utf-8",
     )
     _activate(atlas_paths, source)
-    command = resolve_command(atlas_paths.current_root, "signal-stop")
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "signal-stop")
     assert execute(atlas_paths, command, []) == 128 + signal.SIGTERM
 
 
@@ -617,7 +1053,7 @@ def test_execute_validates_runtime_cwd_and_timeout(
 ) -> None:
     source = release_factory()
     _activate(atlas_paths, source)
-    command = resolve_command(atlas_paths.current_root, "sample-show")
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
     with pytest.raises(ValueError, match="working directory not found"):
         execute(atlas_paths, command, [], cwd=tmp_path / "missing")
     with pytest.raises(ValueError, match="timeout must be a positive"):
@@ -625,6 +1061,28 @@ def test_execute_validates_runtime_cwd_and_timeout(
     atlas_paths.runtime_python.unlink()
     with pytest.raises(ValueError, match="runtime python executable not found"):
         execute(atlas_paths, command, [])
+    atlas_paths.runtime_python.symlink_to(Path(sys.executable))
+    atlas_paths.release_runner.unlink()
+    with pytest.raises(ValueError, match="release runner not found"):
+        execute(atlas_paths, command, [])
+
+
+def test_pythonpath_omits_a_missing_selected_modules_root(
+    atlas_paths,
+    release_factory,
+    tmp_path: Path,
+) -> None:
+    source = release_factory()
+    _activate(atlas_paths, source)
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
+    missing_release = replace(
+        command.release,
+        root=tmp_path / "missing-release",
+    )
+    missing_command = replace(command, release=missing_release)
+    assert _pythonpath(atlas_paths, missing_command, {}) == str(
+        atlas_paths.home / "lib/python"
+    )
 
 
 def test_execute_reports_popen_missing_after_precheck(
@@ -634,7 +1092,7 @@ def test_execute_reports_popen_missing_after_precheck(
 ) -> None:
     source = release_factory()
     _activate(atlas_paths, source)
-    command = resolve_command(atlas_paths.current_root, "sample-show")
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
 
     def missing(*args, **kwargs):
         raise FileNotFoundError("gone")
@@ -644,17 +1102,92 @@ def test_execute_reports_popen_missing_after_precheck(
         execute(atlas_paths, command, [])
 
 
-def test_process_group_termination_edges(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_execute_propagates_lease_ack_pipe_failure(
+    atlas_paths,
+    release_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = release_factory()
+
+    @contextmanager
+    def prepared(*args, **kwargs):
+        root = (
+            atlas_paths.runtime / "python/envs/generations/scripts.pipe-failure"
+        )
+        (root / "bin").mkdir(parents=True, exist_ok=True)
+        (root / "bin/python").symlink_to(Path(sys.executable))
+        yield RuntimeCandidate(root=root, python=Path(sys.executable))
+
+    monkeypatch.setattr("atlas.releases.prepared_runtime", prepared)
+    monkeypatch.setattr(
+        "atlas.releases._validate_targets_in_child", lambda *args, **kwargs: None
+    )
+    _activate(atlas_paths, source)
+    command = resolve_command(
+        atlas_paths.current_root, atlas_paths.releases_root, "sample-show"
+    )
+
+    def fail_pipe(*args, **kwargs):
+        raise OSError("ack pipe failed")
+
+    monkeypatch.setattr("atlas.execution.os.pipe2", fail_pipe)
+    with pytest.raises(OSError, match="ack pipe failed"):
+        execute(atlas_paths, command, [])
+
+
+def test_forward_termination_signal_uses_process_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous = object()
+    handlers: list[object] = []
+    signals: list[tuple[int, int]] = []
+
+    monkeypatch.setattr("atlas.execution.signal.getsignal", lambda signum: previous)
+    monkeypatch.setattr(
+        "atlas.execution.signal.signal",
+        lambda signum, handler: handlers.append(handler),
+    )
+
+    monkeypatch.setattr(
+        "atlas.execution.os.killpg",
+        lambda pid, signum: signals.append((pid, signum)),
+    )
+
+    class Process:
+        pid = 123
+
+    with _forward_termination_signal(Process()):
+        handlers[-1](signal.SIGTERM, None)
+
+    assert signals == [(123, signal.SIGTERM)]
+
+    monkeypatch.setattr(
+        "atlas.execution.os.killpg",
+        lambda pid, signum: (_ for _ in ()).throw(ProcessLookupError),
+    )
+    with _forward_termination_signal(Process()):
+        handlers[-1](signal.SIGTERM, None)
+
+
+def test_terminate_process_group_handles_exit_timeout_and_missing_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        "atlas.execution.os.killpg",
+        lambda pid, signum: signals.append((pid, signum)),
+    )
+
     class Finished:
-        pid = 10
+        pid = 1
 
         def poll(self):
             return 0
 
     _terminate_process_group(Finished())
 
-    class Running:
-        pid = 11
+    class Terminated:
+        pid = 2
 
         def poll(self):
             return None
@@ -662,16 +1195,10 @@ def test_process_group_termination_edges(monkeypatch: pytest.MonkeyPatch) -> Non
         def wait(self, timeout=None):
             return 0
 
-    monkeypatch.setattr(
-        "atlas.execution.os.killpg",
-        lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError),
-    )
-    _terminate_process_group(Running())
+    _terminate_process_group(Terminated())
 
-    signals: list[int] = []
-
-    class NeedsKill:
-        pid = 12
+    class Stubborn:
+        pid = 3
         waits = 0
 
         def poll(self):
@@ -680,64 +1207,64 @@ def test_process_group_termination_edges(monkeypatch: pytest.MonkeyPatch) -> Non
         def wait(self, timeout=None):
             self.waits += 1
             if self.waits == 1:
-                raise subprocess.TimeoutExpired("child", timeout)
+                raise subprocess.TimeoutExpired("command", timeout)
             return 0
 
-    process = NeedsKill()
+    _terminate_process_group(Stubborn())
+    assert signals == [
+        (2, signal.SIGTERM),
+        (3, signal.SIGTERM),
+        (3, signal.SIGKILL),
+    ]
 
-    def kill_then_missing(pid, sig):
-        signals.append(sig)
-        if sig == signal.SIGKILL:
+    def terminate_then_disappear(pid, signum):
+        if signum == signal.SIGKILL:
             raise ProcessLookupError
 
-    monkeypatch.setattr("atlas.execution.os.killpg", kill_then_missing)
-    _terminate_process_group(process)
-    assert signals == [signal.SIGTERM, signal.SIGKILL]
-
-    signals.clear()
-    process = NeedsKill()
-    monkeypatch.setattr("atlas.execution.os.killpg", lambda pid, sig: signals.append(sig))
-    _terminate_process_group(process)
-    assert signals == [signal.SIGTERM, signal.SIGKILL]
-    assert process.waits == 2
-
-
-def test_termination_signal_is_forwarded_and_handler_is_restored(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    previous_handler = object()
-    handlers: list[object] = []
-    forwarded: list[tuple[int, int]] = []
-
-    monkeypatch.setattr("atlas.execution.signal.getsignal", lambda signum: previous_handler)
-    monkeypatch.setattr(
-        "atlas.execution.signal.signal",
-        lambda signum, handler: handlers.append(handler),
-    )
-    monkeypatch.setattr(
-        "atlas.execution.os.killpg",
-        lambda pid, signum: forwarded.append((pid, signum)),
-    )
-
-    class Running:
-        pid = 42
-
-    with _forward_termination_signal(Running()):
-        handler = handlers[-1]
-        assert callable(handler)
-        handler(signal.SIGTERM, None)
-
-    assert forwarded == [(42, signal.SIGTERM)]
-    assert handlers[-1] is previous_handler
+    monkeypatch.setattr("atlas.execution.os.killpg", terminate_then_disappear)
+    _terminate_process_group(Stubborn())
 
     monkeypatch.setattr(
         "atlas.execution.os.killpg",
         lambda pid, signum: (_ for _ in ()).throw(ProcessLookupError),
     )
-    with _forward_termination_signal(Running()):
-        handler = handlers[-1]
-        assert callable(handler)
-        handler(signal.SIGTERM, None)
+    _terminate_process_group(Terminated())
+
+
+def test_execute_timeout_records_base_process_semantics(
+    atlas_paths,
+    release_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = release_factory()
+    _activate(atlas_paths, source)
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
+
+    class TimedOut:
+        pid = 7
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("command", timeout)
+
+        def poll(self):
+            return 0
+
+    def fake_popen(*args, **kwargs):
+        _acknowledge_fake_child(kwargs)
+        return TimedOut()
+
+    monkeypatch.setattr("atlas.execution.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(
+        "atlas.execution.git_context",
+        lambda cwd: {
+            "git_root": None,
+            "git_commit": None,
+            "git_dirty": None,
+            "git_branch": None,
+        },
+    )
+    assert execute(atlas_paths, command, [], timeout_seconds=1) == 124
+    assert _last_log(atlas_paths)["timed_out"] is True
 
 
 def test_execute_logs_and_reraises_keyboard_interrupt(
@@ -747,7 +1274,7 @@ def test_execute_logs_and_reraises_keyboard_interrupt(
 ) -> None:
     source = release_factory()
     _activate(atlas_paths, source)
-    command = resolve_command(atlas_paths.current_root, "sample-show")
+    command = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "sample-show")
 
     class Interrupted:
         pid = 123
@@ -758,10 +1285,11 @@ def test_execute_logs_and_reraises_keyboard_interrupt(
         def poll(self):
             return 0
 
-    monkeypatch.setattr(
-        "atlas.execution.subprocess.Popen",
-        lambda *args, **kwargs: Interrupted(),
-    )
+    def fake_popen(*args, **kwargs):
+        _acknowledge_fake_child(kwargs)
+        return Interrupted()
+
+    monkeypatch.setattr("atlas.execution.subprocess.Popen", fake_popen)
     monkeypatch.setattr(
         "atlas.execution.git_context",
         lambda cwd: {
@@ -805,12 +1333,7 @@ def test_cli_job_commands_and_instances(atlas_paths, release_factory, capsys) ->
     assert "schema: atlas.job-instance/v1" in capsys.readouterr().out
     assert main(["job", "instance", "run", "worker-collect"]) == 0
 
-    ensure_artifact_runner(atlas_paths.artifact_runner, atlas_paths.bin_dir / "atlas")
-    assert regenerate_shims(
-        atlas_paths.current_root,
-        atlas_paths.shims,
-        atlas_paths.artifact_runner,
-    ) == []
+    assert publish_host_artifacts(atlas_paths) == []
     assert not (atlas_paths.shims / "collect").exists()
 
 
@@ -819,24 +1342,144 @@ def test_nested_shim_execution_preserves_operation_and_parent(
     release_factory,
 ) -> None:
     source = release_factory(name="nested", commands=("parent", "child"))
-    (source / "commands/parent.py").write_text(
-        "import subprocess\n"
-        "raise SystemExit(subprocess.run(['child'], check=False).returncode)\n",
+    (source / "modules/parent_entry.py").write_text(
+        "def main(argv=None):\n"
+        "    import subprocess\n"
+        "    raise SystemExit(subprocess.run(['child'], check=False).returncode)\n",
         encoding="utf-8",
     )
     _activate(atlas_paths, source)
-    ensure_atlas_launcher(atlas_paths.bin_dir / "atlas")
-    ensure_artifact_runner(atlas_paths.artifact_runner, atlas_paths.bin_dir / "atlas")
-    regenerate_shims(
-        atlas_paths.current_root,
-        atlas_paths.shims,
-        atlas_paths.artifact_runner,
-    )
+    publish_host_artifacts(atlas_paths)
 
-    parent = resolve_command(atlas_paths.current_root, "parent")
+    parent = resolve_command(atlas_paths.current_root, atlas_paths.releases_root, "parent")
     assert execute(atlas_paths, parent, []) == 0
 
     records = {record["artifact"]: record for record in _all_logs(atlas_paths)}
     assert records["parent"]["parent_run_id"] is None
     assert records["child"]["parent_run_id"] == records["parent"]["run_id"]
     assert records["child"]["operation_id"] == records["parent"]["operation_id"]
+
+
+def test_nested_dispatch_keeps_parent_selection_across_release_update(
+    atlas_paths,
+    release_factory,
+) -> None:
+    def write_modules(source: Path, marker: str) -> None:
+        for name in ("parent", "child", "new"):
+            phase = "parent" if name == "parent" else "child" if name == "child" else "new"
+            (source / f"modules/{name}_entry.py").write_text(
+                "import json\n"
+                "import os\n"
+                "import subprocess\n"
+                "import time\n"
+                "from pathlib import Path\n\n"
+                "def _payload():\n"
+                f"    return {{'marker': {marker!r}, 'phase': {phase!r}, "
+                "'version': os.environ['ATLAS_RELEASE_VERSION'], "
+                "'runtime': os.environ['ATLAS_RUNTIME_GENERATION'], "
+                "'artifact': os.environ['ATLAS_ARTIFACT_GENERATION']}\n\n"
+                "def main(argv=None):\n"
+                "    var = Path(os.environ['ATLAS_VAR_DIR'])\n"
+                f"    if {phase!r} == 'parent':\n"
+                "        (var / 'nested-parent-ready').write_text("
+                "json.dumps(_payload()), encoding='utf-8')\n"
+                "        while not (var / 'nested-parent-continue').exists():\n"
+                "            time.sleep(0.01)\n"
+                "        raise SystemExit(subprocess.run(['child'], check=False).returncode)\n"
+                f"    elif {phase!r} == 'child':\n"
+                "        with (var / 'nested-observed.jsonl').open('a', encoding='utf-8') as handle:\n"
+                "            handle.write(json.dumps(_payload()) + '\\n')\n"
+                "    else:\n"
+                "        (var / 'nested-new-selection.json').write_text("
+                "json.dumps(_payload()), encoding='utf-8')\n"
+                "    return 0\n",
+                encoding="utf-8",
+            )
+
+    old = release_factory(name="nested", version="1.0.0", commands=("parent", "child"))
+    write_modules(old, "old")
+    install_release(old, atlas_paths.releases_root, atlas_paths.current_root)
+    publish_host_artifacts(atlas_paths)
+    old_runtime = atlas_paths.runtime.joinpath("python/envs/scripts").resolve()
+    old_artifacts = atlas_paths.artifact_current.resolve()
+
+    replacement = release_factory(
+        name="nested",
+        version="2.0.0",
+        commands=("parent", "child", "new"),
+    )
+    write_modules(replacement, "new")
+    (atlas_paths.etc / "config.yml").write_text(
+        "runtime:\n"
+        f"  python:\n    version: '{sys.version_info.major}.{sys.version_info.minor}'\n"
+        "releases:\n"
+        f"  nested:\n    source: '{replacement}'\n",
+        encoding="utf-8",
+    )
+
+    runner = (
+        "from atlas.catalog import resolve_command\n"
+        "from atlas.execution import execute\n"
+        "from atlas.paths import get_paths\n"
+        "paths = get_paths()\n"
+        "command = resolve_command(paths.current_root, paths.releases_root, 'parent')\n"
+        "raise SystemExit(execute(paths, command, []))\n"
+    )
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = os.environ.copy()
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        [str(repo_root / "src"), str(repo_root / "operations/modules")]
+    )
+    parent_process = subprocess.Popen(
+        [sys.executable, "-c", runner],
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    ready = atlas_paths.var / "nested-parent-ready"
+    deadline = time.monotonic() + 10
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ready.exists()
+    ready_payload = json.loads(ready.read_text(encoding="utf-8"))
+    assert ready_payload["version"] == "1.0.0"
+
+    assert main(["release", "update"]) == 0
+    new_runtime = atlas_paths.runtime.joinpath("python/envs/scripts").resolve()
+    new_artifacts = atlas_paths.artifact_current.resolve()
+    assert new_runtime != old_runtime
+    assert new_artifacts != old_artifacts
+
+    (atlas_paths.var / "nested-parent-continue").write_text("continue", encoding="utf-8")
+    stdout, stderr = parent_process.communicate(timeout=10)
+    assert parent_process.returncode == 0, stderr
+    assert stdout == ""
+
+    observed = json.loads(
+        (atlas_paths.var / "nested-observed.jsonl").read_text(encoding="utf-8").strip()
+    )
+    assert observed == {
+        "marker": "old",
+        "phase": "child",
+        "version": "1.0.0",
+        "runtime": str(old_runtime),
+        "artifact": str(old_artifacts),
+    }
+
+    new_command = resolve_command(
+        atlas_paths.current_root,
+        atlas_paths.releases_root,
+        "new",
+    )
+    assert execute(atlas_paths, new_command, []) == 0
+    new_selection = json.loads(
+        (atlas_paths.var / "nested-new-selection.json").read_text(encoding="utf-8")
+    )
+    assert new_selection == {
+        "marker": "new",
+        "phase": "new",
+        "version": "2.0.0",
+        "runtime": str(new_runtime),
+        "artifact": str(new_artifacts),
+    }

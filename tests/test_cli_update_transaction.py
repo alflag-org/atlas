@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -13,6 +14,7 @@ import pytest
 
 from atlas.cli import main
 from atlas.paths import ensure_dirs, get_paths
+from atlas.runtime import RuntimeCandidate
 
 
 def _set_env(monkeypatch, home: Path, etc: Path, var: Path) -> None:
@@ -672,6 +674,78 @@ def test_release_update_activates_enabled_release_and_refreshes_artifacts(
     assert (home / "current/sample").is_symlink()
     assert (home / "shims/sample-show").is_symlink()
     assert capsys.readouterr().err == ""
+
+
+def test_release_update_rejects_source_identity_change_during_copy(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    home = tmp_path / "opt/atlas"
+    etc = tmp_path / "etc/atlas"
+    var = tmp_path / "var/lib/atlas"
+    etc.mkdir(parents=True)
+    _set_env(monkeypatch, home, etc, var)
+
+    prepared_count = 0
+
+    @contextmanager
+    def prepared(runtime_root, *args, **kwargs):
+        nonlocal prepared_count
+        prepared_count += 1
+        root = runtime_root / "python/envs/generations" / f"scripts.test.{prepared_count}"
+        (root / "bin").mkdir(parents=True, exist_ok=True)
+        (root / "bin/python").symlink_to(Path(sys.executable))
+        yield RuntimeCandidate(root=root, python=Path(sys.executable))
+
+    monkeypatch.setattr("atlas.releases.prepared_runtime", prepared)
+
+    old_source = _write_release(
+        tmp_path / "old", "sample", "0.1.0", "sample-show"
+    )
+    assert main(["release", "install", str(old_source)]) == 0
+    old_target = (home / "current/sample").resolve()
+    before_artifacts = _host_artifact_state(home)
+    before_releases = _path_state(home / "releases")
+
+    source = _write_release(
+        tmp_path / "source", "sample", "0.2.0", "sample-show"
+    )
+    (etc / "config.yml").write_text(
+        "runtime:\n"
+        f"  python:\n    version: '{sys.version_info.major}.{sys.version_info.minor}'\n"
+        "releases:\n"
+        f"  sample:\n    source: '{source}'\n",
+        encoding="utf-8",
+    )
+    original_copytree = shutil.copytree
+
+    def mutate_source_during_copy(source_root, destination, *args, **kwargs):
+        if Path(source_root).resolve() == source.resolve():
+            (source / "release.yml").write_text(
+                "schema: atlas.release/v1\n"
+                "name: injected\n"
+                "commands:\n"
+                "  sample-show:\n"
+                "    target: sample_show:main\n",
+                encoding="utf-8",
+            )
+            (source / "modules/sample_show.py").write_text(
+                "def main(argv: list[str] | None = None) -> int:\n"
+                "    return 1\n",
+                encoding="utf-8",
+            )
+        return original_copytree(source_root, destination, *args, **kwargs)
+
+    monkeypatch.setattr("atlas.cli.shutil.copytree", mutate_source_during_copy)
+
+    assert main(["release", "update", "sample"]) == 2
+    assert "configured release changed during copy: sample" in capsys.readouterr().err
+    assert (home / "current/sample").resolve() == old_target
+    assert not (home / "current/injected").exists()
+    assert not (home / "releases/injected").exists()
+    assert _path_state(home / "releases") == before_releases
+    assert _host_artifact_state(home) == before_artifacts
 
 
 def test_release_update_handles_transaction_failure_before_activation(

@@ -210,6 +210,13 @@ def cmd_release_update(args: argparse.Namespace) -> int:
             )
             temporary_source = temporary_root / name
             shutil.copytree(release.root, temporary_source)
+            copied_release = validate_release(temporary_source, validate_targets=False)
+            if (
+                copied_release.manifest.name != release.manifest.name
+                or copied_release.version != release.version
+                or copied_release.content_digest != release.content_digest
+            ):
+                raise ValueError(f"configured release changed during copy: {name}")
             sources.append(temporary_source)
         with _host_artifact_transaction(paths):
             with capture_host_artifact_state(paths) as artifact_state:  # pragma: no branch - contextmanager entry arc

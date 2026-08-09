@@ -676,10 +676,15 @@ def test_release_update_activates_enabled_release_and_refreshes_artifacts(
     assert capsys.readouterr().err == ""
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    ["manifest_name", "version", "module_content"],
+)
 def test_release_update_rejects_source_identity_change_during_copy(
     monkeypatch,
     tmp_path: Path,
     capsys,
+    mutation: str,
 ) -> None:
     home = tmp_path / "opt/atlas"
     etc = tmp_path / "etc/atlas"
@@ -704,6 +709,7 @@ def test_release_update_rejects_source_identity_change_during_copy(
         tmp_path / "old", "sample", "0.1.0", "sample-show"
     )
     assert main(["release", "install", str(old_source)]) == 0
+    assert prepared_count == 1
     old_target = (home / "current/sample").resolve()
     before_artifacts = _host_artifact_state(home)
     before_releases = _path_state(home / "releases")
@@ -722,25 +728,32 @@ def test_release_update_rejects_source_identity_change_during_copy(
 
     def mutate_source_during_copy(source_root, destination, *args, **kwargs):
         if Path(source_root).resolve() == source.resolve():
-            (source / "release.yml").write_text(
-                "schema: atlas.release/v1\n"
-                "name: injected\n"
-                "commands:\n"
-                "  sample-show:\n"
-                "    target: sample_show:main\n",
-                encoding="utf-8",
-            )
-            (source / "modules/sample_show.py").write_text(
-                "def main(argv: list[str] | None = None) -> int:\n"
-                "    return 1\n",
-                encoding="utf-8",
-            )
+            if mutation == "manifest_name":
+                (source / "release.yml").write_text(
+                    "schema: atlas.release/v1\n"
+                    "name: injected\n"
+                    "commands:\n"
+                    "  sample-show:\n"
+                    "    target: sample_show:main\n",
+                    encoding="utf-8",
+                )
+            elif mutation == "version":
+                (source / "VERSION").write_text("0.3.0\n", encoding="utf-8")
+            elif mutation == "module_content":
+                (source / "modules/sample_show.py").write_text(
+                    "def main(argv: list[str] | None = None) -> int:\n"
+                    "    return 1\n",
+                    encoding="utf-8",
+                )
+            else:  # pragma: no cover - pytest parameterizes the supported mutations
+                raise AssertionError(f"unsupported mutation: {mutation}")
         return original_copytree(source_root, destination, *args, **kwargs)
 
     monkeypatch.setattr("atlas.cli.shutil.copytree", mutate_source_during_copy)
 
     assert main(["release", "update", "sample"]) == 2
     assert "configured release changed during copy: sample" in capsys.readouterr().err
+    assert prepared_count == 1
     assert (home / "current/sample").resolve() == old_target
     assert not (home / "current/injected").exists()
     assert not (home / "releases/injected").exists()

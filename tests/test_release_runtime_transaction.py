@@ -61,7 +61,7 @@ def _wheel(path: Path, package: str, version: str, value: str) -> Path:
 
 def _install_atlas_wheel(python: Path, destination: Path) -> None:
     root = Path(__file__).resolve().parents[1]
-    distribution = "atlas-2.0.0"
+    distribution = "atlas-3.0.0"
     dist_info = f"{distribution}.dist-info"
     support_requirement = (root / "src/atlas/support-requirements.txt").read_text(
         encoding="utf-8"
@@ -85,7 +85,7 @@ def _install_atlas_wheel(python: Path, destination: Path) -> None:
             f"{dist_info}/METADATA",
             "Metadata-Version: 2.1\n"
             "Name: atlas\n"
-            "Version: 2.0.0\n"
+            "Version: 3.0.0\n"
             "Requires-Python: >=3.11\n"
             f"Requires-Dist: {support_requirement}\n",
         )

@@ -2,8 +2,6 @@ schema: atlas.release/v1
 name: operations
 
 commands:
-  atlas-ansible:
-    target: atlas_configuration_operations.controller:main
   hostctl:
     target: atlas_host_operations.controller:main
   imagectl:
@@ -18,8 +16,6 @@ jobs:
     target: atlas_configuration_operations.config_diff:main
   config-apply:
     target: atlas_configuration_operations.config_apply:main
-  inventory-show:
-    target: atlas_configuration_operations.inventory_show:main
   inventory-refresh:
     target: atlas_configuration_operations.inventory_refresh:main
     default_timeout_seconds: 300

@@ -215,8 +215,8 @@ through Atlas.
    name: operations
 
    commands:
-     atlas-ansible:
-       target: atlas_configuration_operations.controller:main
+     hostctl:
+       target: atlas_host_operations.controller:main
 
    jobs:
      inventory-refresh:
@@ -271,13 +271,15 @@ Run commands and jobs
 .. code-block:: bash
 
    atlas command list --verbose
-   atlas which atlas-ansible
-   atlas run atlas-ansible diff site web-01
+   atlas which hostctl
+   atlas run hostctl --help
 
    export PATH="/opt/atlas/shims:$PATH"
-   atlas-ansible diff site web-01
+   hostctl --help
 
    atlas job list
+   atlas job inspect operations config-diff
+   atlas job run operations config-diff -- site web-01
    atlas job inspect operations inventory-refresh
    atlas job run operations inventory-refresh -- --site default
 

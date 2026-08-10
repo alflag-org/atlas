@@ -138,12 +138,9 @@ def test_operation_diagnostic_job_targets_show_help(
     assert raised.value.code == 0
 
 
-def test_public_controllers_do_not_import_operation_implementations() -> None:
-    for path in (
-        OPERATIONS / "modules/atlas_image_operations/imagectl.py",
-        ROOT
-        / "operations/modules/atlas_configuration_operations/controller.py",
-    ):
-        source = path.read_text(encoding="utf-8")
-        assert "atlas_operations.operation" not in source
-        assert "shell=True" not in source
+def test_image_controller_does_not_import_operation_implementations() -> None:
+    source = (OPERATIONS / "modules/atlas_image_operations/imagectl.py").read_text(
+        encoding="utf-8"
+    )
+    assert "atlas_operations.operation" not in source
+    assert "shell=True" not in source

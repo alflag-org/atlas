@@ -109,7 +109,7 @@ jobs:
           atlas command list
           diff -u \
             <(printf '%s\n' \
-              atlas-ansible hostctl imagectl \
+              hostctl imagectl \
               group-nested-sample sample) \
             <(atlas command list)
           atlas which sample
@@ -117,10 +117,8 @@ jobs:
           atlas run sample hello --name=ci-user
           atlas run group-nested-sample show-context
           atlas which hostctl
-          atlas which atlas-ansible
           atlas which imagectl
           atlas job list operations
-          "$ATLAS_HOME/shims/atlas-ansible" --help
           "$ATLAS_HOME/shims/hostctl" --help
           "$ATLAS_HOME/shims/imagectl" --help
 

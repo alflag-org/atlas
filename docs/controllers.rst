@@ -9,7 +9,7 @@ set:
    atlas release install /srv/atlas/source/operations
    atlas command list
 
-The public commands are ``atlas-ansible``, ``hostctl``, and ``imagectl``. Provider validation,
+The public commands are ``hostctl`` and ``imagectl``. Ansible execution, provider validation,
 artifact validation, and lifecycle phases run at their consuming boundaries or as private jobs;
 they have no separate PATH entry.
 
@@ -19,47 +19,51 @@ they have no separate PATH entry.
    user names, and SSH key below are examples. Replace every value and verify the resulting plan
    before applying it. The documented endpoints and address range do not identify live services.
 
-Each controller parses a fixed set of subcommands and invokes a private job through
-``atlas job run``. ``atlas-ansible diff-many`` invokes the private diff job once per target. Child
-processes receive an argument list with ``shell=False`` and inherit the working directory,
-environment, and streams. stdout contains results; diagnostics use stderr. Controllers return the
-child status unchanged, and a missing child returns 127.
+Each public controller parses a fixed set of subcommands and invokes private jobs through
+``atlas job run``. Child processes receive an argument list with ``shell=False`` and inherit the
+working directory, environment, and streams. stdout contains results; diagnostics use stderr.
+Controllers return the child status unchanged, and a missing child returns 127.
 
-Run Ansible with Atlas
-----------------------
+Observe configuration drift through a private job
+--------------------------------------------------
 
-``atlas-ansible`` operates on the Ansible project in the current directory:
+``hostctl`` owns Ansible-backed host configuration mutations as part of the managed-host lifecycle.
+Periodic configuration drift observation uses the private ``config-diff`` job instead of a public
+Ansible command. Bind one playbook and target to a job instance in
+``/etc/atlas/jobs.d/provisioning-config-diff-web-01.yml``:
 
-.. code-block:: text
+.. code-block:: yaml
 
-   atlas-ansible check PLAYBOOK TARGET
-   atlas-ansible diff PLAYBOOK TARGET
-   atlas-ansible diff-many PLAYBOOK [TARGET ...]
-   atlas-ansible apply PLAYBOOK TARGET
-   atlas-ansible inventory
+   schema: atlas.job-instance/v1
+   release: operations
+   job: config-diff
+   user: ops
+   working_directory: /srv/provisioning
+   arguments:
+     - site
+     - web-01
+   timeout_seconds: 1800
+   lock: provisioning-config-diff-web-01
 
-``PLAYBOOK`` is a basename resolved as ``playbooks/PLAYBOOK.yml``. ``TARGET`` becomes one Ansible
-``--limit`` value. The project root must contain a regular, non-symlink ``ansible.cfg``.
+.. code-block:: bash
 
-.. list-table::
-   :header-rows: 1
+   atlas job instance inspect provisioning-config-diff-web-01
+   atlas job instance run provisioning-config-diff-web-01
 
-   * - Command
-     - Native process
-   * - ``check site web-01``
-     - ``ansible-playbook playbooks/site.yml --limit web-01 --check``
-   * - ``diff site web-01``
-     - ``ansible-playbook playbooks/site.yml --limit web-01 --check --diff``
-   * - ``apply site web-01``
-     - ``ansible-playbook playbooks/site.yml --limit web-01``
-   * - ``inventory``
-     - ``ansible-inventory --graph``
+A scheduler or service can invoke that job instance at the required cadence. Atlas does not bundle
+one universal drift timer because the provisioning checkout, playbook, target, cadence, retention,
+and alert policy are operator-specific.
 
-Atlas sets ``ANSIBLE_CONFIG`` to the checked project file. ``diff-many`` reads targets from argv and
-non-terminal stdin, removes duplicates in first-seen order, runs every target, and returns the
-first non-zero status. It stores no operation state. Source lint and standalone syntax validation
-belong to the Ansible repository's checks; ``atlas-ansible`` is the audited execution boundary for
-read-only and mutating Ansible runs.
+The working directory must contain a regular, non-symlink ``ansible.cfg``. The playbook argument is
+a basename resolved as ``playbooks/PLAYBOOK.yml``; the target becomes one Ansible ``--limit`` value.
+The job sets ``ANSIBLE_CONFIG`` and runs
+``ansible-playbook playbooks/PLAYBOOK.yml --limit TARGET --check --diff`` with exact argv and inherited
+streams. Input validation returns 2, a missing Ansible executable returns 127, and other statuses are
+the native Ansible status.
+
+Ansible check mode can return zero while reporting changed tasks. The monitoring system must evaluate
+and retain the diff output; exit status zero alone does not prove that no drift exists. The job stores
+no operation state and never applies the reported changes.
 
 Prepare Proxmox inputs
 ----------------------

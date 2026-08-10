@@ -88,8 +88,8 @@ def _refingerprint(plan: HostOperationPlan, update) -> HostOperationPlan:
 def test_operations_manifest_exposes_controllers_and_private_jobs() -> None:
     manifest = load_manifest(Path("operations"))
     assert manifest.name == "operations"
-    assert list(manifest.commands) == ["atlas-ansible", "hostctl", "imagectl"]
-    assert len(manifest.jobs) == 24
+    assert list(manifest.commands) == ["hostctl", "imagectl"]
+    assert len(manifest.jobs) == 23
     assert manifest.jobs["host-provider-allocate"].default_timeout_seconds == 1800
 
 

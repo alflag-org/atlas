@@ -112,18 +112,17 @@ Nested private jobs inherit the parent release snapshot and generation selection
 exits Atlas performs lease-aware best-effort garbage collection; a failed cleanup leaves that
 generation for a later pass and does not change the active state.
 
-The first-party release exposes three commands:
+The first-party release exposes two commands:
 
 | Command | Purpose |
 | --- | --- |
-| `atlas-ansible` | Run Ansible checks, diffs, inventory reads, and applies |
 | `hostctl` | Plan and run a managed-host lifecycle |
 | `imagectl` | Plan and run a machine-image lifecycle |
 
 ```bash
 atlas command list --verbose
-atlas run atlas-ansible diff site web-01
 atlas job list operations
+atlas job inspect operations config-diff
 ```
 
 See [Atlas reference](docs/reference.rst) for host configuration, release manifests, jobs,

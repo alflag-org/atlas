@@ -20,7 +20,13 @@ def test_generate_shims_replaces_stale_and_preserves_non_atlas_files(tmp_path: P
         encoding="utf-8",
     )
     config = load_config(config_path)
-    paths = get_paths({"ATLAS_HOME": str(tmp_path / "atlas")})
+    paths = get_paths(
+        {
+            "ATLAS_HOME": str(tmp_path / "atlas"),
+            "ATLAS_ETC_DIR": str(tmp_path / "etc"),
+            "ATLAS_VAR_DIR": str(tmp_path / "var"),
+        }
+    )
     ensure_dirs(paths)
     (paths.shims / "manual").write_text("manual\n", encoding="utf-8")
     stale = paths.shims / "stale"
@@ -43,7 +49,13 @@ def test_shim_generation_rejects_manual_collision_and_command_collision(tmp_path
         encoding="utf-8",
     )
     config = load_config(config_path)
-    paths = get_paths({"ATLAS_HOME": str(tmp_path / "atlas")})
+    paths = get_paths(
+        {
+            "ATLAS_HOME": str(tmp_path / "atlas"),
+            "ATLAS_ETC_DIR": str(tmp_path / "etc"),
+            "ATLAS_VAR_DIR": str(tmp_path / "var"),
+        }
+    )
     ensure_dirs(paths)
     (paths.shims / "sample").write_text("manual\n", encoding="utf-8")
     with pytest.raises(ValueError, match="non-Atlas"):
@@ -65,7 +77,13 @@ def test_shim_generation_rejects_directory_at_command_path(tmp_path: Path) -> No
         f"programs:\n  tool:\n    root: {root}\n    runtime:\n      type: python\n      venv: tool\n",
         encoding="utf-8",
     )
-    paths = get_paths({"ATLAS_HOME": str(tmp_path / "atlas")})
+    paths = get_paths(
+        {
+            "ATLAS_HOME": str(tmp_path / "atlas"),
+            "ATLAS_ETC_DIR": str(tmp_path / "etc"),
+            "ATLAS_VAR_DIR": str(tmp_path / "var"),
+        }
+    )
     ensure_dirs(paths)
     (paths.shims / "sample").mkdir()
     with pytest.raises(ValueError, match="regular file"):

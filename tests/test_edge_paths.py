@@ -27,7 +27,13 @@ from atlas.yamlutil import load_yaml_file
 
 
 def native_command(tmp_path: Path) -> tuple[object, object, object]:
-    paths = get_paths({"ATLAS_HOME": str(tmp_path / "home"), "ATLAS_VAR_DIR": str(tmp_path / "var")})
+    paths = get_paths(
+        {
+            "ATLAS_HOME": str(tmp_path / "home"),
+            "ATLAS_ETC_DIR": str(tmp_path / "etc"),
+            "ATLAS_VAR_DIR": str(tmp_path / "var"),
+        }
+    )
     ensure_dirs(paths)
     paths.host_file.parent.mkdir(parents=True, exist_ok=True)
     paths.host_file.write_text("version: 1\nhost:\n  id: host\n", encoding="utf-8")
@@ -41,7 +47,13 @@ def native_command(tmp_path: Path) -> tuple[object, object, object]:
 
 
 def test_paths_reject_traversal_and_bad_directories(tmp_path: Path) -> None:
-    paths = get_paths({"ATLAS_HOME": str(tmp_path / "home")})
+    paths = get_paths(
+        {
+            "ATLAS_HOME": str(tmp_path / "home"),
+            "ATLAS_ETC_DIR": str(tmp_path / "etc"),
+            "ATLAS_VAR_DIR": str(tmp_path / "var"),
+        }
+    )
     with pytest.raises(ValueError, match="invalid Python"):
         paths.python_runtime("../escape")
     with pytest.raises(ValueError, match="invalid venv"):
@@ -279,7 +291,19 @@ def test_runtime_versions_and_status_catch_failures(tmp_path: Path, monkeypatch)
     original_resolve = runtime_module.resolve_python
     monkeypatch.setattr(runtime_module, "resolve_python", lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("no")))
     configured = AtlasConfig(tmp_path / "config.yml", RuntimeConfig("3.14"), {"tool": ProgramConfig("tool", tmp_path, ProgramRuntime("python", venv="tool"))})
-    assert runtime_status(get_paths({"ATLAS_HOME": str(tmp_path / "home")}), configured)[0].available is False
+    assert (
+        runtime_status(
+            get_paths(
+                {
+                    "ATLAS_HOME": str(tmp_path / "home"),
+                    "ATLAS_ETC_DIR": str(tmp_path / "etc"),
+                    "ATLAS_VAR_DIR": str(tmp_path / "var"),
+                }
+            ),
+            configured,
+        )[0].available
+        is False
+    )
     monkeypatch.setattr(runtime_module, "resolve_python", original_resolve)
 
     specific = AtlasConfig(
@@ -290,7 +314,13 @@ def test_runtime_versions_and_status_catch_failures(tmp_path: Path, monkeypatch)
     assert runtime_versions(specific) == [("3.14", Path(sys.executable)), ("3.13", None)]
 
     install_home = tmp_path / "install-home"
-    install_paths = get_paths({"ATLAS_HOME": str(install_home)})
+    install_paths = get_paths(
+        {
+            "ATLAS_HOME": str(install_home),
+            "ATLAS_ETC_DIR": str(tmp_path / "install-etc"),
+            "ATLAS_VAR_DIR": str(tmp_path / "install-var"),
+        }
+    )
     target = install_paths.python_runtime("3.14")
     target.parent.mkdir(parents=True)
     wrong = tmp_path / "wrong-python"

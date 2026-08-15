@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "atlas"
-version = "3.0.0"
-description = "Host runtime for versioned infrastructure operations"
+version = "1.0.0"
+description = "A small execution standard for infrastructure automation"
 readme = "README.md"
 requires-python = ">=3.11"
 dynamic = ["dependencies"]
@@ -15,9 +15,7 @@ dev = [
   "build==1.5.0",
   "coverage[toml]==7.15.2",
   "pytest==9.1.1",
-  "pydantic==2.13.4",
   "ruff==0.16.1",
-  "fire==0.7.1",
   "shibuya==2026.7.12; python_version >= '3.12'",
   "sphinx==9.1.0; python_version >= '3.12'",
 ]
@@ -43,7 +41,6 @@ atlas = ["support-requirements.txt"]
 [tool.pytest.ini_options]
 pythonpath = [
   "src",
-  "operations/modules",
 ]
 
 [tool.ruff]
@@ -82,7 +79,6 @@ select = [
 branch = true
 source = [
   "src",
-  "operations",
 ]
 
 [tool.coverage.report]

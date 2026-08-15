@@ -35,10 +35,3 @@ def load_yaml_file(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as fh:
         # _StrictLoader derives from SafeLoader and only rejects duplicate keys.
         return yaml.load(fh, Loader=_StrictLoader)  # noqa: S506
-
-
-def dump_yaml_file(path: Path, data: Any) -> None:
-    """Write data as YAML, creating the parent directory if needed."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as fh:
-        yaml.safe_dump(data, fh, sort_keys=False)

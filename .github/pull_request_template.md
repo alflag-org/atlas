@@ -8,4 +8,4 @@ Describe what changed and why.
 
 ## Impact
 
-Describe operational effects, risks, and compatibility consequences.
+Describe operational effects and risks.

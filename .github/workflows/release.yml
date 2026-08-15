@@ -20,20 +20,11 @@ jobs:
       - run: |
           set -euxo pipefail
           python -m pip install --upgrade pip==26.2
-          python -m pip install \
-            -e '.[dev]' \
-            -r operations/requirements.txt
+          python -m pip install -e '.[dev]'
           python -m pip check
-      - run: pytest -q
+      - run: python -m coverage run -m pytest -q
+      - run: python -m coverage report
       - run: python -m build
-      - name: Package operations release
-        run: |
-          set -euo pipefail
-          operations_version="$(tr -d '\n' < operations/VERSION)"
-          git archive \
-            --format=tar.gz \
-            --output="dist/atlas-operations-${operations_version}.tar.gz" \
-            HEAD:operations
       - run: sha256sum dist/* > release-checksums.txt
       - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:

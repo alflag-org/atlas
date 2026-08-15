@@ -1,1 +1,0 @@
-"""Atlas test package."""

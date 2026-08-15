@@ -1,12 +1,12 @@
 # Contributing to Atlas
 
 Keep each change focused on one behavior or documentation concern. Update tests and operator
-documentation when a public command, configuration field, release artifact, or operational step
+documentation when a public command, configuration field, package artifact, or operational step
 changes.
 
 Do not commit credentials, production inventory, internal endpoints, personal paths, or generated
 runtime state. Examples should use reserved domains such as `example.org`, documentation address
-ranges such as `192.0.2.0/24`, and role-based paths such as `/srv/atlas/source` or
+ranges such as `192.0.2.0/24`, and role-based paths such as `/srv/atlas/program` or
 `/srv/provisioning`.
 
 ## Prepare the development environment
@@ -36,10 +36,9 @@ build. When container behavior changes, also run:
 ```bash
 docker compose build
 docker compose run --rm check
-docker compose run --rm atlas atlas release list
 ```
 
 ## Submit a pull request
 
-Explain the problem, the changes made, and their operational impact. Include compatibility or
-deployment consequences when they exist. Keep unrelated changes in separate pull requests.
+Explain the problem, the changes made, and their operational impact. Include deployment
+consequences when they exist. Keep unrelated changes in separate pull requests.

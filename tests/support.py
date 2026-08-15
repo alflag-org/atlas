@@ -1,126 +1,77 @@
 from __future__ import annotations
 
+import stat
 import sys
 from pathlib import Path
 
-import yaml
 
-from atlas.launchers import publish_host_artifacts
-from atlas.paths import AtlasPaths, get_paths
-
-
-def configure_paths(monkeypatch, tmp_path: Path) -> AtlasPaths:
+def configure_environment(monkeypatch, tmp_path: Path, config: str, host: str | None = None) -> tuple[Path, Path, Path]:
     home = tmp_path / "opt/atlas"
     etc = tmp_path / "etc/atlas"
     var = tmp_path / "var/lib/atlas"
-    monkeypatch.setenv("ATLAS_HOME", str(home))
-    monkeypatch.setenv("ATLAS_ETC_DIR", str(etc))
-    monkeypatch.setenv("ATLAS_VAR_DIR", str(var))
-    monkeypatch.setenv("ATLAS_RUNTIME_DIR", str(home / "runtime"))
-    monkeypatch.setattr(
-        "atlas.runtime._ensure_pyenv_runtime",
-        lambda version, env=None: Path(sys.executable),
-    )
     etc.mkdir(parents=True)
-    (etc / "config.yml").write_text(
-        f"runtime:\n  python:\n    version: '{sys.version_info.major}.{sys.version_info.minor}'\n"
-        "releases: {}\n",
+    (etc / "config.yml").write_text(config, encoding="utf-8")
+    (etc / "host.yml").write_text(
+        host
+        or "version: 1\nhost:\n  id: test-host\n  role: test\n  site: local\n",
         encoding="utf-8",
     )
-    (etc / "host.yml").write_text("name: test-host\nsite: test\n", encoding="utf-8")
-    paths = get_paths()
-    paths.runtime_python.parent.mkdir(parents=True)
-    paths.runtime_python.symlink_to(sys.executable)
-    publish_host_artifacts(paths)
-    return paths
+    for key, value in {
+        "ATLAS_HOME": home,
+        "ATLAS_ETC_DIR": etc,
+        "ATLAS_VAR_DIR": var,
+        "ATLAS_RUNTIMES_DIR": home / "runtimes",
+        "ATLAS_VENVS_DIR": home / "venvs",
+        "ATLAS_SHIMS_DIR": home / "shims",
+    }.items():
+        monkeypatch.setenv(key, str(value))
+    return home, etc, var
 
 
-def make_release(
-    root: Path,
-    *,
-    name: str = "sample",
-    version: str = "1.0.0",
-    commands: tuple[str, ...] = ("sample-show",),
-    jobs: tuple[str, ...] = (),
-    timeout: int | None = None,
-    service: str | None = None,
-) -> Path:
-    root.mkdir(parents=True)
-    (root / "VERSION").write_text(f"{version}\n", encoding="utf-8")
-    modules = root / "modules"
-    modules.mkdir(parents=True, exist_ok=True)
-    manifest: dict[str, object] = {
-        "schema": "atlas.release/v1",
-        "name": name,
-        "commands": {},
-        "jobs": {},
-        "services": {},
-    }
-    command_entries = manifest["commands"]
-    assert isinstance(command_entries, dict)
-    for command in commands:
-        module_name = command.replace("-", "_") + "_entry"
-        module_file = modules / f"{module_name}.py"
-        module_file.write_text(
-            "from __future__ import annotations\n"
-            "import os\n"
-            "def main(argv: list[str] | None = None) -> None:\n"
-            "    print(f\"{os.environ['ATLAS_ARTIFACT_NAME']}:"
-            "{os.environ['ATLAS_RELEASE_NAME']}\")\n",
-            encoding="utf-8",
-        )
-        command_entries[command] = {
-            "target": f"{module_name}:main",
-        }
-    job_entries = manifest["jobs"]
-    assert isinstance(job_entries, dict)
-    for job in jobs:
-        module_name = job.replace("-", "_") + "_entry"
-        module_file = modules / f"{module_name}.py"
-        module_file.write_text(
-            "from __future__ import annotations\n"
-            "import os\n"
-            "import sys\n"
-            "def main(argv: list[str] | None = None) -> None:\n"
-            "    print(os.environ.get('TEST_JOB_VALUE', 'unset'))\n"
-            "    print('|'.join(argv or []))\n",
-            encoding="utf-8",
-        )
-        definition: dict[str, object] = {
-            "target": f"{module_name}:main",
-        }
-        if timeout is not None:
-            definition["default_timeout_seconds"] = timeout
-        job_entries[job] = definition
-    if service is not None:
-        assert jobs
-        unit_root = root / "init/systemd"
-        unit_root.mkdir(parents=True)
-        (unit_root / f"{service}.service").write_text(
-            "[Unit]\nDescription=Sample\n"
-            "[Service]\nUser=ops\n"
-            "ExecStart=/opt/atlas/bin/atlas job instance run sample-instance\n",
-            encoding="utf-8",
-        )
-        (unit_root / f"{service}.timer").write_text(
-            "[Unit]\nDescription=Sample timer\n"
-            "[Timer]\nOnCalendar=hourly\n"
-            f"Unit=atlas-{name}-{service}.service\n",
-            encoding="utf-8",
-        )
-        service_entries = manifest["services"]
-        assert isinstance(service_entries, dict)
-        service_entries[service] = {
-            "job": jobs[0],
-            "init": {
-                "systemd": {
-                    "service": f"init/systemd/{service}.service",
-                    "timer": f"init/systemd/{service}.timer",
-                }
-            },
-        }
-    (root / "release.yml").write_text(
-        yaml.safe_dump(manifest, sort_keys=False),
+def python_config(root: Path, *, executable: Path | None = None, program_name: str = "sample") -> str:
+    executable_line = ""
+    if executable is not None:
+        executable_line = f"    executable: {executable}\n"
+    return (
+        "runtime:\n"
+        "  python:\n"
+        f"    version: '{sys.version_info.major}.{sys.version_info.minor}'\n"
+        f"{executable_line}"
+        "programs:\n"
+        f"  {program_name}:\n"
+        f"    root: {root}\n"
+        "    runtime:\n"
+        "      type: python\n"
+        f"      venv: {program_name}\n"
+    )
+
+
+def write_python_command(root: Path, name: str = "sample", body: str | None = None) -> Path:
+    path = root / "commands" / f"{name}.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        body
+        or "from atlas_core import get_context\n"
+        "import json, os, sys\n"
+        "ctx = get_context()\n"
+        "payload = {'host': ctx.host.id, 'program': ctx.program.name, 'command': ctx.command.name, 'args': sys.argv[1:], 'context': os.environ['ATLAS_CONTEXT_FILE']}\n"
+        "print(json.dumps(payload, sort_keys=True))\n",
         encoding="utf-8",
     )
-    return root
+    return path
+
+
+def write_native_command(root: Path, name: str = "native", body: str | None = None) -> Path:
+    path = root / "bin" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body or "#!/bin/sh\nprintf '%s\\n' \"$*\"\n", encoding="utf-8")
+    path.chmod(
+        stat.S_IRUSR
+        | stat.S_IWUSR
+        | stat.S_IXUSR
+        | stat.S_IRGRP
+        | stat.S_IXGRP
+        | stat.S_IROTH
+        | stat.S_IXOTH
+    )
+    return path

@@ -1,7 +1,0 @@
-schema: atlas.release/v1
-name: sample
-commands:
-  group-nested-sample:
-    target: nested_sample:main
-  sample:
-    target: sample_command:main

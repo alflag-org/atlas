@@ -4,131 +4,46 @@ from pathlib import Path
 
 import pytest
 
-from atlas_core.host import HostProfile, get_host
+from atlas_core.host import get_host, parse_host
 
 
-def _write_host(path: Path, content: str) -> Path:
-    path.write_text(content, encoding="utf-8")
-    return path
-
-
-def test_valid_host_yml_returns_host_profile(tmp_path: Path) -> None:
-    path = _write_host(
-        tmp_path / "host.yml",
-        """name: n1
-site: tokyo
-zone: mgmt
-role: dns
-environment: home
-runtime_kind: lxc
-tags:
-  - sample
-""",
+def test_loads_versioned_host_profile(tmp_path: Path) -> None:
+    path = tmp_path / "host.yml"
+    path.write_text(
+        "version: 1\nhost:\n  id: control01\n  role: control\n  site: west\n",
+        encoding="utf-8",
     )
 
     host = get_host(path)
 
-    assert host == HostProfile(
-        name="n1",
-        site="tokyo",
-        zone="mgmt",
-        role="dns",
-        environment="home",
-        runtime_kind="lxc",
-        tags=("sample",),
-    )
+    assert host.id == "control01"
+    assert host.to_dict()["site"] == "west"
 
 
-def test_name_is_required(tmp_path: Path) -> None:
-    path = _write_host(tmp_path / "host.yml", "site: tokyo\n")
-
-    with pytest.raises(ValueError, match="name is required"):
-        get_host(path)
-
-
-def test_empty_name_fails(tmp_path: Path) -> None:
-    path = _write_host(tmp_path / "host.yml", "name: ''\n")
-
-    with pytest.raises(ValueError, match="name is required"):
-        get_host(path)
-
-
-def test_non_string_name_fails(tmp_path: Path) -> None:
-    path = _write_host(tmp_path / "host.yml", "name: 1\n")
-
-    with pytest.raises(ValueError, match="name is required"):
-        get_host(path)
+@pytest.mark.parametrize(
+    ("document", "message"),
+    [
+        ([], "host.yml must be a mapping"),
+        ({"version": 2, "host": {"id": "x"}}, "version must be 1"),
+        ({"version": 1}, "host must be a mapping"),
+        ({"version": 1, "host": {}}, "host.id is required"),
+        ({"version": 1, "host": {"id": "x", "tags": []}}, "unknown key"),
+        ({"version": 1, "host": {"id": "x", "role": 1}}, "role must be a string"),
+        ({"version": 1, "host": {"id": "x"}, "secret": "bad"}, "unknown key"),
+    ],
+)
+def test_rejects_invalid_host(document: object, message: str) -> None:
+    with pytest.raises((TypeError, ValueError), match=message):
+        parse_host(document)
 
 
-def test_non_mapping_yaml_fails(tmp_path: Path) -> None:
-    path = _write_host(tmp_path / "host.yml", "[]\n")
-
-    with pytest.raises(TypeError, match="mapping"):
-        get_host(path)
-
-
-@pytest.mark.parametrize("field", ["site", "zone", "role", "environment", "runtime_kind"])
-def test_optional_scalar_fields_must_be_strings_if_present(tmp_path: Path, field: str) -> None:
-    path = _write_host(tmp_path / "host.yml", f"name: n1\n{field}: 1\n")
-
-    with pytest.raises(TypeError, match=field):
-        get_host(path)
-
-
-def test_tags_absent_returns_empty_tuple(tmp_path: Path) -> None:
-    path = _write_host(tmp_path / "host.yml", "name: n1\n")
-
-    assert get_host(path).tags == ()
-
-
-def test_tags_null_returns_empty_tuple(tmp_path: Path) -> None:
-    path = _write_host(tmp_path / "host.yml", "name: n1\ntags:\n")
-
-    assert get_host(path).tags == ()
-
-
-def test_tags_list_of_strings_returns_tuple(tmp_path: Path) -> None:
-    path = _write_host(tmp_path / "host.yml", "name: n1\ntags: [a, b]\n")
-
-    assert get_host(path).tags == ("a", "b")
-
-
-def test_tags_non_list_fails(tmp_path: Path) -> None:
-    path = _write_host(tmp_path / "host.yml", "name: n1\ntags: tag\n")
-
-    with pytest.raises(ValueError, match=r"list\[str\]"):
-        get_host(path)
-
-
-def test_tags_list_containing_non_string_fails(tmp_path: Path) -> None:
-    path = _write_host(tmp_path / "host.yml", "name: n1\ntags: [a, 1]\n")
-
-    with pytest.raises(ValueError, match=r"list\[str\]"):
-        get_host(path)
-
-
-def test_has_tag_works(tmp_path: Path) -> None:
-    path = _write_host(tmp_path / "host.yml", "name: n1\ntags: [a]\n")
-    host = get_host(path)
-
-    assert host.has_tag("a") is True
-    assert host.has_tag("missing") is False
-
-
-def test_to_dict_returns_json_friendly_values(tmp_path: Path) -> None:
-    path = _write_host(tmp_path / "host.yml", "name: n1\nsite: tokyo\ntags: [a]\n")
-
-    assert get_host(path).to_dict() == {
-        "name": "n1",
-        "site": "tokyo",
-        "zone": "",
-        "role": "",
-        "environment": "",
-        "runtime_kind": "",
-        "tags": ["a"],
-    }
-
-
-def test_get_host_missing_file_fails(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError):
+def test_missing_host_fails(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="host profile not found"):
         get_host(tmp_path / "missing.yml")
+
+
+def test_duplicate_host_keys_are_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "host.yml"
+    path.write_text("version: 1\nhost:\n  id: one\n  id: two\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate YAML key"):
+        get_host(path)

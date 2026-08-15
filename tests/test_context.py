@@ -5,82 +5,153 @@ from pathlib import Path
 
 import pytest
 
-from atlas_core.context import get_context
+from atlas.catalog import CommandRef
+from atlas.config import ProgramConfig, ProgramRuntime
+from atlas.context import execution_context, write_context
+from atlas.paths import get_paths
+from atlas_core import get_context
 
 
-def _context_env(tmp_path: Path) -> dict[str, str]:
-    host = tmp_path / "host.yml"
-    host.write_text("name: test-host\nsite: site-a\n", encoding="utf-8")
-    return {
-        "ATLAS_HOME": str(tmp_path / "opt"),
+def test_get_context_reads_json_context(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "opt"
+    paths = get_paths({
+        "ATLAS_HOME": str(home),
         "ATLAS_ETC_DIR": str(tmp_path / "etc"),
         "ATLAS_VAR_DIR": str(tmp_path / "var"),
-        "ATLAS_RUNTIME_DIR": str(tmp_path / "runtime"),
-        "ATLAS_RELEASE_ROOT": str(tmp_path / "opt/releases/basic/2026.05.10-001"),
+    })
+    host_file = paths.host_file
+    host_file.parent.mkdir(parents=True)
+    host_file.write_text("version: 1\nhost:\n  id: host\n", encoding="utf-8")
+    program = ProgramConfig("tool", tmp_path / "tool", ProgramRuntime("native"))
+    command = CommandRef("run", program, program.root / "bin/run", "native")
+    payload = execution_context(
+        paths,
+        command,
+        run_id="run",
+        parent_run_id=None,
+        operation_id="op",
+        working_directory=tmp_path,
+    )
+    context_file = tmp_path / "context.json"
+    write_context(context_file, payload)
+    monkeypatch.setenv("ATLAS_CONTEXT_FILE", str(context_file))
+    monkeypatch.setenv("ATLAS_HOME", str(home))
+    monkeypatch.setenv("ATLAS_ETC_DIR", str(paths.etc))
+    monkeypatch.setenv("ATLAS_VAR_DIR", str(paths.var))
+
+    context = get_context()
+
+    assert context.host.id == "host"
+    assert context.program.name == "tool"
+    assert context.command.name == "run"
+    assert context.execution.parent_run_id is None
+    assert context.to_dict()["paths"]["home"] == str(home)
+    json.dumps(context.to_dict())
+
+
+def test_get_context_reads_environment_fallback(tmp_path: Path, monkeypatch) -> None:
+    host = tmp_path / "host.yml"
+    host.write_text("version: 1\nhost:\n  id: env-host\n", encoding="utf-8")
+    env = {
+        "ATLAS_HOME": str(tmp_path / "home"),
+        "ATLAS_ETC_DIR": str(tmp_path / "etc"),
+        "ATLAS_VAR_DIR": str(tmp_path / "var"),
         "ATLAS_HOST_FILE": str(host),
-        "ATLAS_ARTIFACT_NAME": "sample",
-        "ATLAS_ARTIFACT_TYPE": "command",
-        "ATLAS_RELEASE_NAME": "basic",
-        "ATLAS_RELEASE_VERSION": "2026.05.10-001",
-        "ATLAS_RUN_ID": "run-id",
-        "ATLAS_PARENT_RUN_ID": "parent-id",
-        "ATLAS_OPERATION_ID": "operation-id",
+        "ATLAS_PROGRAM_NAME": "tool",
+        "ATLAS_PROGRAM_ROOT": str(tmp_path / "tool"),
+        "ATLAS_COMMAND_NAME": "run",
+        "ATLAS_COMMAND_PATH": str(tmp_path / "tool/run"),
+        "ATLAS_RUNTIME_TYPE": "native",
+        "ATLAS_RUN_ID": "run",
+        "ATLAS_OPERATION_ID": "op",
     }
+    monkeypatch.delenv("ATLAS_CONTEXT_FILE", raising=False)
 
+    context = get_context(env)
 
-def test_get_context_from_env_mapping_returns_host_paths_and_artifact(tmp_path: Path) -> None:
-    env = _context_env(tmp_path)
-
-    ctx = get_context(env=env)
-
-    assert ctx.host.name == "test-host"
-    assert ctx.host.site == "site-a"
-    assert ctx.paths.home == tmp_path / "opt"
-    assert ctx.artifact.name == "sample"
-    assert ctx.artifact.artifact_type == "command"
-    assert ctx.artifact.release_name == "basic"
-    assert ctx.artifact.version == "2026.05.10-001"
-    assert ctx.artifact.release_root == tmp_path / "opt/releases/basic/2026.05.10-001"
-    assert ctx.artifact.run_id == "run-id"
-    assert ctx.artifact.parent_run_id == "parent-id"
-    assert ctx.artifact.operation_id == "operation-id"
-    assert ctx.paths.release_root == ctx.artifact.release_root
+    assert context.host.id == "env-host"
+    assert context.command.type == "native"
 
 
 @pytest.mark.parametrize(
-    "key",
+    "payload",
     [
-        "ATLAS_ARTIFACT_NAME",
-        "ATLAS_ARTIFACT_TYPE",
-        "ATLAS_RELEASE_NAME",
-        "ATLAS_RELEASE_VERSION",
-        "ATLAS_RELEASE_ROOT",
-        "ATLAS_RUN_ID",
-        "ATLAS_OPERATION_ID",
+        {},
+        {"version": 2},
+        {"version": 1, "host": []},
+        {"version": 1, "host": {"id": "x"}, "program": {}, "command": {}, "execution": {}},
+        {"version": 1, "host": {"id": "x"}, "program": {}, "command": {}, "execution": []},
     ],
 )
-def test_missing_required_artifact_environment_fails(tmp_path: Path, key: str) -> None:
-    env = _context_env(tmp_path)
-    env.pop(key)
-
-    with pytest.raises(RuntimeError, match=f"{key} is required"):
-        get_context(env=env)
-
-
-def test_empty_parent_run_id_represents_a_root_run(tmp_path: Path) -> None:
-    env = _context_env(tmp_path)
-    env["ATLAS_PARENT_RUN_ID"] = ""
-
-    assert get_context(env=env).artifact.parent_run_id is None
+def test_context_rejects_invalid_json(tmp_path: Path, monkeypatch, payload: object) -> None:
+    path = tmp_path / "context.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("ATLAS_CONTEXT_FILE", str(path))
+    with pytest.raises((RuntimeError, TypeError, ValueError)):
+        get_context()
 
 
-def test_to_dict_is_json_friendly(tmp_path: Path) -> None:
-    ctx = get_context(env=_context_env(tmp_path))
+def test_context_file_must_exist_and_write_rejects_directory(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ATLAS_CONTEXT_FILE", str(tmp_path / "missing"))
+    with pytest.raises(RuntimeError, match="context file not found"):
+        get_context()
+    directory = tmp_path / "context"
+    directory.mkdir()
+    with pytest.raises(ValueError, match="regular file"):
+        write_context(directory, {})
 
-    data = ctx.to_dict()
 
-    assert data["host"]["name"] == "test-host"
-    assert data["artifact"]["release_root"] == str(ctx.artifact.release_root)
-    assert data["artifact"]["parent_run_id"] == "parent-id"
-    assert data["paths"]["release_root"] == str(ctx.paths.release_root)
-    json.dumps(data)
+def test_context_rejects_missing_fields_and_non_object(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "context.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "host": {"id": "host"},
+                "program": [],
+                "command": {},
+                "execution": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ATLAS_CONTEXT_FILE", str(path))
+    with pytest.raises(TypeError, match="program and command"):
+        get_context()
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "host": {"id": "host"},
+                "program": {"runtime": []},
+                "command": {},
+                "execution": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(TypeError, match="runtime"):
+        get_context()
+    path.write_text("[]", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="object"):
+        get_context()
+
+    monkeypatch.delenv("ATLAS_CONTEXT_FILE")
+    with pytest.raises(RuntimeError, match="ATLAS_PROGRAM_NAME"):
+        get_context({})
+
+    valid = {
+        "version": 1,
+        "host": {"id": "host"},
+        "program": {
+            "name": "tool",
+            "root": str(tmp_path),
+            "runtime": {"type": "native"},
+        },
+        "command": {"name": "run", "path": str(tmp_path / "run"), "type": "native"},
+        "execution": {"run_id": "run", "operation_id": "op"},
+    }
+    path.write_text(json.dumps(valid), encoding="utf-8")
+    monkeypatch.setenv("ATLAS_CONTEXT_FILE", str(path))
+    with pytest.raises(RuntimeError, match="working_directory"):
+        get_context()

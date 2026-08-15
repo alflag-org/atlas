@@ -1,18 +1,22 @@
-"""Runtime API for release artifacts executed by Atlas.
+"""Small public API for programs executed by Atlas."""
 
-Artifacts installed into Atlas should import from this package instead of
-using host-side implementation modules under :mod:`atlas`.
-"""
-
-from .context import ArtifactInfo, AtlasContext, get_context
+from .context import (
+    AtlasContext,
+    CommandInfo,
+    ExecutionInfo,
+    ProgramInfo,
+    get_context,
+)
 from .host import HostProfile, get_host
 from .paths import AtlasPaths, get_paths
 
 __all__ = [
-    "ArtifactInfo",
     "AtlasContext",
     "AtlasPaths",
+    "CommandInfo",
+    "ExecutionInfo",
     "HostProfile",
+    "ProgramInfo",
     "get_context",
     "get_host",
     "get_paths",

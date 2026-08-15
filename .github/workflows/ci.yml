@@ -29,98 +29,56 @@ jobs:
       - run: |
           set -euxo pipefail
           python -m pip install --upgrade pip==26.2
-          python -m pip install \
-            -e '.[dev]' \
-            -r operations/requirements.txt \
-            -r examples/basic-release/requirements.txt \
-            -r examples/companion-release/requirements.txt
+          python -m pip install -e '.[dev]'
           python -m pip check
-      - name: Configure the selected Python as the CI runtime provider
-        run: |
-          ci_python="$(python -c 'import sys; print(sys.executable)')"
-          mkdir -p "$RUNNER_TEMP/atlas-bin"
-          {
-            printf '%s\n' '#!/usr/bin/env bash'
-            printf '%s\n' 'set -euo pipefail'
-            printf 'ATLAS_CI_PYTHON=%q\n' "$ci_python"
-            printf 'ATLAS_CI_PYTHON_VERSION=%q\n' "${{ matrix.python-version }}"
-            cat <<'PYENV'
-          case "${1:-}" in
-            install)
-              [[ "${2:-}" == "-s" && "${3:-}" == "$ATLAS_CI_PYTHON_VERSION" ]]
-              exit 0
-              ;;
-            prefix)
-              [[ "${2:-}" == "$ATLAS_CI_PYTHON_VERSION" ]]
-              exec "$ATLAS_CI_PYTHON" -c 'from pathlib import Path; import sys; print(Path(sys.executable).parent.parent)'
-              ;;
-            *)
-              echo "unsupported CI pyenv operation" >&2
-              exit 2
-              ;;
-          esac
-          PYENV
-          } > "$RUNNER_TEMP/atlas-bin/pyenv"
-          chmod +x "$RUNNER_TEMP/atlas-bin/pyenv"
-          "$RUNNER_TEMP/atlas-bin/pyenv" install -s "${{ matrix.python-version }}"
-          test "$("$RUNNER_TEMP/atlas-bin/pyenv" prefix "${{ matrix.python-version }}")" = "$(dirname "$(dirname "$ci_python")")"
-          echo "$RUNNER_TEMP/atlas-bin" >> "$GITHUB_PATH"
-      - name: Validate Ansible fixture
-        working-directory: tests/fixtures/provisioning
-        run: ansible-playbook --syntax-check playbooks/site.yml
       - run: |
           python -m coverage run -m pytest -q
           python -m coverage report
-      - run: >-
-          ruff check src operations tests
+      - run: ruff check src tests
       - run: python -m build
       - if: matrix.python-version == '3.14'
         run: make clean-docs html SPHINXOPTS=-W
-      - name: Smoke test final release commands
+      - name: Smoke test local programs
         env:
           ATLAS_HOME: ${{ github.workspace }}/.ci/opt/atlas
           ATLAS_ETC_DIR: ${{ github.workspace }}/.ci/etc/atlas
           ATLAS_VAR_DIR: ${{ github.workspace }}/.ci/var/lib/atlas
-          ATLAS_RUNTIME_DIR: ${{ github.workspace }}/.ci/opt/atlas/runtime
+          ATLAS_RUNTIMES_DIR: ${{ github.workspace }}/.ci/opt/atlas/runtimes
+          ATLAS_VENVS_DIR: ${{ github.workspace }}/.ci/opt/atlas/venvs
         run: |
           set -euxo pipefail
           mkdir -p "$ATLAS_ETC_DIR"
           cat > "$ATLAS_ETC_DIR/host.yml" <<'H'
-          name: ci-host
-          site: ci
-          zone: mgmt
-          role: test
-          environment: ci
-          runtime_kind: vm
-          tags:
-            - ci
+          version: 1
+          host:
+            id: ci-host
+            role: test
+            site: ci
           H
-          cat > "$ATLAS_ETC_DIR/config.yml" <<'C'
+          cat > "$ATLAS_ETC_DIR/config.yml" <<C
           runtime:
             python:
               version: "${{ matrix.python-version }}"
-          releases:
-            sample:
-              source: "file://examples/basic-release"
+              executable: "$(command -v python)"
+          programs:
+            basic:
+              root: ${{ github.workspace }}/examples/basic-program
+              runtime:
+                type: python
+                python: "${{ matrix.python-version }}"
+                venv: basic
+            native:
+              root: ${{ github.workspace }}/examples/native-program
+              runtime:
+                type: native
           C
-          atlas release install examples/basic-release
-          atlas release install operations
-          atlas release list
+          atlas runtime install
+          atlas venv create basic
           atlas command list
-          diff -u \
-            <(printf '%s\n' \
-              hostctl imagectl \
-              group-nested-sample sample) \
-            <(atlas command list)
-          atlas which sample
-          atlas which group-nested-sample
-          atlas run sample hello --name=ci-user
-          atlas run group-nested-sample show-context
-          atlas which hostctl
-          atlas which imagectl
-          atlas job list operations
-          "$ATLAS_HOME/shims/hostctl" --help
-          "$ATLAS_HOME/shims/imagectl" --help
+          atlas shim generate
+          atlas run hello ci-user
+          atlas run native-echo from-ci
+          test -s "$ATLAS_VAR_DIR/logs/runs.jsonl"
 
   container:
     needs: test-and-validate

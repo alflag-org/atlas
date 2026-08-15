@@ -1,4 +1,4 @@
-"""Path discovery for release artifacts executed by Atlas."""
+"""Atlas paths exposed to automation programs."""
 
 from __future__ import annotations
 
@@ -10,74 +10,64 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class AtlasPaths:
-    """Resolved Atlas filesystem locations visible to an artifact."""
+    """Standard Atlas directories available to a child process."""
 
     home: Path
     etc: Path
     var: Path
-    runtime: Path
-    tmp: Path
-    releases_root: Path
-    current_root: Path
-    release_root: Path
+    runtimes: Path
+    python_runtimes: Path
+    venvs: Path
+    shims: Path
+    launchers: Path
     logs: Path
-    locks: Path
-    cache: Path
+    runtime_state: Path
+    context_dir: Path
     config_file: Path
     host_file: Path
+    run_log: Path
 
     def to_dict(self) -> dict[str, str]:
-        """Return a JSON-serializable representation of the paths."""
+        """Return a JSON-friendly representation."""
         return {
             "home": str(self.home),
             "etc": str(self.etc),
             "var": str(self.var),
-            "runtime": str(self.runtime),
-            "tmp": str(self.tmp),
-            "releases_root": str(self.releases_root),
-            "current_root": str(self.current_root),
-            "release_root": str(self.release_root),
+            "runtimes": str(self.runtimes),
+            "python_runtimes": str(self.python_runtimes),
+            "venvs": str(self.venvs),
+            "shims": str(self.shims),
+            "launchers": str(self.launchers),
+            "logs": str(self.logs),
+            "runtime_state": str(self.runtime_state),
+            "context_dir": str(self.context_dir),
             "config_file": str(self.config_file),
             "host_file": str(self.host_file),
-            "logs": str(self.logs),
-            "locks": str(self.locks),
-            "cache": str(self.cache),
+            "run_log": str(self.run_log),
         }
 
 
 def get_paths(env: Mapping[str, str] | None = None) -> AtlasPaths:
-    """Resolve Atlas paths from an environment mapping.
-
-    Args:
-        env: Optional environment mapping. When omitted, ``os.environ`` is
-            used.
-    """
+    """Resolve standard paths from the child environment."""
     read_env = os.environ if env is None else env
     home = Path(read_env.get("ATLAS_HOME", "/opt/atlas"))
     etc = Path(read_env.get("ATLAS_ETC_DIR", "/etc/atlas"))
     var = Path(read_env.get("ATLAS_VAR_DIR", "/var/lib/atlas"))
-    runtime = Path(read_env.get("ATLAS_RUNTIME_DIR", str(home / "runtime")))
-    tmp = Path(read_env.get("ATLAS_TMP_DIR", str(home / "tmp")))
-    release_root = Path(_require_env(read_env, "ATLAS_RELEASE_ROOT"))
+    runtimes = Path(read_env.get("ATLAS_RUNTIMES_DIR", str(home / "runtimes")))
+    runtime_state = var / "runtime-state"
     return AtlasPaths(
         home=home,
         etc=etc,
         var=var,
-        runtime=runtime,
-        tmp=tmp,
-        releases_root=home / "releases",
-        current_root=home / "current",
-        release_root=release_root,
+        runtimes=runtimes,
+        python_runtimes=runtimes / "python",
+        venvs=Path(read_env.get("ATLAS_VENVS_DIR", str(home / "venvs"))),
+        shims=Path(read_env.get("ATLAS_SHIMS_DIR", str(home / "shims"))),
+        launchers=Path(read_env.get("ATLAS_LAUNCHERS_DIR", str(home / "launchers"))),
         logs=var / "logs",
-        locks=var / "locks",
-        cache=var / "cache",
-        config_file=etc / "config.yml",
+        runtime_state=runtime_state,
+        context_dir=runtime_state / "contexts",
+        config_file=Path(read_env.get("ATLAS_CONFIG_FILE", str(etc / "config.yml"))),
         host_file=Path(read_env.get("ATLAS_HOST_FILE", str(etc / "host.yml"))),
+        run_log=var / "logs" / "runs.jsonl",
     )
-
-
-def _require_env(read_env: Mapping[str, str], key: str) -> str:
-    value = read_env.get(key)
-    if not value:
-        raise RuntimeError(f"{key} is required")
-    return value

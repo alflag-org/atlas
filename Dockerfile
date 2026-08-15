@@ -2,44 +2,16 @@ FROM python:3.14.6-slim-bookworm@sha256:86f975aca15cf04a40b399eebede9aea7c82eae0
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYENV_ROOT=/opt/pyenv \
     ATLAS_HOME=/opt/atlas \
     ATLAS_ETC_DIR=/etc/atlas \
     ATLAS_VAR_DIR=/var/lib/atlas \
-    ATLAS_RUNTIME_DIR=/opt/atlas/runtime \
-    PATH=/opt/atlas/bin:/opt/atlas/shims:/opt/pyenv/bin:$PATH
+    ATLAS_RUNTIMES_DIR=/opt/atlas/runtimes \
+    ATLAS_VENVS_DIR=/opt/atlas/venvs \
+    PATH=/opt/atlas/shims:$PATH
 
 WORKDIR /workspace
 
-
-FROM base AS build-deps
-
-ARG ATLAS_RUNTIME_PYTHON_VERSION=3.14.6
-ARG PYENV_VERSION=v2.8.1
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        build-essential \
-        ca-certificates \
-        curl \
-        git \
-        libbz2-dev \
-        libffi-dev \
-        liblzma-dev \
-        libreadline-dev \
-        libsqlite3-dev \
-        libssl-dev \
-        make \
-        tk-dev \
-        xz-utils \
-        zlib1g-dev \
-    && rm -rf /var/lib/apt/lists/* \
-    && git clone --branch "$PYENV_VERSION" --depth 1 \
-        https://github.com/pyenv/pyenv.git "$PYENV_ROOT" \
-    && pyenv install -s "$ATLAS_RUNTIME_PYTHON_VERSION"
-
-
-FROM build-deps AS dev
+FROM base AS dev
 
 COPY pyproject.toml README.md ./
 COPY src ./src
@@ -50,46 +22,20 @@ COPY . .
 RUN mkdir -p "$ATLAS_ETC_DIR" "$ATLAS_VAR_DIR" \
     && cp docker/atlas/config.yml "$ATLAS_ETC_DIR/config.yml" \
     && cp docker/atlas/host.yml "$ATLAS_ETC_DIR/host.yml" \
-    && atlas release install /workspace/examples/basic-release \
-    && atlas release install /workspace/operations
+    && atlas runtime install \
+    && atlas venv create basic
 
-CMD ["sh", "-c", "ruff check src operations tests && pytest -q && python -m build"]
-
+CMD ["sh", "-c", "ruff check src tests && pytest -q && python -m build"]
 
 FROM dev AS wheel
-
 RUN python -m build
 
+FROM dev AS runtime
 
-FROM base AS runtime
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        git \
-        libbz2-1.0 \
-        libffi8 \
-        liblzma5 \
-        libreadline8 \
-        libsqlite3-0 \
-        libssl3 \
-        tk \
-        xz-utils \
-        zlib1g \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system atlas \
+RUN groupadd --system atlas \
     && useradd --system --gid atlas --home-dir /opt/atlas --shell /usr/sbin/nologin atlas \
-    && mkdir -p "$ATLAS_HOME" "$ATLAS_ETC_DIR" "$ATLAS_VAR_DIR" /workspace
-
-COPY --from=dev /opt/pyenv /opt/pyenv
-COPY --from=dev /opt/atlas /opt/atlas
-COPY --from=dev /etc/atlas /etc/atlas
-COPY --from=wheel /workspace/dist/*.whl /tmp/
-RUN python -m pip install --upgrade pip==26.2 \
-    && python -m pip install --no-cache-dir /tmp/*.whl \
-    && rm -f /tmp/*.whl \
-    && chown -R atlas:atlas "$ATLAS_HOME" "$ATLAS_ETC_DIR" "$ATLAS_VAR_DIR" "$PYENV_ROOT" /workspace
+    && chown -R atlas:atlas /opt/atlas /etc/atlas /var/lib/atlas /workspace
 
 USER atlas
 
-CMD ["sh", "-c", "atlas status && atlas release list && atlas command list && hostctl --help >/dev/null && imagectl --help >/dev/null && atlas run sample hello --name=docker"]
+CMD ["sh", "-c", "atlas status && atlas command list && atlas run hello docker && atlas run native-echo docker"]

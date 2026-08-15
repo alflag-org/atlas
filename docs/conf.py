@@ -37,7 +37,6 @@ html_theme_options = {
     "github_url": "https://github.com/alflag-org/atlas",
     "nav_links": [
         {"title": "Reference", "url": "reference"},
-        {"title": "Controllers", "url": "controllers"},
         {"title": "Python API", "url": "api"},
     ],
     "nav_links_align": "left",

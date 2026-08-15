@@ -1,532 +1,256 @@
-"""Command-line interface for host-side Atlas operations."""
+"""Command-line interface for the small Atlas execution standard."""
 
 from __future__ import annotations
 
 import argparse
-import shutil
+import json
 import sys
-from contextlib import ExitStack, contextmanager
-from pathlib import Path
-from tempfile import TemporaryDirectory
-
-import yaml
 
 from atlas_core.host import get_host
 
-from .catalog import (
-    active_releases,
-    command_index,
-    release_index,
-    resolve_command,
-    resolve_job,
-    resolve_service,
-)
-from .config import load_config
-from .errors import AtlasError
-from .execution import execute, resolve_command_for_execution
-from .init import SystemdAdapter
-from .job_instances import list_job_instances, load_job_instance
-from .jobs import list_jobs, run_job, run_job_instance
-from .launchers import (
-    capture_host_artifact_state,
-    publish_host_artifacts,
-    restore_host_artifact_state,
-)
-from .locks import acquire_lock
+from .catalog import command_index, resolve_command
+from .config import AtlasConfig, ProgramConfig, load_config
+from .execution import execute
 from .paths import AtlasPaths, ensure_dirs, get_paths
-from .releases import (
-    reversible_release_install,
-    reversible_release_transaction,
-    validate_release,
-    validate_release_targets,
+from .runtime import (
+    create_venv,
+    install_configured_runtimes,
+    runtime_status,
+    venv_python,
 )
-from .runtime import install_runtime, runtime_status
-from .sources import resolve_source
+from .shims import generate_shims
 
 
-def _bool_text(value: bool) -> str:
-    return str(value).lower()
+def _config(paths: AtlasPaths) -> AtlasConfig:
+    return load_config(paths.config_file)
 
 
-def _refresh_host_artifacts(paths: AtlasPaths) -> list[str]:
-    return publish_host_artifacts(paths, _lock_held=True)
-
-
-@contextmanager
-def _host_artifact_transaction(paths: AtlasPaths):
-    """Serialize host publication before per-release activation locks."""
-    # Lock order is fixed: host-artifacts, then sorted release locks.
-    with acquire_lock(paths.locks, "host-artifacts", wait=True):
-        yield
+def _program(config: AtlasConfig, name: str) -> ProgramConfig:
+    program = config.programs.get(name)
+    if program is None:
+        raise ValueError(f"unknown program: {name}")
+    return program
 
 
 def cmd_status(_: argparse.Namespace) -> int:
-    """Print current host and artifact status."""
+    """Print the current local program and Atlas path state."""
     paths = get_paths()
-    ensure_dirs(paths)
-    releases = active_releases(paths.current_root, paths.releases_root)
-    commands = command_index(paths.current_root, paths.releases_root)
-    host_file = paths.etc / "host.yml"
-    host_name = "unknown"
-    if host_file.exists():
-        try:
-            host_name = get_host(host_file).name
-        except (FileNotFoundError, TypeError, ValueError):
-            pass
-    print(f"config file path: {paths.etc / 'config.yml'}")
-    print(f"host file path: {host_file}")
-    print(f"host name: {host_name}")
-    print(f"releases root: {paths.releases_root}")
-    print(f"current root: {paths.current_root}")
-    print(f"active releases count: {len(releases)}")
-    for release in releases:
-        print(
-            f"release: {release.name} {release.version} {release.content_digest} "
-            f"{release.root}"
-        )
-    print(f"commands count: {len(commands)}")
-    print(f"jobs count: {sum(len(release.manifest.jobs) for release in releases)}")
-    print(f"services count: {sum(len(release.manifest.services) for release in releases)}")
-    print(f"artifact runner: {paths.artifact_runner}")
-    print(f"runtime python: {paths.runtime_python}")
-    print(f"shims path: {paths.shims}")
+    config = _config(paths)
+    commands = command_index(config)
+    host_id = "unavailable"
+    try:
+        host_id = get_host(paths.host_file).id
+    except (FileNotFoundError, TypeError, ValueError):
+        pass
+    print(f"config file: {paths.config_file}")
+    print(f"host file: {paths.host_file}")
+    print(f"host id: {host_id}")
+    print(f"programs: {len(config.programs)}")
+    print(f"commands: {len(commands)}")
+    print(f"runtimes: {paths.runtimes}")
+    print(f"venvs: {paths.venvs}")
+    print(f"shims: {paths.shims}")
+    print(f"run log: {paths.run_log}")
     return 0
 
 
-def cmd_runtime_status(_: argparse.Namespace) -> int:
-    """Print artifact runtime status."""
+def cmd_check(_: argparse.Namespace) -> int:
+    """Check configured programs, runtimes, venvs, and host identity."""
     paths = get_paths()
-    config_path = paths.etc / "config.yml"
-    configured = load_config(config_path).runtime.python_version if config_path.exists() else None
-    status = runtime_status(paths.runtime, configured)
-    print("python:")
-    print(f"  provider: {status.provider}")
-    if status.configured_version is not None:
-        print(f"  configured version: {status.configured_version}")
-    print(f"  provider available: {_bool_text(status.provider_available)}")
-    if status.pyenv_python is not None:
-        print(f"  pyenv python: {status.pyenv_python}")
-    elif status.pyenv_python_error is not None:
-        print(f"  pyenv python error: {status.pyenv_python_error}")
-    print(f"  artifacts venv: {status.artifacts_venv}")
-    print(f"  runtime python: {status.runtime_python}")
-    print(f"  runtime python exists: {_bool_text(status.runtime_python_exists)}")
-    return 0
-
-
-def cmd_runtime_install(_: argparse.Namespace) -> int:
-    """Install or replace the artifact runtime."""
-    paths = get_paths()
-    ensure_dirs(paths)
-    config = load_config(paths.etc / "config.yml")
-    with _host_artifact_transaction(paths):
-        roots = [
-            release.root
-            for release in active_releases(paths.current_root, paths.releases_root)
-        ]
-        runtime_python = install_runtime(
-            paths.runtime,
-            config.runtime.python_version,
-            roots or None,
-            tmp_dir=paths.tmp,
-            python_build_cache_path=paths.cache / "python-build",
-            validate_candidate=(
-                lambda candidate: validate_release_targets(
-                    roots,
-                    runtime_python=candidate.python,
-                )
-            )
-            if roots
-            else None,
-        )
-    print(f"installed runtime python: {runtime_python}")
-    print(f"configured python version: {config.runtime.python_version}")
-    return 0
-
-
-def cmd_release_install(args: argparse.Namespace) -> int:
-    """Install one release using its manifest name."""
-    paths = get_paths()
-    ensure_dirs(paths)
-    config = load_config(paths.etc / "config.yml")
-    source = resolve_source(args.source, cache_dir=paths.cache)
-    with _host_artifact_transaction(paths):
-        with capture_host_artifact_state(paths) as artifact_state:
-            refresh_started = False
+    config = _config(paths)
+    failures: list[str] = []
+    try:
+        commands = command_index(config)
+    except (OSError, ValueError) as exc:
+        commands = {}
+        failures.append(str(exc))
+    try:
+        get_host(paths.host_file)
+    except (FileNotFoundError, TypeError, ValueError) as exc:
+        failures.append(str(exc))
+    for status in runtime_status(paths, config):
+        if not status.available:
+            failures.append(f"Python runtime unavailable: {status.version}")
+    for program in config.programs.values():
+        if program.runtime.type == "python":
             try:
-                with reversible_release_install(
-                    source,
-                    paths.releases_root,
-                    paths.current_root,
-                    runtime_root=paths.runtime,
-                    python_version=config.runtime.python_version,
-                    tmp_dir=paths.tmp,
-                    python_build_cache_path=paths.cache / "python-build",
-                ) as target:
-                    refresh_started = True
-                    names = _refresh_host_artifacts(paths)
-                release = validate_release(target, validate_targets=False)
-            except Exception:
-                if refresh_started:
-                    try:
-                        restore_host_artifact_state(paths, artifact_state)
-                    except Exception as rollback_error:
-                        raise RuntimeError(
-                            "release installation failed and host artifacts could not be restored"
-                        ) from rollback_error
-                raise
-    print(f"installed release: {release.manifest.name} {release.version}")
-    print(f"commands: {len(names)}")
+                venv_python(paths, program)
+            except (FileNotFoundError, PermissionError, ValueError) as exc:
+                failures.append(str(exc))
+    if failures:
+        for failure in failures:
+            print(f"atlas check: {failure}", file=sys.stderr)
+        return 2
+    print(f"ok: {len(config.programs)} programs, {len(commands)} commands")
     return 0
 
 
-def cmd_release_update(args: argparse.Namespace) -> int:
-    """Update configured releases transactionally at activation level."""
+def cmd_context(_: argparse.Namespace) -> int:
+    """Print the host and Atlas path context as JSON."""
     paths = get_paths()
-    ensure_dirs(paths)
-    config = load_config(paths.etc / "config.yml")
-    names = [args.release_name] if args.release_name else [
-        name for name, release in config.releases.items() if release.enabled
-    ]
-    names.sort()
-    if not names:
-        return 0
-    with ExitStack() as temporary_sources:
-        sources: list[Path] = []
-        for name in names:
-            configured = config.releases.get(name)
-            if configured is None:
-                raise ValueError(f"release is not configured: {name}")
-            source = resolve_source(configured.source, cache_dir=paths.cache)
-            release = validate_release(source, validate_targets=False)
-            if release.manifest.name != name:
-                raise ValueError(
-                    f"configured release name mismatch: {name} != {release.manifest.name}"
-                )
-            temporary_root = Path(
-                temporary_sources.enter_context(
-                    TemporaryDirectory(prefix="release-source.", dir=paths.tmp)
-                )
-            )
-            temporary_source = temporary_root / name
-            shutil.copytree(release.root, temporary_source)
-            copied_release = validate_release(temporary_source, validate_targets=False)
-            if (
-                copied_release.manifest.name != release.manifest.name
-                or copied_release.version != release.version
-                or copied_release.content_digest != release.content_digest
-            ):
-                raise ValueError(f"configured release changed during copy: {name}")
-            sources.append(temporary_source)
-        with _host_artifact_transaction(paths):
-            with capture_host_artifact_state(paths) as artifact_state:  # pragma: no branch - contextmanager entry arc
-                refresh_started = False
-                try:
-                    with reversible_release_transaction(  # pragma: no branch - contextmanager entry arc
-                        sources,
-                        paths.releases_root,
-                        paths.current_root,
-                        runtime_root=paths.runtime,
-                        python_version=config.runtime.python_version,
-                        tmp_dir=paths.tmp,
-                        python_build_cache_path=paths.cache / "python-build",
-                    ):
-                        refresh_started = True
-                        _refresh_host_artifacts(paths)
-                except Exception:
-                    if refresh_started:
-                        try:
-                            restore_host_artifact_state(paths, artifact_state)
-                        except Exception as rollback_error:
-                            raise RuntimeError(
-                                "release update failed and host artifacts could not be restored"
-                            ) from rollback_error
-                    raise
+    from .context import base_context
+
+    print(json.dumps(base_context(paths), ensure_ascii=False, sort_keys=True))
     return 0
 
 
-def cmd_release_list(args: argparse.Namespace) -> int:
-    """List active releases."""
-    paths = get_paths()
-    for release in active_releases(paths.current_root, paths.releases_root):
+def cmd_program_list(args: argparse.Namespace) -> int:
+    """List registered local programs."""
+    config = _config(get_paths())
+    for program in config.programs.values():
         if args.verbose:
-            print(
-                f"{release.name}\t{release.version}\t{release.root}\t"
-                f"digest={release.content_digest}\t"
-                f"commands={len(release.manifest.commands)}\t"
-                f"jobs={len(release.manifest.jobs)}\t"
-                f"services={len(release.manifest.services)}"
-            )
+            runtime = program.runtime.type
+            if program.runtime.venv is not None:
+                runtime += f" venv={program.runtime.venv}"
+            print(f"{program.name}\t{program.root}\t{runtime}")
         else:
-            print(release.name)
+            print(program.name)
     return 0
 
 
 def cmd_command_list(args: argparse.Namespace) -> int:
-    """List public commands."""
-    paths = get_paths()
-    for name, command in command_index(paths.current_root, paths.releases_root).items():
+    """List discovered public commands."""
+    commands = command_index(_config(get_paths()))
+    for name, command in commands.items():
         if args.verbose:
-            print(
-                f"{name}\t{command.release.name}\t{command.release.version}\t"
-                f"digest={command.release.content_digest}\t{command.artifact.target.spec}"
-            )
+            print(f"{name}\t{command.program.name}\t{command.type}\t{command.path}")
         else:
             print(name)
     return 0
 
 
-def cmd_run(args: argparse.Namespace) -> int:
-    """Run one public command through the shared executor."""
-    p = get_paths()
-    ensure_dirs(p)
-    return execute(
-        p,
-        lambda: resolve_command_for_execution(p, args.command_name),
-        args.args,
-    )
-
-
 def cmd_which(args: argparse.Namespace) -> int:
-    """Print the target for one command."""
-    p = get_paths()
-    print(
-        resolve_command(p.current_root, p.releases_root, args.command_name)
-        .artifact.target.spec
-    )
+    """Print the local executable selected for one command."""
+    command = resolve_command(_config(get_paths()), args.command_name)
+    print(command.path)
     return 0
 
 
-def cmd_job_list(args: argparse.Namespace) -> int:
-    """List non-public jobs."""
-    for job in list_jobs(get_paths(), args.release):
-        print(f"{job.release.name}\t{job.artifact.name}")
-    return 0
-
-
-def _job_data(release_name: str, job_name: str) -> dict[str, object]:
+def cmd_shim_generate(_: argparse.Namespace) -> int:
+    """Generate shims for all discovered commands."""
     paths = get_paths()
-    job = resolve_job(paths.current_root, paths.releases_root, release_name, job_name)
-    return {
-        "release": job.release.name,
-        "version": job.release.version,
-        "job": job.artifact.name,
-        "target": job.artifact.target.spec,
-        "default_timeout_seconds": job.artifact.default_timeout_seconds,
-    }
-
-
-def cmd_job_inspect(args: argparse.Namespace) -> int:
-    """Print one job definition."""
-    print(yaml.safe_dump(_job_data(args.release, args.job), sort_keys=False), end="")
+    ensure_dirs(paths)
+    names = generate_shims(paths, _config(paths))
+    for name in names:
+        print(paths.shims / name)
     return 0
 
 
-def cmd_job_run(args: argparse.Namespace) -> int:
-    """Run one direct job."""
-    artifact_args = args.args[1:] if args.args[:1] == ["--"] else args.args
-    return run_job(get_paths(), args.release, args.job, artifact_args)
-
-
-def cmd_job_instance_list(_: argparse.Namespace) -> int:
-    """List configured job instances whose jobs exist."""
+def cmd_run(args: argparse.Namespace) -> int:
+    """Run one command through the shared executor."""
     paths = get_paths()
-    for instance in list_job_instances(paths.jobs_dir):
-        resolve_job(
-            paths.current_root,
-            paths.releases_root,
-            instance.release,
-            instance.job,
-        )
-        print(instance.name)
+    ensure_dirs(paths)
+    command = resolve_command(_config(paths), args.command_name)
+    command_args = args.args[1:] if args.args[:1] == ["--"] else args.args
+    return execute(paths, command, command_args, timeout_seconds=args.timeout)
+
+
+def cmd_runtime_status(_: argparse.Namespace) -> int:
+    """Print selected Python runtime status."""
+    paths = get_paths()
+    config = _config(paths)
+    for status in runtime_status(paths, config):
+        executable = "unavailable" if status.executable is None else str(status.executable)
+        print(f"{status.version}\t{str(status.available).lower()}\t{status.atlas_path}\t{executable}")
     return 0
 
 
-def _instance_data(name: str) -> dict[str, object]:
+def cmd_runtime_install(_: argparse.Namespace) -> int:
+    """Register configured Python interpreters below the Atlas runtime path."""
     paths = get_paths()
-    instance = load_job_instance(paths.jobs_dir, name)
-    resolve_job(
-        paths.current_root,
-        paths.releases_root,
-        instance.release,
-        instance.job,
-    )
-    return {
-        "schema": "atlas.job-instance/v1",
-        "release": instance.release,
-        "job": instance.job,
-        "user": instance.user,
-        "working_directory": str(instance.working_directory),
-        "arguments": list(instance.arguments),
-        "environment_files": [str(path) for path in instance.environment_files],
-        "timeout_seconds": instance.timeout_seconds,
-        "lock": instance.lock,
-    }
-
-
-def cmd_job_instance_inspect(args: argparse.Namespace) -> int:
-    """Print one job instance."""
-    print(yaml.safe_dump(_instance_data(args.instance), sort_keys=False), end="")
+    ensure_dirs(paths)
+    for path in install_configured_runtimes(paths, _config(paths)):
+        print(path)
     return 0
 
 
-def cmd_job_instance_run(args: argparse.Namespace) -> int:
-    """Run one job instance."""
-    return run_job_instance(get_paths(), args.instance)
-
-
-def cmd_systemd_list(args: argparse.Namespace) -> int:
-    """List Atlas-owned systemd services."""
+def cmd_venv_list(_: argparse.Namespace) -> int:
+    """List configured Python venvs and their current state."""
     paths = get_paths()
-    releases = release_index(paths.current_root, paths.releases_root)
-    if args.release is not None and args.release not in releases:
-        raise ValueError(f"unknown release: {args.release}")
-    for release in releases.values():
-        if args.release is not None and release.name != args.release:
+    config = _config(paths)
+    for program in config.programs.values():
+        if program.runtime.type != "python":
             continue
-        for service in release.manifest.services.values():
-            print(f"{release.name}\t{service.name}\tsystemd")
+        assert program.runtime.venv is not None
+        path = paths.venv(program.runtime.venv)
+        state = "ready" if path.is_dir() else "missing"
+        print(f"{program.name}\t{program.runtime.venv}\t{state}")
     return 0
 
 
-def cmd_systemd_diff(args: argparse.Namespace) -> int:
-    """Print systemd unit differences."""
+def cmd_venv_create(args: argparse.Namespace) -> int:
+    """Create the dedicated venv for one configured Python program."""
     paths = get_paths()
-    service = resolve_service(
-        paths.current_root,
-        paths.releases_root,
-        args.release,
-        args.service,
-    )
-    print(SystemdAdapter(jobs_dir=paths.jobs_dir).diff(service), end="")
-    return 0
-
-
-def cmd_systemd_install(args: argparse.Namespace) -> int:
-    """Install Atlas-owned systemd artifacts."""
-    paths = get_paths()
-    service = resolve_service(
-        paths.current_root,
-        paths.releases_root,
-        args.release,
-        args.service,
-    )
-    for path in SystemdAdapter(jobs_dir=paths.jobs_dir).install(service):
-        print(path)
-    return 0
-
-
-def cmd_systemd_remove(args: argparse.Namespace) -> int:
-    """Remove Atlas-owned systemd artifacts."""
-    paths = get_paths()
-    service = resolve_service(
-        paths.current_root,
-        paths.releases_root,
-        args.release,
-        args.service,
-    )
-    for path in SystemdAdapter(jobs_dir=paths.jobs_dir).remove(service):
-        print(path)
+    ensure_dirs(paths)
+    config = _config(paths)
+    path = create_venv(paths, config, _program(config, args.program))
+    print(path)
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the Atlas argument parser."""
+    """Build the minimal Atlas CLI."""
     parser = argparse.ArgumentParser(prog="atlas")
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub = parser.add_subparsers(dest="command", required=True)
 
-    p_status = sub.add_parser("status")
-    p_status.set_defaults(func=cmd_status)
+    for name, function in (("status", cmd_status), ("check", cmd_check), ("context", cmd_context)):
+        command = sub.add_parser(name)
+        command.set_defaults(func=function)
 
-    p_runtime = sub.add_parser("runtime")
-    runtime_sub = p_runtime.add_subparsers(dest="runtime_cmd", required=True)
-    p_runtime_status = runtime_sub.add_parser("status")
-    p_runtime_status.set_defaults(func=cmd_runtime_status)
-    p_runtime_install = runtime_sub.add_parser("install")
-    p_runtime_install.set_defaults(func=cmd_runtime_install)
+    program = sub.add_parser("program")
+    program_sub = program.add_subparsers(dest="program_command", required=True)
+    program_list = program_sub.add_parser("list")
+    program_list.add_argument("--verbose", action="store_true")
+    program_list.set_defaults(func=cmd_program_list)
 
-    p_release = sub.add_parser("release")
-    release_sub = p_release.add_subparsers(dest="release_cmd", required=True)
-    p_release_install = release_sub.add_parser("install")
-    p_release_install.add_argument("source")
-    p_release_install.set_defaults(func=cmd_release_install)
-    p_release_update = release_sub.add_parser("update")
-    p_release_update.add_argument("release_name", nargs="?")
-    p_release_update.set_defaults(func=cmd_release_update)
-    p_release_list = release_sub.add_parser("list")
-    p_release_list.add_argument("--verbose", action="store_true")
-    p_release_list.set_defaults(func=cmd_release_list)
-    p_command = sub.add_parser("command")
-    command_sub = p_command.add_subparsers(dest="command_cmd", required=True)
-    p_command_list = command_sub.add_parser("list")
-    p_command_list.add_argument("--verbose", action="store_true")
-    p_command_list.set_defaults(func=cmd_command_list)
+    command = sub.add_parser("command")
+    command_sub = command.add_subparsers(dest="command_command", required=True)
+    command_list = command_sub.add_parser("list")
+    command_list.add_argument("--verbose", action="store_true")
+    command_list.set_defaults(func=cmd_command_list)
 
-    p_run = sub.add_parser("run")
-    p_run.add_argument("command_name")
-    p_run.add_argument("args", nargs=argparse.REMAINDER)
-    p_run.set_defaults(func=cmd_run)
+    which = sub.add_parser("which")
+    which.add_argument("command_name")
+    which.set_defaults(func=cmd_which)
 
-    p_which = sub.add_parser("which")
-    p_which.add_argument("command_name")
-    p_which.set_defaults(func=cmd_which)
+    shim = sub.add_parser("shim")
+    shim_sub = shim.add_subparsers(dest="shim_command", required=True)
+    shim_generate = shim_sub.add_parser("generate")
+    shim_generate.set_defaults(func=cmd_shim_generate)
 
-    p_job = sub.add_parser("job")
-    job_sub = p_job.add_subparsers(dest="job_cmd", required=True)
-    p_job_list = job_sub.add_parser("list")
-    p_job_list.add_argument("release", nargs="?")
-    p_job_list.set_defaults(func=cmd_job_list)
-    p_job_inspect = job_sub.add_parser("inspect")
-    p_job_inspect.add_argument("release")
-    p_job_inspect.add_argument("job")
-    p_job_inspect.set_defaults(func=cmd_job_inspect)
-    p_job_run = job_sub.add_parser("run")
-    p_job_run.add_argument("release")
-    p_job_run.add_argument("job")
-    p_job_run.add_argument("args", nargs=argparse.REMAINDER)
-    p_job_run.set_defaults(func=cmd_job_run)
-    p_job_instance = job_sub.add_parser("instance")
-    instance_sub = p_job_instance.add_subparsers(dest="instance_cmd", required=True)
-    p_instance_list = instance_sub.add_parser("list")
-    p_instance_list.set_defaults(func=cmd_job_instance_list)
-    p_instance_inspect = instance_sub.add_parser("inspect")
-    p_instance_inspect.add_argument("instance")
-    p_instance_inspect.set_defaults(func=cmd_job_instance_inspect)
-    p_instance_run = instance_sub.add_parser("run")
-    p_instance_run.add_argument("instance")
-    p_instance_run.set_defaults(func=cmd_job_instance_run)
+    run = sub.add_parser("run")
+    run.add_argument("--timeout", type=int)
+    run.add_argument("command_name")
+    run.add_argument("args", nargs=argparse.REMAINDER)
+    run.set_defaults(func=cmd_run)
 
-    p_systemd = sub.add_parser("systemd")
-    systemd_sub = p_systemd.add_subparsers(dest="systemd_cmd", required=True)
-    p_systemd_list = systemd_sub.add_parser("list")
-    p_systemd_list.add_argument("release", nargs="?")
-    p_systemd_list.set_defaults(func=cmd_systemd_list)
-    for action, function in (
-        ("diff", cmd_systemd_diff),
-        ("install", cmd_systemd_install),
-        ("remove", cmd_systemd_remove),
-    ):
-        action_parser = systemd_sub.add_parser(action)
-        action_parser.add_argument("release")
-        action_parser.add_argument("service")
-        action_parser.set_defaults(func=function)
+    runtime = sub.add_parser("runtime")
+    runtime_sub = runtime.add_subparsers(dest="runtime_command", required=True)
+    runtime_status = runtime_sub.add_parser("status")
+    runtime_status.set_defaults(func=cmd_runtime_status)
+    runtime_install = runtime_sub.add_parser("install")
+    runtime_install.set_defaults(func=cmd_runtime_install)
 
+    venv = sub.add_parser("venv")
+    venv_sub = venv.add_subparsers(dest="venv_command", required=True)
+    venv_list = venv_sub.add_parser("list")
+    venv_list.set_defaults(func=cmd_venv_list)
+    venv_create = venv_sub.add_parser("create")
+    venv_create.add_argument("program")
+    venv_create.set_defaults(func=cmd_venv_create)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the Atlas CLI."""
+    """Run Atlas and convert domain errors into a concise diagnostic."""
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except AtlasError as exc:
-        print(f"atlas: {exc}", file=sys.stderr)
-        return exc.exit_code
-    except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+    except (FileNotFoundError, OSError, RuntimeError, TypeError, ValueError) as exc:
         print(f"atlas: {exc}", file=sys.stderr)
         return 2
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())

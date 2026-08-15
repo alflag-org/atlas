@@ -1,11 +1,22 @@
 Python API
 ==========
 
-Release API
------------
+Programs written in Python can read the current execution context without importing Atlas's host
+implementation:
 
-Release code can import ``atlas_core`` for the host profile, resolved Atlas paths, artifact
-identity, and run correlation identifiers.
+.. code-block:: python
+
+   from atlas_core import get_context
+
+   context = get_context()
+   print(context.host.id)
+   print(context.program.root)
+   print(context.command.name)
+   print(context.execution.operation_id)
+
+The same context is available to non-Python programs as the JSON document named by
+``ATLAS_CONTEXT_FILE``. The public package contains only host identity, standard paths, and
+execution context models.
 
 .. automodule:: atlas_core
    :members:
@@ -22,13 +33,3 @@ identity, and run correlation identifiers.
 .. automodule:: atlas_core.paths
    :members:
    :undoc-members:
-
-.. code-block:: python
-
-   from atlas_core import get_context
-
-   context = get_context()
-   print(context.host.name)
-   print(context.artifact.name)
-   print(context.artifact.artifact_type)
-   print(context.artifact.operation_id)

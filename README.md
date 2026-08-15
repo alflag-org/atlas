@@ -1,135 +1,100 @@
 # Atlas
 
-Atlas installs and runs versioned infrastructure operations on a host. A release declares its
-commands, jobs, and systemd files in `release.yml`. Atlas validates the release, builds a shared
-Python runtime, creates command shims, and records every execution.
+Atlas separates infrastructure automation from host operating-system changes by providing a
+stable execution environment, host identity, invocation path, and run record.
 
-Infrastructure repositories stay separate. Atlas runs an artifact in the caller's working
-directory and records its Git state, but it does not change desired state, inventory, playbooks,
-provider configuration, repository state, or secrets.
+Atlas manages:
 
-## Try Atlas
+- selected Python interpreters and one virtual environment per Python program;
+- registration of locally present programs;
+- discovery of public commands and generation of shims;
+- `/etc/atlas/host.yml` and the language-neutral execution context;
+- one shared executor for `atlas run` and shims; and
+- a small JSONL record of completed executions.
 
-The repository includes a containerized example. It installs the sample and first-party release,
-builds their shared runtime, and checks the public commands without touching host configuration:
+Atlas does not fetch or version automation programs. It does not contain provider, inventory,
+workflow, scheduler, or infrastructure lifecycle code. Put those responsibilities in the
+programs registered with Atlas and invoke them through Atlas when a common execution contract is
+needed.
 
-```bash
-docker compose build
-docker compose run --rm atlas
-```
+## Configuration
 
-## Install Atlas
-
-Atlas supports Python 3.11 through 3.14 on Linux. This example keeps an operator-managed source
-checkout at `/srv/atlas/source`:
-
-```bash
-git clone https://github.com/alflag-org/atlas.git /srv/atlas/source
-python -m pip install /srv/atlas/source
-```
-
-Another durable checkout path is valid. Use that same path for the release sources below. Atlas
-reads the checkout but does not pull, reset, or otherwise modify it.
-
-`atlas release install` and `atlas runtime install` require `pyenv` on `PATH` and the operating-system
-packages needed to build the configured Python version. `atlas release update` requires them when at
-least one release is selected for update. The account running Atlas must be able to write its configured
-home, configuration, and state directories. The defaults are `/opt/atlas`, `/etc/atlas`, and
-`/var/lib/atlas`. Keep `ATLAS_HOME=/opt/atlas` when
-using the bundled systemd artifacts because they use `/opt/atlas/bin/atlas` as the stable launcher.
-
-Each command or job runs in a separate child process with an exact argument vector and no shell.
-Atlas preserves child streams, exit status, timeout behavior, signal forwarding, execution logs, and
-parent/child run correlation. A timeout returns 124; a non-blocking job lock conflict returns 75.
-
-Configure the release sources in `/etc/atlas/config.yml`:
+`/etc/atlas/config.yml` registers programs that already exist on the host:
 
 ```yaml
 runtime:
   python:
-    version: "3.14.6"
+    version: "3.13"
 
-releases:
-  operations:
-    source: "/srv/atlas/source/operations"
-    enabled: true
+programs:
+  provisioning:
+    root: /srv/provisioning
+    runtime:
+      type: python
+      python: "3.13"
+      venv: provisioning
+  pve-tools:
+    root: /opt/pve-tools
+    runtime:
+      type: native
 ```
 
-Give the host a name in `/etc/atlas/host.yml`:
+Python commands are discovered below `commands/**/*.py`. Native commands are executable files
+below `commands/` or `bin/`. Nested paths become hyphenated command names, so
+`commands/host/diff.py` becomes `host-diff`. Duplicate names fail closed.
+
+The host identity is separate from program configuration:
 
 ```yaml
-name: control-01
-site: site-a
-environment: production
+version: 1
+host:
+  id: control01
+  role: control
+  site: kanagawa01
 ```
 
-`control-01`, `site-a`, and `/srv/atlas/source` are examples. Replace them with values for your
-environment. A release source is separate from the installed copy: Atlas copies validated releases
-to a content-addressed, never-replaced `/opt/atlas/releases/<release>/<version>-<content-digest>`
-snapshot and atomically switches `/opt/atlas/current/<release>` to that snapshot. Atlas rechecks the
-snapshot provenance before the child imports release code and forces `PYTHONDONTWRITEBYTECODE=1`.
-Installation uses that child in validate-only mode to import each manifest target and inspect its
-actual callable without invoking it; first-party module top-level code therefore runs during
-installation and may have import-time side effects.
-Snapshot modes are read-only for the normal runtime path, but a same-UID account can change them;
-this is a selected-release correctness boundary, not a hostile same-UID sandbox. Do not use either
-Atlas-managed directory as a release source.
+`host.yml` contains only the identity of the host running Atlas. It is not an inventory or a
+secret store.
 
-On a default update with no enabled release, Atlas parses the configuration and ensures its state
-directories, then exits successfully without resolving a source, provisioning a runtime, starting a
-release transaction, acquiring a host-artifact or per-release lock, or publishing or refreshing host
-artifacts.
-
-Install the release. The install builds and publishes the runtime needed by the complete active
-release set:
+## Execution
 
 ```bash
-atlas release install /srv/atlas/source/operations
-atlas status
+atlas runtime install
+atlas venv create provisioning
+atlas command list
+atlas shim generate
+export PATH="/opt/atlas/shims:$PATH"
+atlas run host-diff web01
+host-diff web01
 ```
 
-Release installation and update do not require an existing shared runtime. Atlas selects the configured
-`pyenv` Python, builds a clean candidate venv without system-site packages, copies the Atlas core
-support package into it, installs Atlas's declared support requirements and the requirements of every
-intended active release, and runs `pip check`. Candidate pip calls use an isolated environment,
-explicit PyPI input, and no ambient pip configuration or `PIP_*` settings. It validates the exact staged
-snapshots with that candidate before publishing the runtime generation and switching release links.
-Host artifacts are published under the same transaction; a failed dependency install, callable
-validation, or artifact publication restores the previous runtime, release links, mutable artifact
-selection links, and stable launcher bytes. Only transaction-created artifact candidates are removed,
-and only when their lease state is safe; pre-existing generations and lease files are never part of
-rollback. The parent Atlas process only bootstraps the configured interpreter and never imports release
-code. `atlas runtime install` can be used to rebuild the runtime for the currently active
-snapshots; it validates every command and job with the candidate Python before switching the runtime
-link and does not change release links.
+Both invocations resolve the current registered program and enter the same executor. A Python
+command runs with its program venv; a native command runs directly. The child receives
+`ATLAS_CONTEXT_FILE` plus the `ATLAS_*` identifiers. The JSON context contains the host, Atlas
+paths, program, command, working directory, and run identifiers, so non-Python programs can read
+the same information without importing `atlas_core`.
 
-Runtime and host-artifact generations are immutable after publication. The active links select one
-concrete generation, and each release child captures both selections before it starts and owns the
-leases until it exits. Parent lease descriptors are handed across exec and retained until the child
-acknowledges its own leases. Prior generations are retained while a child holds a lease, so a lazy
-import cannot lose its dependencies during a release replacement or a hard-killed waiting Atlas parent.
-Nested private jobs inherit the parent release snapshot and generation selections. After the child
-exits Atlas performs lease-aware best-effort garbage collection; a failed cleanup leaves that
-generation for a later pass and does not change the active state.
+Python programs may use the small public API:
 
-The first-party release exposes two commands:
+```python
+from atlas_core import get_context
 
-| Command | Purpose |
-| --- | --- |
-| `hostctl` | Plan and run a managed-host lifecycle |
-| `imagectl` | Plan and run a machine-image lifecycle |
+context = get_context()
+print(context.host.id, context.execution.run_id)
+```
+
+Execution facts are appended to `/var/lib/atlas/logs/runs.jsonl`. Atlas records the timestamp,
+host, user, program, command, identifiers, duration, and exit status; command output remains the
+responsibility of the invoking terminal, service manager, or CI system.
+
+## Development
+
+The repository uses mise:
 
 ```bash
-atlas command list --verbose
-atlas job list operations
-atlas job inspect operations config-diff
+mise run setup
+mise run check
+make clean-docs html SPHINXOPTS=-W
 ```
 
-See [Atlas reference](docs/reference.rst) for host configuration, release manifests, jobs,
-systemd files, execution records, and recovery. See
-[First-party controllers](docs/controllers.rst) for controller inputs and safety rules.
-
-## Contribute
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the development environment, required checks, and pull
-request expectations.
+The examples under `examples/` are local program trees, not Atlas-managed distributions.

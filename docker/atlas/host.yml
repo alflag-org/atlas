@@ -1,9 +1,5 @@
-name: docker-local
-site: dev
-zone: local
-role: test
-environment: dev
-runtime_kind: container
-tags:
-  - docker
-  - local
+version: 1
+host:
+  id: docker-local
+  role: test
+  site: local

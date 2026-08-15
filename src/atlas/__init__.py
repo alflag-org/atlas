@@ -1,7 +1,3 @@
-"""Host-side Atlas implementation package.
-
-Release artifacts should use :mod:`atlas_core` instead of importing from this
-package.
-"""
+"""Atlas host runtime for executing locally installed automation programs."""
 
 __all__ = []

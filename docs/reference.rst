@@ -27,8 +27,8 @@ The default layout is:
    └── runtime-state/
 
 The paths can be redirected for tests with ``ATLAS_HOME``, ``ATLAS_ETC_DIR``,
-``ATLAS_VAR_DIR``, ``ATLAS_RUNTIMES_DIR``, ``ATLAS_VENVS_DIR``, ``ATLAS_SHIMS_DIR``, and
-``ATLAS_HOST_FILE``.
+``ATLAS_VAR_DIR``, ``ATLAS_RUNTIMES_DIR``, ``ATLAS_VENVS_DIR``, ``ATLAS_SHIMS_DIR``,
+``ATLAS_LAUNCHERS_DIR``, ``ATLAS_CONFIG_FILE``, and ``ATLAS_HOST_FILE``.
 
 Register programs
 -----------------

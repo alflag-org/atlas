@@ -577,6 +577,9 @@ class WorkflowEngine:
                     continue
                 if observed["state"] in TERMINAL:
                     with self.store.db:
+                        current = self.operation(operation_id)
+                        if current["state"] != "unknown":
+                            return current
                         self.store.db.execute(
                             "UPDATE results SET state=?,exit_code=?,run_id=? WHERE operation_id=? AND step_id=? AND node_id=?",
                             (
@@ -588,17 +591,26 @@ class WorkflowEngine:
                                 result["node_id"],
                             ),
                         )
-        current = self.operation(operation_id)
-        if current["results"] and all(
-            r["state"] in TERMINAL for r in current["results"]
-        ):
-            # Reconciliation never launches omitted dependent steps.
-            with self.store.db:
+        with self.store.db:
+            current = self.operation(operation_id)
+            if current["state"] != "unknown":
+                return current
+            if current["results"] and all(
+                r["state"] in TERMINAL for r in current["results"]
+            ):
+                # Reconciliation never launches omitted dependent steps. Its response
+                # can arrive after another reconciliation released this reservation.
                 self.store.db.execute(
                     "UPDATE operations SET state='cancelled' WHERE operation_id=?",
                     (operation_id,),
                 )
-                self.store.set("lease", None)
+                lease = self.store.get("lease")
+                if (
+                    lease is not None
+                    and lease["operation_id"] == operation_id
+                    and lease["epoch"] == current["epoch"]
+                ):
+                    self.store.set("lease", None)
                 self.store.event("operation_reconciled", operation_id)
         return self.operation(operation_id)
 

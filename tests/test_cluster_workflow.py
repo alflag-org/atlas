@@ -538,3 +538,105 @@ def test_executor_without_completion_record_is_unknown_and_hung_shutdown_is_kill
             await local.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("late_state", ["succeeded", "unknown"])
+def test_overlapping_reconciliations_cannot_release_a_new_operation(
+    tmp_path, monkeypatch, late_state
+):
+    root = tmp_path / "program"
+    write_native_command(root, "sample")
+    configure_environment(
+        monkeypatch,
+        tmp_path,
+        f"programs:\n  sample:\n    root: {root}\n    runtime:\n      type: native\n",
+    )
+
+    async def scenario():
+        authority = node(tmp_path, "authority")
+        try:
+            await authority.initialize({"name": "lab"})
+            engine, store = authority.workflows, authority.store
+            planned = await engine.plan(workflow([authority.node_id]))
+            old = str(uuid4())
+            with store.db:
+                store.db.execute(
+                    "INSERT INTO operations VALUES (?,?,?,'unknown',1)",
+                    (old, "old", "{}"),
+                )
+                store.db.execute(
+                    "INSERT INTO results VALUES (?,?,?,'unknown',NULL,NULL)",
+                    (old, "step", authority.node_id),
+                )
+                store.set("epoch", 1)
+                store.set("lease", {"operation_id": old, "epoch": 1, "expires": 0})
+            both_started = asyncio.Event()
+            release = [asyncio.Event(), asyncio.Event()]
+            calls = 0
+
+            async def observe(*args):
+                nonlocal calls
+                index = calls
+                calls += 1
+                if calls == 2:
+                    both_started.set()
+                await release[index].wait()
+                return {
+                    "state": "succeeded" if index == 0 else late_state,
+                    "exit_code": 0,
+                    "run_id": "run",
+                }
+
+            async def hold_new_operation(*args):
+                await asyncio.Event().wait()
+
+            monkeypatch.setattr(engine, "peer", observe)
+            monkeypatch.setattr(engine, "coordinate", hold_new_operation)
+            first = asyncio.create_task(engine.reconcile(old))
+            second = asyncio.create_task(engine.reconcile(old))
+            await both_started.wait()
+            release[0].set()
+            assert (await first)["state"] == "cancelled"
+            newer = engine.apply(planned | {"confirm": planned["digest"]})
+            reservation = store.get("lease")
+            assert reservation["operation_id"] == newer["operation_id"]
+            assert reservation["epoch"] == 2
+            release[1].set()
+            assert (await second)["state"] == "cancelled"
+            assert store.get("lease") == reservation
+        finally:
+            await authority.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "reservation",
+    [None, {"operation_id": "other", "epoch": 1}, {"operation_id": "same", "epoch": 2}],
+)
+def test_reconcile_only_releases_its_own_fencing_epoch(tmp_path, reservation):
+    async def scenario():
+        local = node(tmp_path, "local")
+        try:
+            operation_id = str(uuid4())
+            lease = reservation
+            if lease is not None and lease["operation_id"] == "same":
+                lease = lease | {"operation_id": operation_id}
+            with local.store.db:
+                local.store.db.execute(
+                    "INSERT INTO operations VALUES (?,?,?,'unknown',1)",
+                    (operation_id, "digest", "{}"),
+                )
+                local.store.db.execute(
+                    "INSERT INTO results VALUES (?,?,?,'succeeded',0,'run')",
+                    (operation_id, "step", local.node_id),
+                )
+                local.store.set("lease", lease)
+            assert (await local.workflows.reconcile(operation_id))[
+                "state"
+            ] == "cancelled"
+            assert local.store.get("lease") == lease
+        finally:
+            await local.close()
+
+    asyncio.run(scenario())

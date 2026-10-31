@@ -16,7 +16,7 @@ from . import identity, network
 from .store import Store
 
 ADMIN_METHODS = {"invite", "remove"}
-READ_METHODS = {"members", "authorize", "operation.inspect", "execution.inspect"}
+READ_METHODS = {"members", "operation.inspect", "execution.inspect"}
 
 
 def identifier(value: str) -> str:
@@ -244,7 +244,7 @@ class Node:
             )
         ):
             raise IPCError("admission_not_found")
-        member = self.authorize(token["node_id"], "read")
+        member = self.authorize(token["node_id"], None)
         return {
             "certificate": member["certificate"],
             "name": self.store.get("name"),
@@ -324,7 +324,7 @@ class Node:
         return self.status()
 
     def authorize(
-        self, node_id: str, permission: str, certificate: str | None = None
+        self, node_id: str, permission: str | None, certificate: str | None = None
     ) -> dict:
         member = self.store.db.execute(
             "SELECT * FROM members WHERE node_id=?", (node_id,)
@@ -332,7 +332,10 @@ class Node:
         if (
             member is None
             or member["state"] != "active"
-            or permission not in json.loads(member["permissions"])
+            or (
+                permission is not None
+                and permission not in json.loads(member["permissions"])
+            )
             or (
                 certificate is not None
                 and not hmac.compare_digest(member["certificate"], certificate)
@@ -388,8 +391,12 @@ class Node:
         if peer is None:
             raise IPCError("forbidden")
         node_id, certificate = peer
+        # Membership validation and voluntary leave require an active identity,
+        # not the public membership-read capability.
         permission = (
-            "admin"
+            None
+            if method in {"authorize", "leave"}
+            else "admin"
             if method in ADMIN_METHODS
             else "read"
             if method in READ_METHODS

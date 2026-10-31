@@ -275,3 +275,73 @@ def test_join_internal_failure_keeps_pending_identity(tmp_path, monkeypatch):
             await asyncio.gather(authority.close(), worker.close())
 
     asyncio.run(scenario())
+
+
+def test_execution_permission_does_not_require_membership_read_access(
+    tmp_path, monkeypatch
+):
+    from atlas.cluster.workflow import command_identity
+
+    from .support import configure_environment, write_native_command
+
+    root = tmp_path / "program"
+    write_native_command(root, "sample")
+    configure_environment(
+        monkeypatch,
+        tmp_path,
+        f"programs:\n  app:\n    root: {root}\n    runtime:\n      type: native\n",
+    )
+
+    async def scenario():
+        authority, worker, reader = [
+            node(tmp_path, name) for name in ("authority", "worker", "reader")
+        ]
+        try:
+            await authority.initialize({"name": "lab"})
+            await worker.join(
+                {"invite": authority.invitation({"permissions": ["execute"]})}
+            )
+            await reader.join(
+                {"invite": authority.invitation({"permissions": ["read"]})}
+            )
+            inspected = await authority.workflows.peer(
+                worker.node_id, "command.inspect", {"command": "sample"}
+            )
+            assert inspected == command_identity("sample")
+            planned = await worker.authority_call(
+                "plan",
+                {
+                    "workflow": {
+                        "schema": "atlas.workflow/v1",
+                        "name": "check",
+                        "steps": [
+                            {
+                                "id": "check",
+                                "targets": {"nodes": [worker.node_id]},
+                                "command": "sample",
+                                "mutates": False,
+                            },
+                        ],
+                    }
+                },
+            )
+            operation = await worker.authority_call(
+                "apply", planned | {"confirm": planned["digest"]}
+            )
+            async with asyncio.timeout(5):
+                while authority.workflows.operation(operation["operation_id"])[
+                    "state"
+                ] in {"prepared", "running"}:
+                    await asyncio.sleep(0.01)
+            assert (
+                authority.workflows.operation(operation["operation_id"])["state"]
+                == "succeeded"
+            )
+            with pytest.raises(IPCError, match="forbidden"):
+                await worker.authority_call("members", {})
+            assert (await reader.local("leave", {}, None))["removed"] == reader.node_id
+            assert (await worker.local("leave", {}, None))["removed"] == worker.node_id
+        finally:
+            await asyncio.gather(authority.close(), worker.close(), reader.close())
+
+    asyncio.run(scenario())

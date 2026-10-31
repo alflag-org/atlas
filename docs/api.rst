@@ -54,7 +54,7 @@ process. It needs the Atlas Python distribution, but no Atlas CLI invocation,
 execution context, host configuration, service manager, or Cluster dependency.
 Call ``run`` from the executable's main thread, outside an existing event loop.
 
-.. literalinclude:: ../examples/daemon/hoged.py
+.. literalinclude:: ../examples/daemon/sampled.py
    :language: python
    :start-at: from atlas_core.daemon
 
@@ -62,7 +62,7 @@ After installing Atlas in the application's interpreter, run the example from a
 repository checkout::
 
     cd examples/daemon
-    python -m hoged
+    python -m sampled
 
 Interrupt with Ctrl-C, or send SIGTERM to the foreground process. Initialization
 must finish before ``ctx.ready()``. Use ``asyncio.TaskGroup`` inside ``main`` for

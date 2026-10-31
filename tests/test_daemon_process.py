@@ -24,7 +24,7 @@ def daemon_process(tmp_path, *, source=None):
             environment.pop(key)
     environment["XDG_STATE_HOME"] = str(tmp_path / "state")
     environment["PYTHONPATH"] = str(ROOT / "src")
-    argv = [sys.executable, "-m", "hoged"] if source is None else [sys.executable, "-c", source]
+    argv = [sys.executable, "-m", "sampled"] if source is None else [sys.executable, "-c", source]
     with subprocess.Popen(argv, cwd=ROOT / "examples/daemon", env=environment,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
         try:
@@ -40,7 +40,7 @@ def wait_ready(process):
         selector.register(process.stderr, selectors.EVENT_READ)
         deadline = time.monotonic() + 5
         output = b""
-        while b"hoged: INFO: ready\n" not in output:
+        while b"sampled: INFO: ready\n" not in output:
             assert selector.select(timeout=max(0, deadline - time.monotonic())), "daemon did not initialize"
             chunk = os.read(process.stderr.fileno(), 4096)
             assert chunk, "daemon exited before readiness"
@@ -49,7 +49,7 @@ def wait_ready(process):
 
 
 @pytest.mark.parametrize("number", [signal.SIGINT, signal.SIGTERM])
-def test_hoged_runs_independently_in_foreground(tmp_path, number):
+def test_sampled_runs_independently_in_foreground(tmp_path, number):
     with daemon_process(tmp_path) as process:
         wait_ready(process)
         assert process.poll() is None

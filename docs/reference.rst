@@ -300,7 +300,7 @@ Standalone daemon environment
 
 Applications using ``atlas_core.daemon`` run directly in the foreground. Install
 Atlas in that application's Python environment and invoke its executable or
-module. See :doc:`api` for the lifecycle API and standalone ``hoged`` example.
+module. See :doc:`api` for the lifecycle API and standalone ``sampled`` example.
 The SDK neither reads Atlas host configuration nor registers commands or starts
 services. Existing ``atlas run``, shims, run identifiers, and JSONL records retain
 their completed-command contract.

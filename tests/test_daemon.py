@@ -63,7 +63,7 @@ def test_signals_stop_and_cleanup_without_changing_handlers(number):
         await asyncio.sleep(0)
         events.append("cleanup")
 
-    assert run(main, name="hoged", shutdown_timeout=0.1) == 0
+    assert run(main, name="sampled", shutdown_timeout=0.1) == 0
     assert events == ["start", "ready", "stop", "cleanup"]
     assert original == {sig: signal.getsignal(sig) for sig in original}
 
@@ -228,14 +228,14 @@ def test_manager_and_xdg_directories(monkeypatch, tmp_path):
     monkeypatch.delenv("STATE_DIRECTORY")
     monkeypatch.delenv("RUNTIME_DIRECTORY")
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "xdg-runtime"))
-    with environment.directories("hoged") as (state, runtime):
-        assert state == tmp_path / "state/atlas/hoged"
-        assert runtime == tmp_path / "xdg-runtime/atlas/hoged"
+    with environment.directories("sampled") as (state, runtime):
+        assert state == tmp_path / "state/atlas/sampled"
+        assert runtime == tmp_path / "xdg-runtime/atlas/sampled"
     assert runtime.exists()
     monkeypatch.delenv("XDG_STATE_HOME")
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
-    with environment.directories("hoged") as (state, _runtime):
-        assert state == tmp_path / "home/.local/state/atlas/hoged"
+    with environment.directories("sampled") as (state, _runtime):
+        assert state == tmp_path / "home/.local/state/atlas/sampled"
 
 
 @pytest.mark.parametrize("key,value", [

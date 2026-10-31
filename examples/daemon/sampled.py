@@ -1,4 +1,4 @@
-"""Run with ``python -m hoged`` from this directory after installing Atlas."""
+"""Run with ``python -m sampled`` from this directory after installing Atlas."""
 
 from atlas_core.daemon import DaemonContext, run
 
@@ -14,4 +14,4 @@ async def main(ctx: DaemonContext) -> None:
 
 
 if __name__ == "__main__":
-    raise SystemExit(run(main, name="hoged"))
+    raise SystemExit(run(main, name="sampled"))

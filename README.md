@@ -104,7 +104,7 @@ with Atlas installed in their Python environment; no Atlas manager or systemd is
 ```bash
 # From a checkout, with Atlas installed in this interpreter:
 cd examples/daemon
-python -m hoged
+python -m sampled
 # Ctrl-C stops the example gracefully.
 ```
 

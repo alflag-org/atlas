@@ -1,1 +1,1 @@
-include examples/daemon/hoged.py
+include examples/daemon/sampled.py

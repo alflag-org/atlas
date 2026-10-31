@@ -1,125 +1,80 @@
-"""Internal bounded TLS RPC; certificates do not replace live authorization."""
+"""One bounded membership request over the operator's existing SSH setup."""
 
 from __future__ import annotations
 
 import asyncio
-import ssl
-from collections.abc import Awaitable, Callable
-from uuid import uuid4
+import json
+import math
+import os
+import re
+import signal
 
-from atlas_core.ipc import IPCError, Unavailable, read_message, write_message
+from atlas_core.cluster import ClusterError, ClusterUnavailable
 
-from .identity import endpoint, peer_identity
-
-VERSION = "atlas.cluster-peer/v1"
+from .store import MAX_BYTES
 
 
-async def call(
-    address: str,
-    node_id: str,
-    context: ssl.SSLContext,
-    method: str,
-    params: dict,
-    *,
-    timeout: float = 30,
-) -> dict:
-    request_id = str(uuid4())
+def destination(value: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(
+        r"(?:[A-Za-z0-9_][A-Za-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9_.:-]*", value
+    ):
+        raise ClusterError("invalid_address")
+    return value
+
+
+async def request(address: str, payload: dict, *, timeout: float) -> dict:
+    destination(address)
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
+    data = json.dumps(payload).encode()
+    if len(data) > MAX_BYTES:
+        raise ClusterError("membership_too_large")
+    process = None
     try:
         async with asyncio.timeout(timeout):
-            host, port = endpoint(address)
-            reader, writer = await asyncio.open_connection(
-                host, port, ssl=context, server_hostname=f"{node_id}.invalid"
+            process = await asyncio.create_subprocess_exec(
+                "ssh",
+                "-T",
+                "-oBatchMode=yes",
+                "-oStrictHostKeyChecking=yes",
+                "-oConnectTimeout=5",
+                "--",
+                address,
+                "atlas cluster _registry",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=True,
             )
+            process.stdin.write(data)
+            await process.stdin.drain()
+            process.stdin.close()
             try:
-                await write_message(
-                    writer,
-                    {
-                        "api_version": VERSION,
-                        "request_id": request_id,
-                        "method": method,
-                        "params": params,
-                    },
-                )
-                result = await read_message(reader)
-            finally:
-                writer.close()
-                await writer.wait_closed()
-    except (OSError, TimeoutError, asyncio.IncompleteReadError):
-        raise Unavailable() from None
-    if result.get("api_version") != VERSION or result.get("request_id") != request_id:
-        raise IPCError("invalid_response")
-    if "error" in result:
-        raise IPCError(result["error"])
-    if not isinstance(result.get("result"), dict):
-        raise IPCError("invalid_response")
-    return result["result"]
-
-
-class Listener:
-    def __init__(
-        self, handler: Callable[[str, dict, tuple[str, str] | None], Awaitable[dict]]
-    ) -> None:
-        self.handler = handler
-        self.server: asyncio.Server | None = None
-        self.tasks: set[asyncio.Task] = set()
-
-    async def start(self, address: str, context: ssl.SSLContext) -> None:
-        host, port = endpoint(address)
-        self.server = await asyncio.start_server(
-            self.connection,
-            host,
-            port,
-            ssl=context,
-            ssl_handshake_timeout=5,
-            backlog=32,
-        )
-
-    async def connection(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        task = asyncio.current_task()
-        self.tasks.add(task)
-        try:
-            async with asyncio.timeout(300):
-                if len(self.tasks) > 32:
-                    return
-                certificate = writer.get_extra_info("ssl_object").getpeercert(
-                    binary_form=True
-                )
-                peer = peer_identity(certificate) if certificate else None
-                async with asyncio.timeout(10):
-                    request = await read_message(reader)
-                request_id = request.get("request_id")
-                if not isinstance(request_id, str) or len(request_id) > 128:
-                    raise IPCError("invalid_message")
-                reply = {"api_version": VERSION, "request_id": request_id}
-                try:
-                    if request.get("api_version") != VERSION:
-                        raise IPCError("unsupported_version")
-                    if not isinstance(request.get("method"), str) or not isinstance(
-                        request.get("params"), dict
-                    ):
-                        raise IPCError("invalid_message")
-                    reply["result"] = await self.handler(
-                        request["method"], request["params"], peer
-                    )
-                except IPCError as exc:
-                    reply["error"] = exc.code
-                except Exception:
-                    reply["error"] = "internal_error"
-                await write_message(writer, reply)
-        except (OSError, TimeoutError, IPCError, asyncio.IncompleteReadError):
-            pass  # The peer has no usable response channel.
-        finally:
-            self.tasks.remove(task)
-            writer.close()
-
-    async def close(self) -> None:
-        if self.server is not None:
-            self.server.close()
-
-        for task in self.tasks:
-            task.cancel()
-        await asyncio.gather(*self.tasks, return_exceptions=True)
-        if self.server is not None:
-            await self.server.wait_closed()
+                response = await process.stdout.readexactly(MAX_BYTES + 1)
+            except asyncio.IncompleteReadError as exc:
+                response = exc.partial
+            if len(response) > MAX_BYTES:
+                raise ClusterError("invalid_response")
+            if await process.wait() != 0:
+                raise ClusterUnavailable("registry_unavailable")
+    except (OSError, TimeoutError):
+        raise ClusterUnavailable("registry_unavailable") from None
+    finally:
+        if process is not None and process.returncode is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            await process.wait()
+    try:
+        result = json.loads(response)
+        if result["schema"] != "atlas.membership-rpc/v1":
+            raise ValueError
+        if "error" in result:
+            code = result["error"]
+            if not isinstance(code, str) or not re.fullmatch(r"[a-z_]{1,64}", code):
+                raise ValueError
+            raise ClusterError(code)
+        return result["result"]
+    except (ValueError, KeyError, TypeError):
+        raise ClusterError("invalid_response") from None

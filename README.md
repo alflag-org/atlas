@@ -103,9 +103,9 @@ See [the Python API](docs/api.rst) for lifecycle and shutdown behavior, and
 [the operator reference](docs/reference.rst#standalone-daemon-environment) for directory setup.
 
 Host-owned daemon declarations can be installed and operated with `atlas daemon`.
-The optional `atlas[cluster]` extra adds `atlasd`, secure node admission, and
-Plan/Apply workflows over registered commands. See [the operator reference](docs/reference.rst)
-for configuration, permissions, failure handling, and recovery.
+Atlas Cluster provides host membership and metadata over existing SSH connections.
+Applications choose targets and manage their own execution, locking, and recovery.
+See [the operator reference](docs/reference.rst#cluster-membership) for setup and cache behavior.
 
 ## Development
 

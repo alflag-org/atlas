@@ -1,140 +1,128 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
-import os
-import signal
-from unittest.mock import AsyncMock
 
 import pytest
 
 from atlas.cli import main
-from atlas.cluster.cli import private_json, write_private
-from atlas.cluster.daemon import main as daemon_main
-from atlas_core.cluster import ClusterError, ClusterUnavailable
-from atlas_core.ipc import Client
+from atlas.cluster import network
+from atlas.cluster.node import Node
+
+from .test_cluster_membership import metadata
 
 
-def test_operator_inputs_and_private_output(tmp_path, monkeypatch, capsys):
-    request = AsyncMock(return_value={"schema": "atlas.cluster-invite/v1"})
-    monkeypatch.setattr("atlas_core.cluster.ClusterClient.request", request)
-    invitation = tmp_path / "invite.json"
+def test_operator_commands_and_json_contract(tmp_path, monkeypatch, capsys):
+    registry = tmp_path / "registry"
+    worker = tmp_path / "worker"
+    host = tmp_path / "host.yml"
+    host.write_text("version: 1\nhost:\n  id: registry\n  role: app\n  site: home\n")
+    monkeypatch.setenv("ATLAS_HOST_FILE", str(host))
+
+    def command(directory, *args):
+        code = main(["cluster", "--directory", str(directory), *args])
+        captured = capsys.readouterr()
+        return code, json.loads(captured.out or captured.err), captured
+
+    code, result, output = command(
+        registry,
+        "init",
+        "--name",
+        "lab",
+        "--address",
+        "registry",
+        "--label",
+        "env=test",
+    )
+    assert code == 0 and not output.err
+    assert result["members"][0]["labels"] == {"env": "test"}
+    host.write_text("version: 1\nhost:\n  id: worker\n")
+
+    async def request(address, payload, *, timeout):
+        assert address == "ops@registry"
+        return Node(registry).registry_request(payload)
+
+    monkeypatch.setattr(network, "request", request)
     assert (
-        main(
-            [
-                "cluster",
-                "--socket",
-                "/tmp/example.sock",
-                "invite",
-                "create",
-                "--output",
-                str(invitation),
-                "--ttl",
-                "30s",
-                "--label",
-                "group=app",
-            ]
+        command(worker, "join", "--via", "ops@registry", "--address", "worker")[0] == 0
+    )
+    assert command(worker, "status")[1]["joined"]
+    assert command(worker, "members", "--cached")[1]["stale"]
+    assert command(worker, "leave")[1] == {"removed": "worker"}
+    code, result, output = command(worker, "members")
+    assert code == 2 and not output.out
+    assert result == {"schema": "atlas.cluster-error/v1", "error": "not_joined"}
+    code, result, output = command(
+        worker, "join", "--via", "registry", "--label", "missing-equals"
+    )
+    assert code == 2 and result["error"] == "invalid_configuration" and not output.out
+    code, result, _ = command(registry, "leave", "--member", "worker")
+    assert code == 0 and result == {"removed": "worker"}
+
+
+def test_ssh_registry_entry_point_is_membership_only(tmp_path, monkeypatch, capsys):
+    node = Node(tmp_path / "registry")
+    node.initialize("lab", metadata("registry"))
+    for request, error in [
+        (json.dumps({"method": "members"}), None),
+        (json.dumps({"method": "execute", "command": "anything"}), "unknown_method"),
+        ('["members"]', "invalid_request"),
+        ("x" * (1024 * 1024 + 1), "invalid_request"),
+        ("null", "invalid_request"),
+    ]:
+        monkeypatch.setattr("sys.stdin", io.StringIO(request))
+        assert (
+            main(["cluster", "--directory", str(node.store.directory), "_registry"])
+            == 0
         )
-        == 0
-    )
-    assert invitation.stat().st_mode & 0o777 == 0o600
-    assert request.call_args.args[1]["ttl_seconds"] == 30
-    assert request.call_args.args[1]["labels"] == {"group": "app"}
-    assert (
-        main(["cluster", "join", "--invite-file", str(invitation), "--reconcile"]) == 0
-    )
-    assert request.call_args.args[1]["reconcile"] is True
-    assert main(["cluster", "init", "--name", "lab"]) == 0
-    assert request.call_args.args == ("init", {"name": "lab"})
-    assert main(["cluster", "remove", "node-id"]) == 0
-    assert request.call_args.args == ("remove", {"node_id": "node-id"})
-    workflow = tmp_path / "workflow.yml"
-    workflow.write_text("name: deploy\nschema: atlas.workflow/v1\nsteps: []\n")
-    plan_path = tmp_path / "plan.json"
-    request.return_value = {"plan": {}, "digest": "digest"}
-    assert (
-        main(
-            [
-                "cluster",
-                "plan",
-                "deploy",
-                "--workflow",
-                str(workflow),
-                "--out",
-                str(plan_path),
-            ]
-        )
-        == 0
-    )
-    assert main(["cluster", "apply", str(plan_path), "--confirm", "digest"]) == 0
-    assert request.call_args.args == (
-        "apply",
-        {"plan": {}, "digest": "digest", "confirm": "digest"},
-    )
-    for action in ("inspect", "reconcile"):
-        assert main(["cluster", "operation", action, "op-id"]) == 0
-        assert request.call_args.args == (
-            f"operation.{action}",
-            {"operation_id": "op-id"},
-        )
-    assert (
-        main(
-            [
-                "cluster",
-                "plan",
-                "other",
-                "--workflow",
-                str(workflow),
-                "--out",
-                str(plan_path),
-            ]
-        )
-        == 2
-    )
-    assert "does not match" in capsys.readouterr().err
-    for error in (ClusterError("forbidden"), ClusterUnavailable("unavailable")):
-        request.side_effect = error
-        assert main(["cluster", "status"]) == 2
-        assert json.loads(capsys.readouterr().err)["error"] == error.code
-    with pytest.raises(FileExistsError):
-        write_private(plan_path, {})
-    assert private_json(plan_path)["digest"] == "digest"
-    plan_path.chmod(0o644)
-    with pytest.raises(ValueError, match="owner-only"):
-        private_json(plan_path)
-    plan_path.chmod(0o600)
-    plan_path.write_text("[]")
-    with pytest.raises(TypeError):
-        private_json(plan_path)
+        captured = capsys.readouterr()
+        assert not captured.err
+        reply = json.loads(captured.out)
+        assert reply["schema"] == "atlas.membership-rpc/v1"
+        if error:
+            assert reply["error"] == error
+        else:
+            assert reply["result"]["members"] == [metadata("registry")]
 
 
-def test_atlasd_serves_before_initialization_and_stops_cleanly(tmp_path, monkeypatch):
-    state, runtime = tmp_path / "state", tmp_path / "runtime"
-    state.mkdir(mode=0o700)
-    runtime.mkdir(mode=0o700)
-    monkeypatch.setenv("STATE_DIRECTORY", str(state))
-    monkeypatch.setenv("RUNTIME_DIRECTORY", str(runtime))
-    monkeypatch.delenv("NOTIFY_SOCKET", raising=False)
-    from atlas.cluster import daemon
-    from atlas_core.daemon import run
+def test_cli_does_not_offer_job_execution_or_daemon_startup(capsys):
+    with pytest.raises(SystemExit) as result:
+        main(["cluster", "--help"])
+    assert result.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "{init,join,leave,members,status}" in help_text
+    for removed in ("plan", "apply", "operation", "invite"):
+        with pytest.raises(SystemExit) as error:
+            main(["cluster", removed])
+        assert error.value.code == 2
 
-    def exercise(application, **options):
-        async def wrapped(ctx):
-            task = asyncio.create_task(application(ctx))
-            socket = runtime / "control.sock"
-            async with asyncio.timeout(5):
-                while not socket.exists():
-                    await asyncio.sleep(0.01)
-                status = await Client(socket, api_version="atlas.cluster/v1").request(
-                    "status"
-                )
-            assert status["cluster_id"] is None
-            os.kill(os.getpid(), signal.SIGTERM)
-            await task
 
-        return run(wrapped, **options)
+def test_leave_does_not_clear_a_replaced_local_identity(tmp_path, monkeypatch):
+    registry, worker = Node(tmp_path / "registry"), Node(tmp_path / "worker")
+    registry.initialize("lab", metadata("registry"))
 
-    monkeypatch.setattr(daemon, "run", exercise)
-    assert daemon_main(["--display-name", "test-node"]) == 0
-    assert not (runtime / "control.sock").exists()
-    assert (state / "cluster.sqlite3").is_file()
+    async def request(address, payload, *, timeout):
+        return registry.registry_request(payload)
+
+    monkeypatch.setattr(network, "request", request)
+    original = worker.cache
+
+    def replace(original_state, snapshot):
+        result = original(original_state, snapshot)
+        with worker.store.locked():
+            state = worker.state()
+            state["member"] = metadata("replacement")
+            worker.store.write(state)
+        return result
+
+    async def scenario():
+        await worker.join("registry", metadata("worker"))
+        monkeypatch.setattr(worker, "cache", replace)
+        from atlas_core.cluster import ClusterError
+
+        with pytest.raises(ClusterError, match="state_changed"):
+            await worker.leave()
+        assert worker.store.read()["member"]["id"] == "replacement"
+
+    asyncio.run(scenario())

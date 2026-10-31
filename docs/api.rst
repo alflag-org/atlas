@@ -122,28 +122,49 @@ method. The example's protocol and models belong to that package, not Atlas.
 .. automodule:: atlas_core.ipc
    :members: Client, Peer, IPCError, Unavailable, serve
 
-Cluster client
---------------
+Cluster membership
+------------------
 
-The client talks to a separately started local ``atlasd``. Importing it does
-not start services or load the optional cryptography dependency::
+Use ``atlas_core.cluster`` to discover hosts. Applications choose targets and
+implement any execution, locking, retry, or rollback policy::
 
     from atlas_core.cluster import ClusterClient
 
-    async def show_members():
+    async def targets():
         async with ClusterClient.connect() as cluster:
-            for member in await cluster.members():
-                print(member.node_id, member.display_name)
+            members = await cluster.members()
+        if members.stale:
+            raise RuntimeError("fresh membership required")
+        return [member for member in members if member.labels.get("role") == "app"]
 
-``status()`` returns local persisted identity; ``stale`` is true on a joined
-non-authority node. ``members()`` obtains an authorized current snapshot from
-the authority. ``ClusterUnavailable`` means the daemon or authority could not
-be reached; a mutation may still have committed. Other ``ClusterError`` codes
-include ``not_joined``, ``forbidden``, ``invalid_invitation``,
-``join_outcome_unknown``, ``stale_plan``, ``stale_fence``, and
-``operation_in_progress``. ``cluster_dependency_missing`` means the server
-needs ``atlas[cluster]``. CLI errors use ``atlas.cluster-error/v1`` and exit 2.
-See :doc:`reference` for commissioning, workflow, and recovery contracts.
+``ClusterMember`` contains ``id``, ``hostname``, ``address``, ``role``, ``site``,
+and ``labels``. It describes a host; it has no execution methods or permissions.
+``id``, ``role``, and ``site`` come from the existing host profile at registration.
+Labels and the advertised SSH address are supplied when initializing or joining.
+
+``members()`` returns an iterable ``ClusterMembers`` with ``stale`` and
+``fetched_at`` (an ISO 8601 UTC timestamp). A remote read normally contacts the
+registry. If SSH fails, it returns the last saved snapshot with ``stale=True``.
+``members(cached=True)`` reads only local state. Invalid responses or a changed
+cluster identity raise an error rather than silently using cached data.
+
+``status()`` returns membership information, including ``joined`` and
+``registry_reachable``: true after a successful read, false after a connection
+failure, and ``None`` when no remote check was requested. A local registry is
+always authoritative. ``joined`` and other fields may be stale; they do not
+assert that a host or application is healthy. A pending registration without a
+cached snapshot has no cluster ID or fetch timestamp while offline.
+
+``ClusterClient.connect(directory=None, timeout=10)`` does not start a service or
+open a persistent connection. Each read uses a short local file transaction and,
+when needed, one SSH process. Cancellation terminates that SSH process group.
+Use the same OS account and state directory as the CLI. The default directory is
+``$XDG_STATE_HOME/atlas/cluster`` or ``~/.local/state/atlas/cluster``.
+
+``ClusterError.code`` includes ``not_joined``, ``invalid_state``,
+``cluster_changed``, and ``member_conflict``. ``ClusterUnavailable`` reports
+``registry_unavailable`` or ``no_cached_members``. There are no automatic retries.
+See :doc:`reference` for SSH setup and membership changes.
 
 .. automodule:: atlas_core.cluster
-   :members: ClusterClient, ClusterError, ClusterUnavailable, NodeInfo, ClusterStatus
+   :members: ClusterClient, ClusterMember, ClusterMembers, ClusterStatus, ClusterError, ClusterUnavailable

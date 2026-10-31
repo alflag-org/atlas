@@ -1,135 +1,89 @@
-"""Single-writer durable Cluster state and transaction boundaries."""
+"""Private membership files with atomic replacement and local write serialization."""
 
 from __future__ import annotations
 
 import fcntl
 import json
 import os
-import sqlite3
 import stat
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from uuid import uuid4
+
+from atlas_core.cluster import ClusterError
+
+MAX_BYTES = 1024 * 1024
+
+
+def private_file(path: Path, flags: int) -> int:
+    fd = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    info = os.fstat(fd)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.getuid()
+        or stat.S_IMODE(info.st_mode) != 0o600
+    ):
+        os.close(fd)
+        raise ClusterError("unsafe_state")
+    return fd
 
 
 class Store:
-    def __init__(self, directory: Path) -> None:
-        path = directory / "cluster.sqlite3"
-        fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    def __init__(self, directory: Path | None = None) -> None:
+        self.directory = directory or (
+            Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+            / "atlas/cluster"
+        )
+        self.path = self.directory / "membership.json"
+
+    @contextmanager
+    def locked(self) -> Iterator[Store]:
+        self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = self.directory.lstat()
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o700
+        ):
+            raise ClusterError("unsafe_state")
+        fd = private_file(self.directory / ".lock", os.O_CREAT | os.O_RDWR)
         try:
-            info = os.fstat(fd)
-            if (
-                not stat.S_ISREG(info.st_mode)
-                or info.st_uid != os.getuid()
-                or stat.S_IMODE(info.st_mode) != 0o600
-            ):
-                raise ValueError("Cluster database must be an owner-only regular file")
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BaseException:
+            # Only short local transactions hold this lock, never SSH requests.
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield self
+        finally:
             os.close(fd)
-            raise
-        self.lock = fd
+
+    def read(self) -> dict | None:
         try:
-            self.db = sqlite3.connect(path)
-            self.db.row_factory = sqlite3.Row
-            self._initialize()
-        except BaseException:
-            os.close(self.lock)
-            raise
-
-    def _initialize(self) -> None:
+            fd = private_file(self.path, os.O_RDONLY)
+        except FileNotFoundError:
+            return None
+        with os.fdopen(fd) as stream:
+            data = stream.read(MAX_BYTES + 1)
         try:
-            self.db.execute("PRAGMA journal_mode=WAL")
-            self.db.execute("PRAGMA synchronous=FULL")
-            if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
-                raise ValueError("Cluster database integrity check failed")
-            self._schema()
-        except BaseException:
-            self.db.close()
-            raise
+            value = json.loads(data)
+            if len(data) > MAX_BYTES or value["schema"] != "atlas.membership/v1":
+                raise ValueError
+            return value
+        except (ValueError, KeyError, TypeError):
+            raise ClusterError("invalid_state") from None
 
-    def _schema(self) -> None:
-        self.db.executescript("""
-            CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS members (
-                node_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, endpoint TEXT NOT NULL,
-                certificate TEXT NOT NULL, state TEXT NOT NULL, permissions TEXT NOT NULL,
-                labels TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS invitations (
-                token_id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, expires REAL NOT NULL,
-                consumed INTEGER NOT NULL DEFAULT 0, permissions TEXT NOT NULL, labels TEXT NOT NULL, node_id TEXT, csr TEXT
-            );
-            CREATE TABLE IF NOT EXISTS events (
-                sequence INTEGER PRIMARY KEY, timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                action TEXT NOT NULL, subject TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS operations (
-                operation_id TEXT PRIMARY KEY, digest TEXT NOT NULL, plan TEXT NOT NULL,
-                state TEXT NOT NULL, epoch INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS executions (
-                operation_id TEXT NOT NULL, step_id TEXT NOT NULL, node_id TEXT NOT NULL,
-                state TEXT NOT NULL, exit_code INTEGER, run_id TEXT,
-                PRIMARY KEY (operation_id, step_id, node_id)
-            );
-        """)
-        with self.db:
-            if self.get("node_id") is None:
-                self.set("node_id", str(uuid4()))
-                self.set("revision", 0)
-                self.set("epoch", 0)
-            # A crash may have occurred after an external side effect, before commit.
-            self.db.execute(
-                "UPDATE executions SET state='unknown' WHERE state IN ('prepared','running')"
-            )
-            self.db.execute(
-                "UPDATE operations SET state='unknown' WHERE state IN ('prepared','running')"
-            )
+    def write(self, state: dict) -> None:
+        data = json.dumps(state, sort_keys=True).encode()
+        if len(data) > MAX_BYTES:
+            raise ClusterError("membership_too_large")
+        fd, temporary = tempfile.mkstemp(dir=self.directory)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self.path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
-    def get(self, key: str, default=None):
-        row = self.db.execute(
-            "SELECT value FROM settings WHERE key=?", (key,)
-        ).fetchone()
-        return default if row is None else json.loads(row[0])
-
-    def set(self, key: str, value) -> None:
-        self.db.execute(
-            "INSERT OR REPLACE INTO settings VALUES (?,?)", (key, json.dumps(value))
-        )
-
-    def event(self, action: str, subject: str) -> None:
-        self.db.execute(
-            "INSERT INTO events(action,subject) VALUES (?,?)", (action, subject)
-        )
-
-    def members(self) -> list[dict]:
-        return [
-            dict(row)
-            | {
-                "permissions": json.loads(row["permissions"]),
-                "labels": json.loads(row["labels"]),
-            }
-            for row in self.db.execute(
-                "SELECT node_id,display_name,endpoint,state,permissions,labels FROM members ORDER BY node_id"
-            )
-        ]
-
-    def add_member(self, member: dict, certificate: str) -> None:
-        self.db.execute(
-            "INSERT INTO members VALUES (?,?,?,?,?,?,?)",
-            (
-                member["node_id"],
-                member["display_name"],
-                member["endpoint"],
-                certificate,
-                "active",
-                json.dumps(member["permissions"]),
-                json.dumps(member["labels"]),
-            ),
-        )
-        self.set("revision", self.get("revision") + 1)
-        self.event("admitted", member["node_id"])
-
-    def close(self) -> None:
-        self.db.close()
-        os.close(self.lock)
+    def clear(self) -> None:
+        self.path.unlink()

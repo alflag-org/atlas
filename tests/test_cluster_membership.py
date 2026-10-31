@@ -1,347 +1,260 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import socket
-from pathlib import Path
+import copy
+from dataclasses import asdict
 
 import pytest
 
-from atlas.cluster.node import Node
-from atlas_core.cluster import ClusterClient, ClusterUnavailable
-from atlas_core.ipc import IPCError, serve
+from atlas.cluster import network
+from atlas.cluster.node import Node, local_member
+from atlas_core.cluster import ClusterClient, ClusterError, ClusterUnavailable
 
 
-def address():
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return f"tls://127.0.0.1:{sock.getsockname()[1]}"
-
-
-def node(root: Path, name: str):
-    directory = root / name
-    directory.mkdir(mode=0o700)
-    return Node(directory, address(), name)
-
-
-def test_three_nodes_join_revoke_restart_and_partition(tmp_path):
-    async def scenario():
-        authority, worker, other = [
-            node(tmp_path, name) for name in ("authority", "worker", "other")
-        ]
-        try:
-            assert authority.listener.server is None
-            assert authority.status()["cluster_id"] is None
-            await authority.initialize({"name": "lab"})
-            invite = authority.invitation({"labels": {"group": "app"}})
-            await worker.join({"invite": invite})
-            assert worker.status()["cluster_id"] == authority.status()["cluster_id"]
-            assert worker.node_id != authority.node_id
-            await other.join({"invite": authority.invitation({})})
-            members = await worker.authority_call("members", {})
-            assert len(members["members"]) == 3
-            assert members["revision"] == 3
-            with pytest.raises(IPCError, match="forbidden"):
-                await worker.authority_call("invite", {})
-            await authority.authority_call("remove", {"node_id": worker.node_id})
-            with pytest.raises(IPCError, match="forbidden"):
-                await worker.authority_call("members", {})
-            directory, old_id = authority.directory, authority.node_id
-            await authority.close()
-            with pytest.raises(IPCError, match="unavailable"):
-                await other.authority_call("members", {})
-            authority = Node(directory, None, "authority renamed")
-            await authority.start()
-            assert authority.node_id == old_id
-            assert (await other.authority_call("members", {}))["revision"] == 4
-            await other.authority_call("leave", {})
-            with pytest.raises(IPCError, match="forbidden"):
-                await other.authority_call("members", {})
-        finally:
-            await asyncio.gather(*(item.close() for item in (authority, worker, other)))
-
-    asyncio.run(scenario())
-
-
-def test_local_client_runs_without_network_or_initialization(tmp_path):
-    async def scenario():
-        local = node(tmp_path, "local")
-        path = tmp_path / "local" / "control.sock"
-        try:
-            async with serve(
-                path,
-                api_version="atlas.cluster/v1",
-                handler=local.local,
-                authorize=lambda peer, method: peer.uid == os.getuid(),
-            ):
-                async with ClusterClient.connect(path) as client:
-                    status = await client.status()
-                    assert status.node_id == local.node_id
-                    assert status.cluster_id is None
-                    with pytest.raises(IPCError, match="not_joined"):
-                        await client.members()
-                    await client.request("init", {"name": "lab"})
-                    members = await client.members()
-                    assert members[0].node_id == local.node_id
-                    assert members[0].permissions == ("read", "execute", "admin")
-            with pytest.raises(ClusterUnavailable):
-                await ClusterClient(path).status()
-        finally:
-            await local.close()
-
-    asyncio.run(scenario())
-
-
-def test_invitation_is_single_use_and_identity_is_not_display_name(tmp_path):
-    async def scenario():
-        authority, worker, other = [node(tmp_path, name) for name in ("a", "b", "c")]
-        try:
-            await authority.initialize({"name": "lab"})
-            invite = authority.invitation({})
-            worker.display_name = authority.display_name
-            await worker.join({"invite": invite})
-            assert worker.node_id != authority.node_id
-            with pytest.raises(IPCError, match="invalid_invitation"):
-                await other.join({"invite": invite})
-            assert authority.store.get("revision") == 2
-            assert other.status()["cluster_id"] is None
-            with pytest.raises(IPCError, match="cannot_remove_authority"):
-                await authority.authority_call("leave", {})
-        finally:
-            await asyncio.gather(*(item.close() for item in (authority, worker, other)))
-
-    asyncio.run(scenario())
-
-
-def test_admission_recovery_pins_identity_without_reusing_invitation(
-    tmp_path, monkeypatch
-):
-    from atlas.cluster import network
-    from atlas_core.ipc import Unavailable
-
-    async def scenario():
-        authority, worker = node(tmp_path, "authority"), node(tmp_path, "worker")
-        try:
-            await authority.initialize({"name": "lab"})
-            invite = authority.invitation({})
-            call = network.call
-
-            async def lose_reply(*args, **kwargs):
-                await call(*args, **kwargs)
-                raise Unavailable()
-
-            monkeypatch.setattr(network, "call", lose_reply)
-            with pytest.raises(Unavailable):
-                await worker.join({"invite": invite})
-            original_key = worker.store.get("key")
-            with pytest.raises(IPCError, match="join_outcome_unknown"):
-                await worker.join({"invite": invite})
-            with pytest.raises(IPCError, match="join_outcome_unknown"):
-                await worker.initialize({"name": "other"})
-            with pytest.raises(IPCError, match="admission_not_found"):
-                await worker.join(
-                    {"invite": invite | {"secret": "changed"}, "reconcile": True}
-                )
-            monkeypatch.setattr(network, "call", call)
-            directory, endpoint = worker.directory, worker.address
-            await worker.close()
-            worker = Node(directory, endpoint, "worker")
-            await worker.join({"invite": invite, "reconcile": True})
-            assert worker.store.get("key") == original_key
-            assert len(authority.store.members()) == 2
-            assert authority.store.get("revision") == 2
-        finally:
-            await asyncio.gather(authority.close(), worker.close())
-
-    asyncio.run(scenario())
-
-
-def test_invalid_membership_requests_and_pinned_trust(tmp_path):
-    import time
-    from uuid import uuid4
-
-    from atlas.cluster import identity, network
-
-    async def scenario():
-        authority, worker = node(tmp_path, "authority"), node(tmp_path, "worker")
-        unconfigured = Node(tmp_path, None, "no listener")
-        try:
-            await unconfigured.start()
-            with pytest.raises(IPCError, match="endpoint_required"):
-                await unconfigured.initialize({"name": "x"})
-            for method in ("join", "admission"):
-                with pytest.raises(IPCError, match="not_authority"):
-                    await worker.remote(method, {}, None)
-            with pytest.raises(IPCError, match="forbidden"):
-                await worker.remote("members", {}, None)
-            await authority.initialize({"name": "lab"})
-            await authority.start()
-            with pytest.raises(IPCError, match="already_joined"):
-                await authority.initialize({"name": "again"})
-            for options, code in (
-                ({"ttl_seconds": 0}, "invalid_expiry"),
-                ({"permissions": ["root"]}, "invalid_permissions"),
-                ({"labels": []}, "invalid_labels"),
-                ({"labels": {"k": 1}}, "invalid_request"),
-            ):
-                with pytest.raises(IPCError, match=code):
-                    authority.invitation(options)
-            invite = authority.invitation({})
-            for bad in ({}, invite | {"expires": time.time() - 1}):
-                with pytest.raises(IPCError, match="invalid_invitation"):
-                    await worker.join({"invite": bad})
-            for method in ("unknown",):
-                with pytest.raises(IPCError, match="unknown_method"):
-                    await authority.local(method, {}, None)
-                with pytest.raises(IPCError, match="unknown_method"):
-                    await authority.authority_call(method, {})
-            with pytest.raises(IPCError, match="unknown_member"):
-                await authority.authority_call("remove", {"node_id": str(uuid4())})
-            with pytest.raises(IPCError, match="invalid_id"):
-                await authority.authority_call("remove", {"node_id": "bad"})
-            ca = identity.issue(identity.new_key(), str(uuid4()))
-            with pytest.raises(IPCError, match="unavailable"):
-                await network.call(
-                    authority.address,
-                    authority.node_id,
-                    identity.tls_context(tmp_path, ca),
-                    "join",
-                    {},
-                )
-            with pytest.raises(IPCError, match="forbidden"):
-                await network.call(
-                    authority.address,
-                    authority.node_id,
-                    identity.tls_context(tmp_path, invite["ca"]),
-                    "members",
-                    {},
-                )
-            key = identity.new_key()
-            request = {
-                "invite": invite,
-                "node_id": authority.node_id,
-                "endpoint": worker.address,
-                "display_name": "same",
-                "csr": identity.request_identity(key, worker.node_id),
-            }
-            with pytest.raises(IPCError, match="identity_exists"):
-                authority.admit(request)
-            with pytest.raises(IPCError, match="admission_not_found"):
-                authority.admission(request)
-            with authority.store.db:
-                authority.store.db.execute("UPDATE invitations SET expires=0")
-            with pytest.raises(IPCError, match="invalid_invitation"):
-                await worker.join({"invite": invite})
-            # A rejected join can be followed by a fresh invitation.
-            await worker.local(
-                "join",
-                {
-                    "invite": authority.invitation(
-                        {"permissions": ["read", "execute", "admin"]}
-                    )
-                },
-                None,
-            )
-            assert (await worker.authority_call("invite", {}))[
-                "schema"
-            ] == "atlas.cluster-invite/v1"
-            await worker.local("leave", {}, None)
-        finally:
-            await asyncio.gather(
-                authority.close(), worker.close(), unconfigured.close()
-            )
-
-    asyncio.run(scenario())
-
-
-def test_join_internal_failure_keeps_pending_identity(tmp_path, monkeypatch):
-    from unittest.mock import AsyncMock
-
-    from atlas.cluster import network
-
-    async def scenario():
-        authority, worker = node(tmp_path, "authority"), node(tmp_path, "worker")
-        try:
-            await authority.initialize({"name": "lab"})
-            invite = authority.invitation({})
-            monkeypatch.setattr(
-                network, "call", AsyncMock(side_effect=IPCError("internal_error"))
-            )
-            with pytest.raises(IPCError, match="internal_error"):
-                await worker.join({"invite": invite})
-            assert worker.store.get("join_pending")
-            assert worker.store.get("key")
-        finally:
-            await asyncio.gather(authority.close(), worker.close())
-
-    asyncio.run(scenario())
-
-
-def test_execution_permission_does_not_require_membership_read_access(
-    tmp_path, monkeypatch
-):
-    from atlas.cluster.workflow import command_identity
-
-    from .support import configure_environment, write_native_command
-
-    root = tmp_path / "program"
-    write_native_command(root, "sample")
-    configure_environment(
-        monkeypatch,
-        tmp_path,
-        f"programs:\n  app:\n    root: {root}\n    runtime:\n      type: native\n",
+def metadata(name):
+    return dict(
+        id=name,
+        hostname=name,
+        address=f"ops@{name}",
+        role="app",
+        site="lab",
+        labels={"role": "app"},
     )
 
+
+@pytest.fixture
+def registry(tmp_path, monkeypatch):
+    authority = Node(tmp_path / "registry")
+    authority.initialize("homelab", metadata("registry"))
+
+    async def request(address, payload, *, timeout):
+        assert address == "ops@registry"
+        return authority.registry_request(payload)
+
+    monkeypatch.setattr(network, "request", request)
+    return authority
+
+
+def test_membership_api_and_offline_cache(registry, tmp_path, monkeypatch):
     async def scenario():
-        authority, worker, reader = [
-            node(tmp_path, name) for name in ("authority", "worker", "reader")
-        ]
-        try:
-            await authority.initialize({"name": "lab"})
-            await worker.join(
-                {"invite": authority.invitation({"permissions": ["execute"]})}
-            )
-            await reader.join(
-                {"invite": authority.invitation({"permissions": ["read"]})}
-            )
-            inspected = await authority.workflows.peer(
-                worker.node_id, "command.inspect", {"command": "sample"}
-            )
-            assert inspected == command_identity("sample")
-            planned = await worker.authority_call(
-                "plan",
-                {
-                    "workflow": {
-                        "schema": "atlas.workflow/v1",
-                        "name": "check",
-                        "steps": [
-                            {
-                                "id": "check",
-                                "targets": {"nodes": [worker.node_id]},
-                                "command": "sample",
-                                "mutates": False,
-                            },
-                        ],
-                    }
-                },
-            )
-            operation = await worker.authority_call(
-                "apply", planned | {"confirm": planned["digest"]}
-            )
-            async with asyncio.timeout(5):
-                while authority.workflows.operation(operation["operation_id"])[
-                    "state"
-                ] in {"prepared", "running"}:
-                    await asyncio.sleep(0.01)
-            assert (
-                authority.workflows.operation(operation["operation_id"])["state"]
-                == "succeeded"
-            )
-            with pytest.raises(IPCError, match="forbidden"):
-                await worker.authority_call("members", {})
-            assert (await reader.local("leave", {}, None))["removed"] == reader.node_id
-            assert (await worker.local("leave", {}, None))["removed"] == worker.node_id
-        finally:
-            await asyncio.gather(authority.close(), worker.close(), reader.close())
+        first, second = [Node(tmp_path / name) for name in ("one", "two")]
+        await first.join("ops@registry", metadata("one"))
+        await second.join("ops@registry", metadata("two"))
+        async with ClusterClient.connect(first.store.directory) as client:
+            status = await client.status()
+            assert status.joined and status.registry_reachable and not status.stale
+            members = await client.members()
+            assert [m.id for m in members] == ["one", "registry", "two"]
+            assert asdict(next(iter(members))) == metadata("one")
+            assert not members.stale
+            cached = await client.members(cached=True)
+            assert cached.stale and cached.members == members.members
+            assert cached.fetched_at == members.fetched_at
+            assert (await client.status(cached=True)).registry_reachable is None
+
+            async def offline(*args, **kwargs):
+                raise ClusterUnavailable("registry_unavailable")
+
+            monkeypatch.setattr(network, "request", offline)
+            stale = await client.members()
+            assert stale.stale and stale.fetched_at == members.fetched_at
+            status = await client.status()
+            assert status.joined and status.stale and status.registry_reachable is False
+            with pytest.raises(ClusterUnavailable):
+                await first.leave()
+            assert (await client.members(cached=True)).members == members.members
+        assert (await registry.status())["registry_reachable"] is True
+        assert (await registry.snapshot(cached=True))[1] is True
+        with pytest.raises(ClusterError, match="not_joined"):
+            await ClusterClient(tmp_path / "unjoined").members()
 
     asyncio.run(scenario())
+
+
+def test_lost_join_response_is_retryable_and_leave_is_idempotent(
+    registry, tmp_path, monkeypatch
+):
+    async def scenario():
+        worker = Node(tmp_path / "worker")
+        original = network.request
+
+        async def lost(*args, **kwargs):
+            await original(*args, **kwargs)
+            raise ClusterUnavailable("registry_unavailable")
+
+        monkeypatch.setattr(network, "request", lost)
+        with pytest.raises(ClusterUnavailable):
+            await worker.join("ops@registry", metadata("worker"))
+        status = await worker.status()
+        assert (
+            not status["joined"]
+            and status["cluster_id"] is None
+            and status["registry_reachable"] is False
+        )
+        assert (await worker.status(cached=True))["registry_reachable"] is None
+        with pytest.raises(ClusterUnavailable, match="no_cached_members"):
+            await worker.snapshot(cached=True)
+        revision = registry.registry_request({"method": "members"})["revision"]
+        monkeypatch.setattr(network, "request", original)
+        await worker.join("ops@registry", metadata("worker"))
+        assert registry.registry_request({"method": "members"})["revision"] == revision
+        with pytest.raises(ClusterError, match="already_joined"):
+            await worker.join("ops@registry", metadata("worker"))
+        with pytest.raises(ClusterError, match="already_joined"):
+            registry.initialize("again", metadata("registry"))
+        monkeypatch.setattr(network, "request", lost)
+        with pytest.raises(ClusterUnavailable):
+            await worker.leave()
+        assert worker.store.path.exists()
+        monkeypatch.setattr(network, "request", original)
+        assert await worker.leave() == {"removed": "worker"}
+        assert not worker.store.path.exists()
+        with pytest.raises(ClusterError, match="cannot_remove_registry"):
+            await registry.leave()
+
+    asyncio.run(scenario())
+
+
+def test_registry_conflicts_removal_and_metadata_refresh(registry, tmp_path):
+    async def scenario():
+        worker = Node(tmp_path / "worker")
+        await worker.join("ops@registry", metadata("worker"))
+        with pytest.raises(ClusterError, match="not_registry"):
+            worker.registry_request({"method": "members"})
+        with pytest.raises(ClusterError, match="member_conflict"):
+            registry.registry_request(
+                {"method": "join", "member": metadata("worker") | {"role": "db"}}
+            )
+        await registry.leave("worker")
+        status = await worker.status()
+        assert not status["joined"] and not status["stale"]
+        await worker.leave()
+        await worker.join("ops@registry", metadata("worker") | {"role": "db"})
+        assert (await worker.snapshot())[0]["members"][-1]["role"] == "db"
+        await worker.leave("other")
+        assert worker.store.path.exists()
+        with pytest.raises(ClusterError, match="cluster_changed"):
+            registry.registry_request({"method": "members", "cluster_id": "wrong"})
+        with pytest.raises(ClusterError, match="unknown_method"):
+            registry.registry_request({"method": "execute"})
+
+    asyncio.run(scenario())
+
+
+def test_pending_registration_is_not_promoted_by_an_unrelated_snapshot(
+    registry, tmp_path, monkeypatch
+):
+    async def unavailable(*args, **kwargs):
+        raise ClusterUnavailable("registry_unavailable")
+
+    async def scenario():
+        worker = Node(tmp_path / "worker")
+        original = network.request
+        monkeypatch.setattr(network, "request", unavailable)
+        with pytest.raises(ClusterUnavailable):
+            await worker.join("ops@registry", metadata("worker"))
+        monkeypatch.setattr(network, "request", original)
+        assert not (await worker.status())["joined"]
+        assert worker.store.read()["snapshot"] is None
+        await worker.join("ops@registry", metadata("worker"))
+        assert (await worker.status())["joined"]
+
+    asyncio.run(scenario())
+
+
+def test_late_snapshot_cannot_replace_newer_state(registry, tmp_path, monkeypatch):
+    async def scenario():
+        worker = Node(tmp_path / "worker")
+        await worker.join("ops@registry", metadata("worker"))
+        original = worker.store.read()
+        old = copy.deepcopy(original["snapshot"])
+        registry.registry_request({"method": "join", "member": metadata("new")})
+        newer, _ = await worker.snapshot()
+        assert worker.cache(original, old) == newer
+        with pytest.raises(ClusterError, match="cluster_changed"):
+            worker.cache(original, old | {"cluster_id": "replacement"})
+        with worker.store.locked():
+            state = worker.state()
+            state["registry"] = "ops@other"
+            worker.store.write(state)
+        with pytest.raises(ClusterError, match="state_changed"):
+            worker.cache(original, newer)
+
+    asyncio.run(scenario())
+
+
+def test_invalid_remote_snapshots_do_not_replace_cache(registry, tmp_path, monkeypatch):
+    async def scenario():
+        worker = Node(tmp_path / "worker")
+        original = network.request
+
+        async def wrong_join(*args, **kwargs):
+            return registry.registry_request({"method": "members"})
+
+        monkeypatch.setattr(network, "request", wrong_join)
+        with pytest.raises(ClusterError, match="invalid_snapshot"):
+            await worker.join("ops@registry", metadata("worker"))
+        monkeypatch.setattr(network, "request", original)
+        await worker.join("ops@registry", metadata("worker"))
+        saved = worker.store.path.read_bytes()
+        good = worker.store.read()["snapshot"]
+        bad = [
+            None,
+            {},
+            good | {"revision": True},
+            good | {"members": []},
+            good | {"members": good["members"] * 2},
+            good | {"fetched_at": "bad"},
+            good | {"members": [{"id": "partial"}]},
+        ]
+        for snapshot in bad:
+
+            async def response(*args, snapshot=snapshot, **kwargs):
+                return snapshot
+
+            monkeypatch.setattr(network, "request", response)
+            with pytest.raises(ClusterError, match="invalid_snapshot"):
+                await worker.snapshot()
+            assert worker.store.path.read_bytes() == saved
+
+    asyncio.run(scenario())
+
+
+def test_host_profile_is_the_metadata_source(tmp_path, monkeypatch):
+    host = tmp_path / "host.yml"
+    host.write_text("version: 1\nhost:\n  id: host-1\n  role: app\n  site: home\n")
+    monkeypatch.setenv("ATLAS_HOST_FILE", str(host))
+    monkeypatch.setattr("socket.gethostname", lambda: "node")
+    monkeypatch.setattr("socket.getfqdn", lambda: "node.example.test")
+    assert local_member(None, {"env": "test"}) == dict(
+        id="host-1",
+        hostname="node",
+        address="node.example.test",
+        role="app",
+        site="home",
+        labels={"env": "test"},
+    )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"id": ""},
+        {"id": "x" * 513},
+        {"id": "line\nfeed"},
+        {"site": 4},
+        {"address": "-oProxyCommand=bad"},
+        {"labels": []},
+        {"labels": {str(i): "x" for i in range(65)}},
+        {"labels": {"": "x"}},
+        {"labels": {"key": None}},
+        {"unexpected": "field"},
+    ],
+)
+def test_invalid_metadata_is_rejected_without_mutation(registry, changes):
+    saved = registry.store.path.read_bytes()
+    with pytest.raises(ClusterError):
+        registry.registry_request(
+            {"method": "join", "member": metadata("bad") | changes}
+        )
+    assert registry.store.path.read_bytes() == saved

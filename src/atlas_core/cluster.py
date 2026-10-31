@@ -1,84 +1,87 @@
-"""Typed local client for an explicitly started Atlas Cluster daemon."""
+"""Membership and host metadata, without application execution policy."""
 
 from __future__ import annotations
 
-import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from .ipc import Client, IPCError, Unavailable
 
+class ClusterError(Exception):
+    """A rejected request or invalid state, identified by a stable ``code``."""
 
-class ClusterError(IPCError):
-    """A Cluster request was rejected, with a stable ``code``."""
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
 
 
 class ClusterUnavailable(ClusterError):
-    """The local daemon or authority cannot be reached; mutations may be unknown."""
+    """SSH could not complete the request; a membership change may have committed."""
 
 
 @dataclass(frozen=True)
-class NodeInfo:
-    node_id: str
-    display_name: str
-    endpoint: str
-    state: str
-    permissions: tuple[str, ...]
+class ClusterMember:
+    id: str
+    hostname: str
+    address: str
+    role: str
+    site: str
     labels: dict[str, str]
+
+
+@dataclass(frozen=True)
+class ClusterMembers:
+    """An iterable snapshot; ``stale`` indicates an unrefreshed local copy."""
+
+    members: tuple[ClusterMember, ...]
+    stale: bool
+    fetched_at: str
+
+    def __iter__(self) -> Iterator[ClusterMember]:
+        return iter(self.members)
 
 
 @dataclass(frozen=True)
 class ClusterStatus:
     cluster_id: str | None
     name: str | None
-    node_id: str
-    authority_id: str | None
-    revision: int
+    member_id: str
+    joined: bool
+    registry: str | None
+    registry_reachable: bool | None
     stale: bool
+    fetched_at: str | None
 
 
 class ClusterClient:
-    """Call the local daemon without starting it or importing Cluster dependencies."""
+    """Read membership or refresh it over SSH, without starting a daemon.
 
-    def __init__(self, path: Path | None = None, *, timeout: float = 30) -> None:
-        self._client = Client(
-            path
-            or Path(
-                os.environ.get("ATLAS_CLUSTER_SOCKET", "/run/atlas/atlasd/control.sock")
-            ),
-            api_version="atlas.cluster/v1",
-            timeout=timeout,
-        )
+    The default directory is ``$XDG_STATE_HOME/atlas/cluster`` (falling back to
+    ``~/.local/state/atlas/cluster``). ``cached=True`` skips remote requests.
+    Importing this module performs no I/O.
+    """
+
+    def __init__(self, directory: Path | None = None, *, timeout: float = 10) -> None:
+        from atlas.cluster.node import Node
+
+        self._node = Node(directory, timeout=timeout)
 
     @classmethod
     @asynccontextmanager
     async def connect(
-        cls, path: Path | None = None, *, timeout: float = 30
+        cls, directory: Path | None = None, *, timeout: float = 10
     ) -> AsyncIterator[ClusterClient]:
-        """Check availability, then provide a client with no persistent connection."""
-        client = cls(path, timeout=timeout)
-        await client.status()
-        yield client
+        """Provide a client; individual reads determine freshness and availability."""
+        yield cls(directory, timeout=timeout)
 
-    async def request(self, method: str, params: dict | None = None) -> dict:
-        """Issue a protocol operation once; never retry a lost response."""
-        try:
-            return await self._client.request(method, params)
-        except Unavailable:
-            raise ClusterUnavailable("unavailable") from None
-        except IPCError as exc:
-            if exc.code == "unavailable":
-                raise ClusterUnavailable(exc.code) from None
-            raise ClusterError(exc.code) from None
+    async def status(self, *, cached: bool = False) -> ClusterStatus:
+        return ClusterStatus(**await self._node.status(cached=cached))
 
-    async def status(self) -> ClusterStatus:
-        return ClusterStatus(**await self.request("status"))
-
-    async def members(self) -> tuple[NodeInfo, ...]:
-        result = await self.request("members")
-        return tuple(
-            NodeInfo(**(item | {"permissions": tuple(item["permissions"])}))
-            for item in result["members"]
+    async def members(self, *, cached: bool = False) -> ClusterMembers:
+        snapshot, reachable = await self._node.snapshot(cached=cached)
+        return ClusterMembers(
+            tuple(ClusterMember(**member) for member in snapshot["members"]),
+            stale=reachable is not True,
+            fetched_at=snapshot["fetched_at"],
         )

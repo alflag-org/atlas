@@ -418,151 +418,89 @@ requests also emit ``atlas.daemon-event/v1`` records through syslog with the
 instance, action, and caller UID. No daemon is recorded as a permanent entry
 in the completed-command run log.
 
-Cluster setup
--------------
+Cluster membership
+------------------
 
-Cluster is optional. Install ``atlas[cluster]`` in the environment running
-``atlasd``. The extra supplies X.509 support; ordinary commands and the Daemon
-SDK do not require it. ``atlasd`` is a foreground application using the same
-SDK as ``sampled``. It manages Cluster membership and command operations;
-other services run independently.
+Atlas Cluster maintains a list of hosts and their connection information. The
+first host is the registry; other hosts register and read it over SSH. No
+Cluster daemon, network listener, or additional Python dependency is required.
+Applications use this information to choose their own targets and execution
+policy. Cluster neither runs commands on members nor checks application health.
 
-Give each instance private persistent and runtime directories. For a direct
-start, set ``STATE_DIRECTORY`` and ``RUNTIME_DIRECTORY`` as described above::
+Setup
+~~~~~
 
-    atlasd --endpoint tls://192.0.2.10:7443 --display-name control
+Install Atlas on each host and configure its existing ``/etc/atlas/host.yml``
+with a unique ``id``, ``role``, and ``site``. ``ATLAS_HOST_FILE`` selects another
+host profile. Initialize the registry under the account that will own it::
 
-The endpoint is an explicit IPv4 or bracketed IPv6 address and TCP port.
-It is both the listening and advertised address. No TCP listener starts until
-``init`` or ``join`` succeeds. Restarted members use their persisted endpoint.
-To run under systemd, declare an ``atlasd`` instance with this executable and
-arguments, then install and start it with ``atlas daemon``.
+    atlas cluster init --name homelab --address ops@atlas-01
 
-The local CLI connects to ``/run/atlas/atlasd/control.sock``. Set
-``ATLAS_CLUSTER_SOCKET`` or use ``atlas cluster --socket <path> ...`` for
-another instance. The socket and its directory admit only the daemon's OS
-account. Provision access deliberately; Atlas does not change accounts.
+On another host, verify the registry's SSH host key through your normal
+administration process and configure authentication for the intended account.
+``atlas`` must be on that account's non-interactive SSH command path. Then join::
 
-Initialize one authority, then create a short-lived invitation::
-
-    atlas cluster init --name lab
-    atlas cluster invite create --ttl 10m --label group=app --output join.json
-
-Transfer the invitation through an authenticated confidential channel. On the
-joining node, start ``atlasd`` with its own endpoint and directories, then run::
-
-    atlas cluster join --invite-file join.json
+    atlas cluster join --via ops@atlas-01 --address ops@atlas-02 --label role=app
     atlas cluster members
     atlas cluster status
 
-Invitations contain a secret and pinned CA certificate. Files must be owned
-by the caller with mode ``0600``; output files are created exclusively and
-never overwritten. Invitations expire within one hour and admit one node.
-The joining node generates its private key locally. Subsequent peer calls
-use TLS 1.3 with certificates plus a live membership and permission check.
-Display names and host IDs confer no authority.
+The ``--address`` value is advertised metadata and defaults to the host's FQDN.
+Choose an address that consuming applications can use; Atlas does not probe it.
+SSH aliases and ports belong in the operator's SSH configuration. Connections
+use batch mode and strict host-key verification: unknown or changed host keys,
+password prompts, and failed authentication cause an error. Atlas never invokes
+``sudo`` or accepts host keys automatically.
 
-Invited members receive ``read`` and ``execute`` permissions by default.
-Use repeated ``--permission`` flags to set permissions explicitly; ``admin``
-permits invitations and removal. Labels are set by the inviting administrator.
-``atlas cluster leave`` revokes the calling member; ``atlas cluster remove
-<node-id>`` revokes another member. The authority cannot remove itself.
-Revocation retains local identity and audit state. Use a new isolated instance
-for a new membership.
+The registry's OS account owns membership administration. Anyone authorized to
+run commands as that account can register, read, or remove members. Use a
+dedicated account if this access should be restricted. Membership IDs, addresses,
+roles, sites, and labels are descriptive values supplied by authorized operators;
+they are not authenticated machine identities. SSH authenticates the registry
+host and the connecting OS user.
 
-If the join reply is lost, the node retains its key and refuses another join.
-``atlas cluster join --invite-file join.json --reconcile`` retrieves an already
-committed admission using the original invitation and key. It never admits a
-new member. An unresolved admission remains unjoined.
+Membership changes
+~~~~~~~~~~~~~~~~~~
 
-The authority serializes membership changes in SQLite with WAL and full
-synchronous commits. Local status on another node is marked ``stale``;
-``members`` obtains a current authority response. An unreachable authority
-makes new membership changes and command operations unavailable. There is no
-automatic election, failover, discovery-based admission, or promotion from a
-cached snapshot. Certificates expire after one year; automatic renewal is not
-implemented. Recommission nodes before expiry.
+``atlas cluster leave`` removes the local member. An authorized operator can
+remove another host with ``atlas cluster leave --member <host-id>``. The registry
+itself cannot be removed with this command. Removing a member does not revoke SSH
+credentials or delete copies of cached metadata; manage OS access separately.
 
-Cluster workflows
------------------
+Joining with an existing ID and different metadata fails with ``member_conflict``.
+To change metadata, remove that registration and join again. To change the registry
+host's metadata, edit its host profile before creating a new registry. There is
+no automatic metadata synchronization or registry election.
 
-Workflows are operator-owned files. Commands must already be registered on
-each target. A group selects the ``group`` label assigned during admission;
-``targets: {nodes: [<node-id>, ...]}`` selects explicit members::
+A failed SSH request may have committed a membership change before losing its
+response. A pending join retains its destination and metadata; retry the same
+join command. Identical registrations and repeated removals are idempotent.
+Leave keeps local state until the registry confirms the response. Do not discard
+pending state without checking the registry first.
 
-    schema: atlas.workflow/v1
-    name: deploy
-    steps:
-      - id: check
-        targets: {group: app}
-        command: app-check
-        mutates: false
-        max_parallel: 3
-      - id: deploy
-        needs: [check]
-        targets: {group: app}
-        command: app-deploy
-        arguments: []
-        mutates: true
-        rollout: {max_parallel: 1, max_unavailable: 1}
-        timeout_seconds: 120
-        verify: {command: app-health, timeout_seconds: 30}
+Local state and freshness
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Plan without running commands, review the file, then confirm its digest::
+State lives under ``$XDG_STATE_HOME/atlas/cluster`` or
+``~/.local/state/atlas/cluster``. ``atlas cluster --directory <path> ...`` selects
+a different local directory. Remote SSH requests always use the registry
+account's default directory. The directory must belong to the calling account
+and have mode 0700; files use 0600. Short local file transactions serialize
+membership edits. No lock is held across a remote request.
 
-    atlas cluster plan deploy --workflow deploy.yml --out deploy.plan.json
-    atlas cluster apply deploy.plan.json --confirm <digest>
-    atlas cluster operation inspect <operation-id>
-    atlas cluster operation reconcile <operation-id>
+``members`` and ``status`` normally refresh remote data. If the registry cannot
+be reached, saved membership remains available with ``stale: true`` and its
+original ``fetched_at`` timestamp. Use ``--cached`` to skip the connection.
+``status`` distinguishes an unsuccessful connection from one that was not
+attempted. Cached membership does not imply reachability, current membership,
+or application health. Consumers decide whether stale information is usable.
+Without a saved snapshot, a member-list request fails with ``no_cached_members``.
 
-Plans expire after ten minutes. Their digest binds resolved node IDs,
-commands, literal arguments, dependencies, concurrency, verification, required
-permission, membership revision, registration configuration, and command entry-point hashes. Entry points
-are checked again before execution. Program trees remain mutable: imported
-modules, dependencies, and concurrent edits are not immutable snapshots.
-Keep secret values out of workflows; resolve references inside applications.
+Back up the registry's ``membership.json`` while no membership commands are
+running, retaining its ownership and permissions. Restore it under the same
+account and SSH destination. Do not run two independent writable copies of a
+registry. Clients reject a different cluster ID instead of replacing a known
+registry silently. A follower cache is not a registry backup.
 
-Apply acknowledges a durable operation; inspect reports its progress.
-Independent steps are processed in dependency order, with parallel execution
-within each step. There are at most 100 steps and 32 concurrent targets per
-step. Step IDs use up to 64 letters, digits, underscores, or hyphens and start
-with a letter. ``rollout`` bounds concurrency by both supplied limits. A command or
-verification timeout is at most 120 seconds. The first failed or unknown
-result prevents further dependent work and queued rollout targets.
-
-The authority permits one operation at a time, including read-only operations.
-It issues a monotonically increasing fencing epoch and a five-minute lease;
-workers validate the grant before execution and verification. Each worker
-records execution identity before launching ``atlas run``. Repeated requests
-return journal state. Executor arguments, cleanup, exit conventions, and run
-records retain their existing behavior; ``operation_id`` links all runs, and
-``parent_run_id`` identifies the worker step.
-
-An operation moves from ``prepared`` to ``running`` and then ``succeeded``,
-``failed``, or ``unknown``. Worker results also distinguish ``timed_out``.
-Connection loss, process crashes, and incomplete journals can leave an outcome
-unknown. The lease remains reserved and new operations are refused even after
-its deadline. Reconcile reads worker journals without re-executing commands;
-when all dispatched work has a terminal result it marks the interrupted
-operation ``cancelled`` and releases the reservation. It does not run omitted
-steps or roll back changes. A worker whose journal is still unknown requires
-application-specific investigation; Atlas cannot infer external side effects
-from a process exit or a successful health probe.
-
-Cluster state and recovery
---------------------------
-
-``cluster.sqlite3`` contains identity, CA material on the authority, invitation
-hashes, membership, operation journals, and fencing state. Protect the entire
-state directory and its backups as credentials. One process holds the database
-lock. Database corruption fails startup; it is not replaced with an empty
-Cluster. Restart changes incomplete executions to ``unknown``.
-
-For a consistent backup, stop the instance and copy its private state directory,
-including any SQLite WAL files, to protected storage. Keep the original
-permissions. Restore only while stopped. Before restoring an authority on a
-replacement host, fence the old host and prevent it from serving requests.
-Restore the authority's complete state and original endpoint, then inspect
-membership and reconcile incomplete operations before admitting new work.
-Never reconstruct an authority from a follower's local status or clear an
-unknown operation merely to resume changes.
+CLI results are JSON on stdout. Errors use ``atlas.cluster-error/v1`` on stderr
+and exit 2. The internal ``_registry`` entry point exchanges bounded JSON over
+SSH standard input/output; it is not a public command execution interface.

@@ -13,6 +13,8 @@ This file supplements the global repository guidance with Atlas's execution and 
   mutations, and secrets. Atlas must not fetch, reset, publish, or version those programs.
 - Programs use `atlas_core` as their supported Python API, not private modules under `atlas`.
   Programs and the executing OS account are trusted; these APIs are not a same-UID sandbox.
+- Atlas provides shared mechanisms that applications need; it does not manage application
+  workflows, resource ownership, or business logic.
 - Atlas does not switch users, invoke `sudo`, or grant privileges. Do not add implicit plugin
   discovery or import application code merely to list commands.
 
@@ -46,6 +48,18 @@ This file supplements the global repository guidance with Atlas's execution and 
   generate a never-ending Atlas run record or require an execution context.
 - Additional management, IPC, or Cluster interfaces require separate reviewable changes. Do not
   turn `atlasd` into a shared supervisor or couple generic SDK imports to a Cluster implementation.
+
+## Cluster membership
+
+- Cluster provides membership, discovery, and host metadata through `atlas_core.cluster`.
+  Applications own target selection, execution order, locks, retries, verification, and results.
+- The registry stores host information under an explicitly authorized OS account. Remote access
+  uses existing SSH host keys and user authentication. Do not add a separate CA, TLS listener,
+  invitation system, execution coordinator, workflow DSL, or distributed reservation.
+- Cached membership remains readable during registry outages. Preserve explicit freshness and
+  retrieval timestamps; membership status is not application health or liveness.
+- Cluster does not require a daemon. Keep the Daemon SDK independent of membership storage and
+  transport. Host metadata is descriptive and must not be treated as authentication evidence.
 
 ## Public interfaces and documentation
 

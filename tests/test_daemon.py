@@ -326,7 +326,8 @@ def test_no_private_atlas_or_cluster_imports():
     result = subprocess.run(
         [sys.executable, "-c", "import sys; import atlas_core.daemon; "
          "assert not any(n == 'atlas' or n.startswith(('atlas.', 'atlas_core.cluster')) for n in sys.modules)"],
-        capture_output=True, text=True, check=False,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+        capture_output=True, text=True, check=False, timeout=10,
     )
     assert result.returncode == 0, result.stderr
 

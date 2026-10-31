@@ -7,6 +7,7 @@ import selectors
 import signal
 import subprocess
 import sys
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -37,10 +38,14 @@ def daemon_process(tmp_path, *, source=None):
 def wait_ready(process):
     with selectors.DefaultSelector() as selector:
         selector.register(process.stderr, selectors.EVENT_READ)
-        assert selector.select(timeout=5), "daemon did not initialize"
-        assert "starting" in process.stderr.readline()
-        # readline may have prefetched the second line into its text buffer.
-        assert "ready" in process.stderr.readline()
+        deadline = time.monotonic() + 5
+        output = b""
+        while b"hoged: INFO: ready\n" not in output:
+            assert selector.select(timeout=max(0, deadline - time.monotonic())), "daemon did not initialize"
+            chunk = os.read(process.stderr.fileno(), 4096)
+            assert chunk, "daemon exited before readiness"
+            output += chunk
+        assert b"starting" in output
 
 
 @pytest.mark.parametrize("number", [signal.SIGINT, signal.SIGTERM])

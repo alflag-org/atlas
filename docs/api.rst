@@ -99,3 +99,25 @@ out of their own messages and handlers.
 
 .. automodule:: atlas_core.daemon
    :members: DaemonContext, DaemonMain, run
+
+Local service APIs
+------------------
+
+``atlas_core.ipc`` provides unary JSON requests over private Linux Unix sockets.
+An application owns its protocol version, handler, client models, and errors.
+``serve()`` takes an explicit authorization callback and checks Linux peer
+credentials on every request. Messages are limited to 1 MiB; the client and
+server impose request deadlines. Transport failures are not retried.
+
+The independent example in ``examples/service/sample_service`` publishes
+``sample_service.api.SampleClient`` without registering an Atlas plugin::
+
+    cd examples/service
+    python -m sample_service
+
+Use an explicit ``RUNTIME_DIRECTORY`` to select a stable socket path. Import
+``SampleClient`` from another Python program and call its async ``status()``
+method. The example's protocol and models belong to that package, not Atlas.
+
+.. automodule:: atlas_core.ipc
+   :members: Client, Peer, IPCError, Unavailable, serve

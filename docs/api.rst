@@ -49,79 +49,53 @@ Execution storage
 Independent daemons
 -------------------
 
-``atlas_core.daemon`` runs an application's async entry point in its own foreground
-process. It needs the Atlas Python distribution, but no Atlas CLI invocation,
-execution context, host configuration, service manager, or Cluster dependency.
-Call ``run`` from the executable's main thread, outside an existing event loop.
+Use ``atlas_core.daemon`` to run an async application in the foreground. Install
+Atlas in the application's Python environment, then call ``run()`` from its main
+thread, outside an existing event loop. No Atlas host configuration is needed.
 
 .. literalinclude:: ../examples/daemon/sampled.py
    :language: python
    :start-at: from atlas_core.daemon
 
-After installing Atlas in the application's interpreter, run the example from a
-repository checkout::
+Run the example from a repository checkout::
 
     cd examples/daemon
     python -m sampled
 
-Interrupt with Ctrl-C, or send SIGTERM to the foreground process. Initialization
-must finish before ``ctx.ready()``. Use ``asyncio.TaskGroup`` inside ``main`` for
-required concurrent work; a task failure propagates to ``main`` and makes the
-service fail. Workers should observe ``ctx.stopping`` and release their resources
-in ``finally`` blocks. Keep required tasks awaited: a detached task whose failure
-is never retrieved can escape observation until garbage collection. Unhandled
-loop callbacks and reported task exceptions fail the run without logging their
-potentially secret-bearing contents.
+Call ``ctx.ready()`` after required resources and workers have initialized.
+Keep concurrent work in an ``asyncio.TaskGroup`` so worker failures reach ``main``.
+Detached task failures may go unnoticed until garbage collection. See
+:ref:`daemon-environment` for directories and systemd readiness notifications.
 
-.. code-block:: python
+SIGTERM or SIGINT sets ``ctx.stopping`` and unblocks ``ctx.wait_for_stop()``.
+The application can also set this event to stop itself. Each worker must observe
+the event and finish; a TaskGroup waits for its workers on normal exit. Release
+resources in ``finally`` blocks. ``run()`` restores the previous signal handlers
+when it exits.
 
-    import asyncio
+The return codes are:
 
-    async def main(ctx):
-        async with asyncio.TaskGroup() as tasks:
-            tasks.create_task(worker(ctx))
-            ctx.ready()  # All required initialization must already have succeeded.
-            await ctx.wait_for_stop()
-
-A TaskGroup does not stop workers on normal exit: each worker must finish when
-stopping is set. If worker initialization is asynchronous, explicitly await its
-startup result before signalling readiness. ``ready()`` is idempotent; the first
-call after a stop request fails. It records readiness locally without systemd,
-or sends ``READY=1`` to a configured Unix datagram ``NOTIFY_SOCKET`` (filesystem
-or Linux abstract address). A configured socket that cannot accept the datagram
-fails initialization. Delivery is not an acknowledgement of manager acceptance.
-Readiness is distinct from health; this SDK supplies no health or watchdog loop.
-
-``run()`` owns its event loop and temporarily installs SIGTERM/SIGINT handlers,
-restoring the original handlers on exit. Either signal sets ``ctx.stopping``;
-applications can also set that event to request their own graceful stop. Repeated
-signals do not extend the shutdown deadline. The return contract is:
-
-* ``0``: readiness was signalled and the application finished cleanly, including
-  a graceful SIGTERM or SIGINT.
-* ``1``: missing readiness, initialization/application failure, failed cleanup,
-  cancellation, unhandled event-loop failure, or shutdown timeout.
+* ``0``: the application signalled readiness and finished cleanly, including
+  graceful signal handling.
+* ``1``: missing readiness, an application or event-loop failure, cancellation,
+  failed cleanup, or a shutdown timeout.
 * ``2``: invalid options or directory setup/cleanup failure.
 
-Ordinary application exceptions are diagnosed by class name only. No exception
-message, traceback, arguments, or environment values are logged automatically.
-Application log messages and custom handlers remain the application's responsibility.
-``ctx.logger`` is a per-run INFO logger with a stderr handler; it accepts normal
-``logging`` methods and ``extra`` fields for application-installed formatters.
-The logger is active only during ``run()``. It does not modify the root logger
-or write Atlas JSONL execution records.
-``SystemExit`` and other ``BaseException`` subclasses propagate after cleanup.
-Misuse from another thread or an active event loop raises ``RuntimeError``.
+The shutdown grace period defaults to 30 seconds. After it expires, the SDK
+cancels outstanding tasks. Cancellation and async-generator cleanup each get
+another ``min(shutdown_timeout, 1)`` seconds. Repeated signals do not reset the
+deadline. The SDK has no startup timer.
 
-``shutdown_timeout`` defaults to 30 seconds and must be finite and positive.
-After the cooperative grace period, outstanding tasks are cancelled. Task
-cancellation and async-generator finalization each have an additional budget of
-``min(shutdown_timeout, 1)`` seconds. Cleanup failure or expiration is nonzero,
-even if the application suppresses cancellation. A blocked event loop cannot
-enforce these deadlines. Applications must own and stop their threads,
-subprocesses, executors, and external resources; the SDK is not a process-tree
-supervisor. Use an OS service manager's hard stop deadline for uncooperative code.
-There is no startup timer in the SDK; a service manager may enforce one.
+These deadlines require a responsive event loop. The application must stop its
+own threads, subprocesses, and executors. Configure the service manager's hard
+stop deadline for code that may block or ignore cancellation.
+
+``ctx.logger`` writes INFO and higher levels to stderr during ``run()``. It uses
+standard ``logging`` methods and accepts ``extra`` fields for custom formatters.
+It leaves the root logger unchanged and writes no Atlas execution records.
+SDK diagnostics include exception class names, but omit exception messages,
+tracebacks, arguments, and environment values. Applications must keep secrets
+out of their own messages and handlers.
 
 .. automodule:: atlas_core.daemon
    :members: DaemonContext, DaemonMain, run

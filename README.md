@@ -1,21 +1,12 @@
 # Atlas
 
-Atlas separates infrastructure automation from host operating-system changes by providing a
-stable execution environment, host identity, invocation path, and run record.
+Atlas runs locally installed Python and native automation programs. It selects Python
+interpreters, creates a virtual environment per Python program, and exposes commands through
+`atlas run` and generated shims. Each run receives host identity and execution context and
+produces a JSONL record.
 
-Atlas manages:
-
-- selected Python interpreters and one virtual environment per Python program;
-- registration of locally present programs;
-- discovery of public commands and generation of shims;
-- `/etc/atlas/host.yml` and the language-neutral execution context;
-- one shared executor for `atlas run` and shims; and
-- a small JSONL record of completed executions.
-
-Atlas does not fetch or version automation programs. It does not contain infrastructure provider, inventory,
-workflow, scheduler, or infrastructure lifecycle code. Put those responsibilities in the
-programs registered with Atlas and invoke them through Atlas when a common execution contract is
-needed.
+Install and update program sources and dependencies with their own tooling. Infrastructure
+state, provider operations, inventory, workflows, and scheduling belong to those programs.
 
 ## Configuration
 
@@ -74,7 +65,7 @@ command runs with its program venv; a native command runs directly. The child re
 paths, program, command, working directory, and run identifiers, so non-Python programs can read
 the same information without importing `atlas_core`.
 
-Python programs may use the small public API:
+Python programs can read the context through `atlas_core`:
 
 ```python
 from atlas_core import get_context
@@ -97,9 +88,9 @@ program integration, and recovery.
 
 ## Independent daemons
 
-`atlas_core.daemon` provides an async foreground lifecycle with explicit readiness,
-SIGTERM/SIGINT handling, and bounded cooperative shutdown. Applications run directly
-with Atlas installed in their Python environment; no Atlas manager or systemd is required.
+Write a foreground Python daemon with `atlas_core.daemon`. The SDK handles readiness,
+SIGTERM/SIGINT, and cooperative shutdown. Run the application directly with Atlas installed
+in its Python environment. systemd is optional.
 
 ```bash
 # From a checkout, with Atlas installed in this interpreter:
@@ -108,8 +99,8 @@ python -m sampled
 # Ctrl-C stops the example gracefully.
 ```
 
-See [the Python API](docs/api.rst) for implementation and
-[the operator reference](docs/reference.rst) for directories and shutdown limits.
+See [the Python API](docs/api.rst) for lifecycle and shutdown behavior, and
+[the operator reference](docs/reference.rst#standalone-daemon-environment) for directory setup.
 
 ## Development
 
@@ -120,5 +111,3 @@ mise run setup
 mise run check
 make clean-docs html SPHINXOPTS=-W
 ```
-
-The examples under `examples/` include local program trees and a standalone daemon.

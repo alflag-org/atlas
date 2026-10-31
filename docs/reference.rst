@@ -58,9 +58,8 @@ started without a Python intermediary. The global Python selection is used when 
 does not specify its own version. A configured Python executable may be supplied as
 ``runtime.python.executable`` when the host's managed interpreter is not exposed through pyenv.
 
-Atlas never clones, fetches, downloads, extracts, installs, updates, rolls back, or garbage
-collects program trees. Place and update those trees using the program's normal packaging or
-deployment workflow.
+Install and update program trees with the program's own packaging or deployment tools.
+Atlas uses the local files without managing their versions.
 
 Command discovery and shims
 ---------------------------
@@ -295,17 +294,15 @@ Official setup details are available in the `SDK documentation
 <https://bitwarden.com/help/secrets-manager-sdk/>`_ and `machine account guidance
 <https://bitwarden.com/help/machine-accounts/>`_.
 
+.. _daemon-environment:
+
 Standalone daemon environment
 -----------------------------
 
-Applications using ``atlas_core.daemon`` run directly in the foreground. Install
-Atlas in that application's Python environment and invoke its executable or
-module. See :doc:`api` for the lifecycle API and standalone ``sampled`` example.
-The SDK neither reads Atlas host configuration nor registers commands or starts
-services. Existing ``atlas run``, shims, run identifiers, and JSONL records retain
-their completed-command contract.
+Install Atlas in the daemon's Python environment and run its executable or
+module directly. See :doc:`api` for the lifecycle API and ``sampled`` example.
 
-Directory selection is independent for persistent state and runtime files:
+The SDK selects state and runtime directories separately:
 
 .. list-table:: Daemon directories
    :header-rows: 1
@@ -313,35 +310,38 @@ Directory selection is independent for persistent state and runtime files:
    * - Purpose
      - Service-manager override
      - Standalone default
-   * - Persistent application state
+   * - Persistent state
      - ``STATE_DIRECTORY``
      - ``$XDG_STATE_HOME/atlas/<name>`` or ``~/.local/state/atlas/<name>``
-   * - Runtime sockets and temporary application files
+   * - Runtime files and sockets
      - ``RUNTIME_DIRECTORY``
      - ``$XDG_RUNTIME_DIR/atlas/<name>`` or a random private temporary directory
 
-The name defaults to ``daemon``; applications should provide their own name,
-using lowercase letters, digits, and single separating hyphens, starting with a
-letter. Distinct instances need distinct names or explicit directories. The SDK
-does not enforce single-instance locking.
+Set ``name`` when calling ``run()``; it defaults to ``daemon``. Names start with
+a lowercase letter and contain lowercase letters, digits, and single separating
+hyphens. Use different names or explicit directories for separate instances.
+The SDK does not lock instances against concurrent starts.
 
-Manager overrides must each contain exactly one absolute path, not a colon-separated
-list. Directory paths must have no parent traversal or symlink components. Missing
-directories are created with mode ``0700``; the selected state/runtime directories
-must belong to the executing user and have exactly that mode. An XDG runtime base
-must also be private. Invalid paths, ownership, permissions, or filesystem access
-fail startup rather than falling back to another location. In particular, relative
-XDG overrides are rejected. Empty XDG variables use the standalone defaults;
-empty service-manager overrides are errors. Existing permissions are never changed.
+Each manager override accepts one absolute path, not a colon-separated list.
+All directory paths must be absolute, with no parent traversal or symlink
+components. Missing directories are created with mode ``0700``. The selected
+directories and any XDG runtime base must belong to the caller and have mode ``0700``. Existing permissions are left
+unchanged. Invalid paths, ownership, permissions, or filesystem access fail startup.
+Empty XDG variables use defaults; empty manager overrides are errors.
 
-Persistent state and explicitly selected runtime directories are retained on exit.
-Without a runtime override, the random temporary directory is removed when ``run``
-returns. Its path is available through ``ctx.runtime_dir``; it is not a stable
-endpoint between starts. SIGKILL or host failure may leave temporary files behind.
-The fallback is not guaranteed to be memory-backed: do not use it as a secret store.
+State and explicitly selected runtime directories remain after exit. The temporary
+runtime fallback is removed when ``run()`` exits. SIGKILL or host failure can leave
+temporary files behind. Read the path from ``ctx.runtime_dir``; it changes
+between starts.
+The fallback may be disk-backed, so do not store secrets there.
 
-When an operator provides a systemd unit, set directory modes to ``0700`` and use
-``Type=notify`` with ``NotifyAccess=main`` for readiness. Start the application's
-executable directly. Process ownership and authorization remain with the OS;
-the SDK does not change users. Daemon management CLI, IPC, and Cluster are not
-implemented by this SDK.
+For systemd, start the executable directly and set directory modes to ``0700``.
+Use ``Type=notify`` and ``NotifyAccess=main`` to wait for readiness. ``ctx.ready()``
+sends ``READY=1`` to ``NOTIFY_SOCKET``, which accepts a filesystem path or a Linux
+abstract socket address. Without that variable, readiness is recorded locally.
+An invalid or unavailable socket raises an error; sending a datagram does not
+confirm that the manager accepted it. Readiness reports initialization, not ongoing
+health. The SDK provides no health check or watchdog.
+
+The daemon runs as the invoking user. Provision directory ownership and service
+permissions for that account; the SDK does not change users.

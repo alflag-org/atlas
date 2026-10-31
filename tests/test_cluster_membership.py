@@ -123,7 +123,11 @@ def test_registry_conflicts_removal_and_metadata_refresh(registry, tmp_path):
             worker.registry_request({"method": "members"})
         with pytest.raises(ClusterError, match="member_conflict"):
             registry.registry_request(
-                {"method": "join", "member": metadata("worker") | {"role": "db"}}
+                {
+                    "method": "join",
+                    "registration_id": "test-registration",
+                    "member": metadata("worker") | {"role": "db"},
+                }
             )
         await registry.leave("worker")
         status = await worker.status()
@@ -168,7 +172,13 @@ def test_late_snapshot_cannot_replace_newer_state(registry, tmp_path, monkeypatc
         await worker.join("ops@registry", metadata("worker"))
         original = worker.store.read()
         old = copy.deepcopy(original["snapshot"])
-        registry.registry_request({"method": "join", "member": metadata("new")})
+        registry.registry_request(
+            {
+                "method": "join",
+                "registration_id": "test-registration",
+                "member": metadata("new"),
+            }
+        )
         newer, _ = await worker.snapshot()
         with pytest.raises(ClusterError, match="registry_revision_regressed"):
             worker.cache(original, old)
@@ -208,6 +218,9 @@ def test_invalid_remote_snapshots_do_not_replace_cache(registry, tmp_path, monke
             good | {"members": good["members"] * 2},
             good | {"fetched_at": "bad"},
             good | {"members": [{"id": "partial"}]},
+            good | {"registrations": {}},
+            good | {"registrations": list(good["registrations"])},
+            good | {"registrations": dict.fromkeys(good["registrations"], "")},
         ]
         for snapshot in bad:
 
@@ -257,7 +270,11 @@ def test_invalid_metadata_is_rejected_without_mutation(registry, changes):
     saved = registry.store.path.read_bytes()
     with pytest.raises(ClusterError):
         registry.registry_request(
-            {"method": "join", "member": metadata("bad") | changes}
+            {
+                "method": "join",
+                "registration_id": "test-registration",
+                "member": metadata("bad") | changes,
+            }
         )
     assert registry.store.path.read_bytes() == saved
 
@@ -340,7 +357,13 @@ def test_restored_registry_cannot_label_old_cache_as_fresh(registry, tmp_path):
         worker = Node(tmp_path / "worker")
         await worker.join("ops@registry", metadata("worker"))
         backup = registry.store.path.read_bytes()
-        registry.registry_request({"method": "join", "member": metadata("new")})
+        registry.registry_request(
+            {
+                "method": "join",
+                "registration_id": "test-registration",
+                "member": metadata("new"),
+            }
+        )
         client = ClusterClient(worker.store.directory)
         latest = await client.members()
         registry.store.path.write_bytes(backup)
@@ -348,5 +371,176 @@ def test_restored_registry_cannot_label_old_cache_as_fresh(registry, tmp_path):
             await client.members()
         saved = await client.members(cached=True)
         assert saved.stale and saved.members == latest.members
+
+    asyncio.run(scenario())
+
+
+def test_delayed_leave_request_cannot_remove_a_new_registration(
+    registry, tmp_path, monkeypatch
+):
+    async def scenario():
+        worker = Node(tmp_path / "worker")
+        await worker.join("ops@registry", metadata("worker"))
+        original = network.request
+        both_started, release = asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def delayed(address, payload, *, timeout):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                both_started.set()
+                await release.wait()
+            else:
+                await both_started.wait()
+            # Delay delivery, not the response: the registry has not seen this leave.
+            return await original(address, payload, timeout=timeout)
+
+        monkeypatch.setattr(network, "request", delayed)
+        first = asyncio.create_task(worker.leave())
+        second = asyncio.create_task(worker.leave())
+        await first
+        monkeypatch.setattr(network, "request", original)
+        await worker.join("ops@registry", metadata("worker"))
+        new_registration = worker.store.read()["registration_id"]
+        release.set()
+        with pytest.raises(ClusterError, match="registration_changed"):
+            await second
+        assert (await worker.status())["joined"]
+        assert (
+            registry.registry_request({"method": "members"})["registrations"]["worker"]
+            == new_registration
+        )
+
+    asyncio.run(scenario())
+
+
+def test_remote_administrator_removes_only_the_observed_generation(registry, tmp_path):
+    async def scenario():
+        worker, observer = Node(tmp_path / "worker"), Node(tmp_path / "observer")
+        await worker.join("ops@registry", metadata("worker"))
+        await observer.join("ops@registry", metadata("observer"))
+        await worker.leave()
+        await worker.join("ops@registry", metadata("worker"))
+        with pytest.raises(ClusterError, match="registration_changed"):
+            await observer.leave("worker")
+        assert (await worker.status())["joined"]
+        await observer.snapshot()
+        assert await observer.leave("worker") == {"removed": "worker"}
+        assert not (await worker.status())["joined"]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("committed", [False, True])
+def test_abort_discards_only_pending_local_state(
+    registry, tmp_path, monkeypatch, committed
+):
+    async def scenario():
+        worker = Node(tmp_path / "worker")
+        original = network.request
+        attempts = 0
+
+        async def unavailable(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if committed:
+                await original(*args, **kwargs)
+            raise ClusterUnavailable("registry_unavailable")
+
+        monkeypatch.setattr(network, "request", unavailable)
+        with pytest.raises(ClusterUnavailable):
+            await worker.join("ops@registry", metadata("worker"))
+        pending = worker.store.read()
+        result = worker.abort_join()
+        assert result["registry"] == "ops@registry"
+        assert result["discarded"] == "worker"
+        assert result["registration_id"] == pending["registration_id"]
+        assert "inspect the registry" in result["warning"]
+        assert not worker.store.path.exists() and attempts == 1
+        monkeypatch.setattr(network, "request", original)
+        current = registry.registry_request({"method": "members"})
+        assert ("worker" in current["registrations"]) == committed
+        if committed:
+            # Aborting must neither remove the remote entry nor silently adopt it.
+            with pytest.raises(ClusterError, match="member_conflict"):
+                await worker.join("ops@registry", metadata("worker"))
+            assert not (await worker.status())["joined"]
+            assert worker.store.read()["snapshot"] is None
+            await registry.leave("worker")
+            worker.abort_join()
+        await worker.join("ops@registry", metadata("worker"))
+        for node in (worker, registry):
+            saved = node.store.path.read_bytes()
+            with pytest.raises(ClusterError, match="not_pending_join"):
+                node.abort_join()
+            assert node.store.path.read_bytes() == saved
+
+    asyncio.run(scenario())
+
+
+def test_aborted_join_response_cannot_replace_corrected_destination(
+    registry, tmp_path, monkeypatch
+):
+    async def scenario():
+        worker, other = Node(tmp_path / "worker"), Node(tmp_path / "other")
+        other.initialize("other", metadata("other"))
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def delayed(address, payload, *, timeout):
+            if address == "ops@wrong":
+                result = registry.registry_request(payload)
+                started.set()
+                await release.wait()
+                return result
+            return other.registry_request(payload)
+
+        monkeypatch.setattr(network, "request", delayed)
+        old = asyncio.create_task(worker.join("ops@wrong", metadata("worker")))
+        await started.wait()
+        worker.abort_join()
+        await worker.join("ops@correct", metadata("worker"))
+        saved = worker.store.path.read_bytes()
+        release.set()
+        with pytest.raises(ClusterError, match="state_changed"):
+            await old
+        assert worker.store.path.read_bytes() == saved
+        assert (await worker.status())["name"] == "other"
+
+    asyncio.run(scenario())
+
+
+def test_registry_rejects_unconditional_removal(registry, tmp_path):
+    async def scenario():
+        worker = Node(tmp_path / "worker")
+        await worker.join("ops@registry", metadata("worker"))
+        saved = registry.store.path.read_bytes()
+        with pytest.raises(ClusterError, match="registration_required"):
+            registry.registry_request({"method": "leave", "member_id": "worker"})
+        assert registry.store.path.read_bytes() == saved
+        with pytest.raises(ClusterError, match="registration_changed"):
+            registry.registry_request(
+                {"method": "leave", "member_id": "worker", "registration_id": None}
+            )
+        assert registry.store.path.read_bytes() == saved
+
+    asyncio.run(scenario())
+
+
+def test_join_response_must_confirm_the_pending_generation(
+    registry, tmp_path, monkeypatch
+):
+    async def wrong_generation(address, payload, *, timeout):
+        return registry.registry_request(
+            payload | {"registration_id": "different-registration"}
+        )
+
+    async def scenario():
+        worker = Node(tmp_path / "worker")
+        monkeypatch.setattr(network, "request", wrong_generation)
+        with pytest.raises(ClusterError, match="invalid_snapshot"):
+            await worker.join("ops@registry", metadata("worker"))
+        assert worker.store.read()["snapshot"] is None
+        worker.abort_join()
 
     asyncio.run(scenario())

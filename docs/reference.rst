@@ -466,16 +466,38 @@ remove another host with ``atlas cluster leave --member <host-id>``. The registr
 itself cannot be removed with this command. Removing a member does not revoke SSH
 credentials or delete copies of cached metadata; manage OS access separately.
 
-Joining with an existing ID and different metadata fails with ``member_conflict``.
+Each registration has a generation ID. Removal must match that generation, so
+a delayed leave cannot remove a later registration of the same host. To remove
+another host, first refresh ``members``. If it has rejoined since that snapshot,
+removal fails with ``registration_changed``; inspect the latest membership before
+trying again. Generation IDs are internal membership metadata, not execution
+permissions or locks.
+
+Joining with an existing ID but different metadata or a different registration
+generation fails with ``member_conflict``.
 To change metadata, remove that registration and join again. To change the registry
 host's metadata, edit its host profile before creating a new registry. There is
 no automatic metadata synchronization or registry election.
 
 A failed SSH request may have committed a membership change before losing its
 response. A pending join retains its destination and metadata; retry the same
-join command. Identical registrations and repeated removals are idempotent.
-Leave keeps local state until the registry confirms the response. Do not discard
-pending state without checking the registry first.
+join command. Retries retain the generation ID. Repeated removals are harmless
+once that registration is absent. Leave keeps local state until the registry
+confirms the response.
+
+If the pending join used the wrong destination, discard it explicitly before
+correcting the destination::
+
+    atlas cluster join --abort
+    atlas cluster join --via ops@atlas-02 --address ops@atlas-03
+
+``--abort`` only deletes an unconfirmed local join and makes no SSH request. It
+returns the old destination, host ID, registration generation, and a warning:
+the remote registration may already exist, or an in-flight request may still
+arrive. Inspect membership on the original registry and remove the abandoned
+registration if necessary. Aborting does not undo remote changes. A confirmed
+membership or registry cannot be discarded with this option; use ``leave`` for
+confirmed membership.
 
 Local state and freshness
 ~~~~~~~~~~~~~~~~~~~~~~~~~

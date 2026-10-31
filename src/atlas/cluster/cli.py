@@ -25,6 +25,8 @@ def command(args: argparse.Namespace) -> int:
                     args.address, dict(item.split("=", 1) for item in args.label)
                 ),
             )
+        elif action == "join" and args.abort:
+            result = node.abort_join()
         elif action == "join":
             result = asyncio.run(
                 node.join(
@@ -89,7 +91,13 @@ def add_parser(subparsers) -> None:
         if action == "init":
             sub.add_argument("--name", required=True)
         elif action == "join":
-            sub.add_argument("--via", required=True, help="registry SSH destination")
+            destination = sub.add_mutually_exclusive_group(required=True)
+            destination.add_argument("--via", help="registry SSH destination")
+            destination.add_argument(
+                "--abort",
+                action="store_true",
+                help="discard a pending local join; remote registration may still exist",
+            )
         elif action == "leave":
             sub.add_argument(
                 "--member", help="remove this host ID instead of the local member"

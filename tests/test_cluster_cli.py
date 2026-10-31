@@ -95,3 +95,35 @@ def test_cli_does_not_offer_job_execution_or_daemon_startup(capsys):
         with pytest.raises(SystemExit) as error:
             main(["cluster", removed])
         assert error.value.code == 2
+
+
+def test_operator_can_correct_an_unreachable_pending_join(
+    tmp_path, monkeypatch, capsys
+):
+    from atlas_core.cluster import ClusterUnavailable
+
+    directory = tmp_path / "worker"
+    host = tmp_path / "host.yml"
+    host.write_text("version: 1\nhost:\n  id: worker\n")
+    monkeypatch.setenv("ATLAS_HOST_FILE", str(host))
+    registry = Node(tmp_path / "registry")
+    registry.initialize("lab", metadata("registry"))
+
+    async def request(address, payload, *, timeout):
+        if address == "ops@wrong":
+            raise ClusterUnavailable("registry_unavailable")
+        return registry.registry_request(payload)
+
+    monkeypatch.setattr(network, "request", request)
+    args = ["cluster", "--directory", str(directory), "join"]
+    assert main([*args, "--via", "ops@wrong"]) == 2
+    capsys.readouterr()
+    assert main([*args, "--via", "ops@correct"]) == 2
+    assert json.loads(capsys.readouterr().err)["error"] == "already_joined"
+    assert main([*args, "--abort"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["registry"] == "ops@wrong" and result["warning"]
+    assert main([*args, "--via", "ops@correct"]) == 0
+    assert json.loads(capsys.readouterr().out)["name"] == "lab"
+    assert main([*args, "--abort"]) == 2
+    assert json.loads(capsys.readouterr().err)["error"] == "not_pending_join"

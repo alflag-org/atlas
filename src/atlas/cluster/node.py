@@ -69,6 +69,13 @@ def validate_snapshot(value: dict) -> dict:
         identifiers = {item["id"] for item in members}
         if len(identifiers) != len(members) or value["registry_id"] not in identifiers:
             raise ValueError
+        if (
+            not isinstance(value["registrations"], dict)
+            or set(value["registrations"]) != identifiers
+        ):
+            raise ValueError
+        for registration in value["registrations"].values():
+            text(registration)
         return value
     except (KeyError, TypeError, ValueError, ClusterError):
         raise ClusterError("invalid_snapshot") from None
@@ -105,12 +112,14 @@ class Node:
     def initialize(self, name: str, metadata: dict) -> dict:
         text(name)
         metadata = member(metadata)
+        registration_id = str(uuid4())
         snapshot = dict(
             cluster_id=str(uuid4()),
             name=name,
             registry_id=metadata["id"],
             revision=1,
             members=[metadata],
+            registrations={metadata["id"]: registration_id},
             fetched_at=now(),
         )
         with self.store.locked():
@@ -119,7 +128,7 @@ class Node:
             self.store.write(
                 dict(
                     schema="atlas.membership/v1",
-                    registration_id=str(uuid4()),
+                    registration_id=registration_id,
                     member=metadata,
                     registry=None,
                     snapshot=snapshot,
@@ -139,6 +148,7 @@ class Node:
             method = request.get("method")
             if method == "join":
                 addition = member(request.get("member"))
+                registration_id = text(request.get("registration_id"))
                 existing = next(
                     (
                         item
@@ -147,20 +157,33 @@ class Node:
                     ),
                     None,
                 )
-                if existing is not None and existing != addition:
+                if existing is not None and (
+                    existing != addition
+                    or snapshot["registrations"][addition["id"]] != registration_id
+                ):
                     raise ClusterError("member_conflict")
                 if existing is None:
                     snapshot["members"].append(addition)
+                    snapshot["registrations"][addition["id"]] = registration_id
                     snapshot["revision"] += 1
             elif method == "leave":
                 identifier = text(request.get("member_id"))
                 if identifier == snapshot["registry_id"]:
                     raise ClusterError("cannot_remove_registry")
+                if "registration_id" not in request:
+                    raise ClusterError("registration_required")
+                expected = request["registration_id"]
+                if expected is not None:
+                    text(expected)
+                current = snapshot["registrations"].get(identifier)
+                if current is not None and current != expected:
+                    raise ClusterError("registration_changed")
                 remaining = [
                     item for item in snapshot["members"] if item["id"] != identifier
                 ]
                 if remaining != snapshot["members"]:
                     snapshot["members"] = remaining
+                    del snapshot["registrations"][identifier]
                     snapshot["revision"] += 1
             elif method != "members":
                 raise ClusterError("unknown_method")
@@ -194,12 +217,36 @@ class Node:
             # Retain the exact registration across a lost SSH response.
             self.store.write(pending)
         snapshot = await network.request(
-            via, {"method": "join", "member": metadata}, timeout=self.timeout
+            via,
+            {
+                "method": "join",
+                "member": metadata,
+                "registration_id": pending["registration_id"],
+            },
+            timeout=self.timeout,
         )
         validate_snapshot(snapshot)
-        if metadata not in snapshot["members"]:
+        if (
+            metadata not in snapshot["members"]
+            or snapshot["registrations"].get(metadata["id"])
+            != pending["registration_id"]
+        ):
             raise ClusterError("invalid_snapshot")
         return self.cache(pending, snapshot)
+
+    def abort_join(self) -> dict:
+        """Discard only an unconfirmed local registration; do not contact its registry."""
+        with self.store.locked():
+            state = self.state()
+            if state["snapshot"] is not None:
+                raise ClusterError("not_pending_join")
+            self.store.clear()
+        return {
+            "discarded": state["member"]["id"],
+            "registry": state["registry"],
+            "registration_id": state["registration_id"],
+            "warning": "Remote registration may have succeeded; inspect the registry before retrying.",
+        }
 
     def cache(self, original: dict, snapshot: dict) -> dict:
         validate_snapshot(snapshot)
@@ -207,7 +254,10 @@ class Node:
             current = self.state()
             self.check_registration(current, original)
             previous = current["snapshot"]
-            if previous is None and current["member"] not in snapshot["members"]:
+            if previous is None and (
+                snapshot["registrations"].get(current["member"]["id"])
+                != current["registration_id"]
+            ):
                 # A pending join must remain retryable until registration is observed.
                 return snapshot
             if previous is not None:
@@ -264,9 +314,8 @@ class Node:
             member_id=state["member"]["id"],
             joined=bool(
                 snapshot
-                and any(
-                    item["id"] == state["member"]["id"] for item in snapshot["members"]
-                )
+                and snapshot["registrations"].get(state["member"]["id"])
+                == state["registration_id"]
             ),
             registry=state["registry"],
             registry_reachable=reachable,
@@ -281,6 +330,11 @@ class Node:
         request = dict(
             method="leave",
             member_id=target,
+            registration_id=(
+                state["registration_id"]
+                if target == state["member"]["id"]
+                else (state["snapshot"] or {}).get("registrations", {}).get(target)
+            ),
             cluster_id=state["snapshot"]["cluster_id"] if state["snapshot"] else None,
         )
         if state["registry"] is None:

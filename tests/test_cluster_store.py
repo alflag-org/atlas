@@ -29,7 +29,13 @@ def test_concurrent_registry_writers_preserve_all_members(tmp_path):
                 "-c",
                 source,
                 str(node.store.directory),
-                json.dumps({"method": "join", "member": metadata(f"worker-{i}")}),
+                json.dumps(
+                    {
+                        "method": "join",
+                        "registration_id": "test-registration",
+                        "member": metadata(f"worker-{i}"),
+                    }
+                ),
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -57,7 +63,13 @@ def test_atomic_write_failure_preserves_registry(tmp_path, monkeypatch):
 
     monkeypatch.setattr(os, "replace", fail)
     with pytest.raises(OSError):
-        node.registry_request({"method": "join", "member": metadata("worker")})
+        node.registry_request(
+            {
+                "method": "join",
+                "registration_id": "test-registration",
+                "member": metadata("worker"),
+            }
+        )
     assert node.store.path.read_bytes() == saved
     assert sorted(p.name for p in node.store.directory.iterdir()) == [
         ".lock",

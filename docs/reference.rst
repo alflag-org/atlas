@@ -345,3 +345,75 @@ health. The SDK provides no health check or watchdog.
 
 The daemon runs as the invoking user. Provision directory ownership and service
 permissions for that account; the SDK does not change users.
+
+Managing host daemons
+---------------------
+
+An operator declares each service in ``/etc/atlas/daemons.d/<name>.yml``.
+``ATLAS_ETC_DIR`` changes this configuration root. Provision the application,
+its OS account, and its working directory before installing the service::
+
+    schema: atlas.daemon-instance/v1
+    name: sampled
+    executable: /opt/sampled/bin/sampled
+    arguments: []
+    user: sample
+    working_directory: /var/lib/sample
+    environment_files: []
+    restart: on-failure
+    restart_delay_seconds: 5
+    startup_timeout_seconds: 30
+    stop_timeout_seconds: 30
+    notify: true
+
+The filename and ``name`` must agree. Names start with a lowercase letter and
+contain at most 63 lowercase letters, digits, underscores, or hyphens. Paths
+are absolute. Configuration and environment files must be regular files owned
+by root or the caller, without group or other write access. Their directory
+components must also be owner controlled; symlinks are rejected. Executables
+may be native programs or installed Python entry points. No application code
+is imported during management.
+
+``restart`` accepts ``no`` (quote it in YAML), ``on-failure``, or ``always``.
+Timeouts and restart delays must be positive and finite. Set ``notify: false``
+for applications that do not send systemd readiness notifications; these use
+``Type=exec``. Unknown fields and invalid types are rejected.
+
+Inspect, install, and start are separate operations::
+
+    atlas daemon list
+    atlas daemon inspect sampled --json
+    atlas daemon validate sampled
+    atlas daemon install sampled
+    atlas daemon enable sampled
+    atlas daemon start sampled
+    atlas daemon status sampled --json
+    atlas daemon logs sampled --since today
+
+``install`` atomically writes ``atlas-daemon-sampled.service`` in
+``/etc/systemd/system`` and reloads systemd. It restores the previous unit if
+reload fails. It does not enable or start the service, and will not overwrite
+an unmanaged unit. The system manager runs the executable directly as the
+configured user, with private state and runtime directories at
+``/var/lib/atlas/sampled`` and ``/run/atlas/sampled``. Arguments are literal;
+systemd variable and specifier expansion is escaped. See the upstream
+`command-line rules <https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html#Command%20lines>`_.
+
+Use ``stop``, ``restart``, and ``disable`` explicitly. ``remove`` refuses an
+active or enabled unit, removes only the managed unit, and retains application
+state. Calls use the caller's OS authorization without ``sudo`` or an
+interactive privilege prompt. ``status`` and ``stop`` still work when the
+configured executable has disappeared.
+
+Status JSON uses ``atlas.daemon-status/v1``. ``active`` and ``enabled`` retain
+systemd's state strings; ``installed`` reports a loaded unit. ``ready`` is a
+boolean for notify services and ``null`` when readiness is unsupported.
+``health`` is ``unknown``: running is not evidence of application health.
+``inspect --json`` returns the instance schema. Failures exit 2; JSON diagnostics
+use ``atlas.daemon-error/v1`` with ``invalid_configuration`` or
+``operation_failed``. ``logs`` returns journalctl's exit code.
+
+Application output and service events stay in journald. Successful operator
+requests also emit ``atlas.daemon-event/v1`` records through syslog with the
+instance, action, and caller UID. No daemon is recorded as a permanent entry
+in the completed-command run log.

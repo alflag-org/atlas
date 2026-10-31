@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import io
 import json
 
@@ -96,33 +95,3 @@ def test_cli_does_not_offer_job_execution_or_daemon_startup(capsys):
         with pytest.raises(SystemExit) as error:
             main(["cluster", removed])
         assert error.value.code == 2
-
-
-def test_leave_does_not_clear_a_replaced_local_identity(tmp_path, monkeypatch):
-    registry, worker = Node(tmp_path / "registry"), Node(tmp_path / "worker")
-    registry.initialize("lab", metadata("registry"))
-
-    async def request(address, payload, *, timeout):
-        return registry.registry_request(payload)
-
-    monkeypatch.setattr(network, "request", request)
-    original = worker.cache
-
-    def replace(original_state, snapshot):
-        result = original(original_state, snapshot)
-        with worker.store.locked():
-            state = worker.state()
-            state["member"] = metadata("replacement")
-            worker.store.write(state)
-        return result
-
-    async def scenario():
-        await worker.join("registry", metadata("worker"))
-        monkeypatch.setattr(worker, "cache", replace)
-        from atlas_core.cluster import ClusterError
-
-        with pytest.raises(ClusterError, match="state_changed"):
-            await worker.leave()
-        assert worker.store.read()["member"]["id"] == "replacement"
-
-    asyncio.run(scenario())

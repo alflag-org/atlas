@@ -146,7 +146,7 @@ Labels and the advertised SSH address are supplied when initializing or joining.
 ``fetched_at`` (an ISO 8601 UTC timestamp). A remote read normally contacts the
 registry. If SSH fails, it returns the last saved snapshot with ``stale=True``.
 ``members(cached=True)`` reads only local state. Invalid responses or a changed
-cluster identity raise an error rather than silently using cached data.
+cluster identity or a lower registry revision raise an error rather than silently using cached data.
 
 ``status()`` returns membership information, including ``joined`` and
 ``registry_reachable``: true after a successful read, false after a connection
@@ -162,7 +162,7 @@ Use the same OS account and state directory as the CLI. The default directory is
 ``$XDG_STATE_HOME/atlas/cluster`` or ``~/.local/state/atlas/cluster``.
 
 ``ClusterError.code`` includes ``not_joined``, ``invalid_state``,
-``cluster_changed``, and ``member_conflict``. ``ClusterUnavailable`` reports
+``cluster_changed``, ``registry_revision_regressed``, and ``member_conflict``. ``ClusterUnavailable`` reports
 ``registry_unavailable`` or ``no_cached_members``. There are no automatic retries.
 See :doc:`reference` for SSH setup and membership changes.
 

@@ -170,7 +170,9 @@ def test_late_snapshot_cannot_replace_newer_state(registry, tmp_path, monkeypatc
         old = copy.deepcopy(original["snapshot"])
         registry.registry_request({"method": "join", "member": metadata("new")})
         newer, _ = await worker.snapshot()
-        assert worker.cache(original, old) == newer
+        with pytest.raises(ClusterError, match="registry_revision_regressed"):
+            worker.cache(original, old)
+        assert worker.store.read()["snapshot"] == newer
         with pytest.raises(ClusterError, match="cluster_changed"):
             worker.cache(original, old | {"cluster_id": "replacement"})
         with worker.store.locked():
@@ -258,3 +260,93 @@ def test_invalid_metadata_is_rejected_without_mutation(registry, changes):
             {"method": "join", "member": metadata("bad") | changes}
         )
     assert registry.store.path.read_bytes() == saved
+
+
+@pytest.mark.parametrize("rejoin_complete", [False, True])
+def test_delayed_leave_cannot_clear_a_new_registration(
+    registry, tmp_path, monkeypatch, rejoin_complete
+):
+    async def scenario():
+        worker = Node(tmp_path / "worker")
+        await worker.join("ops@registry", metadata("worker"))
+        original = network.request
+        both_started, release = asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def delayed(address, payload, *, timeout):
+            nonlocal calls
+            response = await original(address, payload, timeout=timeout)
+            calls += 1
+            if calls == 2:
+                both_started.set()
+                await release.wait()
+            else:
+                await both_started.wait()
+            return response
+
+        monkeypatch.setattr(network, "request", delayed)
+        first = asyncio.create_task(worker.leave())
+        second = asyncio.create_task(worker.leave())
+        await first
+        monkeypatch.setattr(network, "request", original)
+        if rejoin_complete:
+            await worker.join("ops@registry", metadata("worker"))
+        else:
+
+            async def unavailable(*args, **kwargs):
+                raise ClusterUnavailable("registry_unavailable")
+
+            monkeypatch.setattr(network, "request", unavailable)
+            with pytest.raises(ClusterUnavailable):
+                await worker.join("ops@registry", metadata("worker"))
+        registration = worker.store.read()["registration_id"]
+        release.set()
+        with pytest.raises(ClusterError, match="state_changed"):
+            await second
+        assert worker.store.read()["registration_id"] == registration
+        monkeypatch.setattr(network, "request", original)
+        if not rejoin_complete:
+            await worker.join("ops@registry", metadata("worker"))
+        assert (await worker.status())["joined"]
+
+    asyncio.run(scenario())
+
+
+def test_leave_requires_confirmation_from_the_same_registry(
+    registry, tmp_path, monkeypatch
+):
+    async def scenario():
+        worker = Node(tmp_path / "worker")
+        await worker.join("ops@registry", metadata("worker"))
+        snapshot = registry.registry_request({"method": "members"})
+        for response, code in [
+            (snapshot, "invalid_snapshot"),
+            (snapshot | {"cluster_id": "other"}, "cluster_changed"),
+        ]:
+
+            async def request(*args, response=response, **kwargs):
+                return response
+
+            monkeypatch.setattr(network, "request", request)
+            with pytest.raises(ClusterError, match=code):
+                await worker.leave()
+            assert worker.store.path.exists()
+
+    asyncio.run(scenario())
+
+
+def test_restored_registry_cannot_label_old_cache_as_fresh(registry, tmp_path):
+    async def scenario():
+        worker = Node(tmp_path / "worker")
+        await worker.join("ops@registry", metadata("worker"))
+        backup = registry.store.path.read_bytes()
+        registry.registry_request({"method": "join", "member": metadata("new")})
+        client = ClusterClient(worker.store.directory)
+        latest = await client.members()
+        registry.store.path.write_bytes(backup)
+        with pytest.raises(ClusterError, match="registry_revision_regressed"):
+            await client.members()
+        saved = await client.members(cached=True)
+        assert saved.stale and saved.members == latest.members
+
+    asyncio.run(scenario())

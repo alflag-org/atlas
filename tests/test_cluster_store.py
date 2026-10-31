@@ -106,6 +106,7 @@ def test_state_symlinks_are_not_followed(tmp_path, target):
         json.dumps(
             {
                 "schema": "atlas.membership/v1",
+                "registration_id": "local-registration",
                 "member": metadata("registry"),
                 "registry": None,
                 "snapshot": None,
@@ -114,6 +115,7 @@ def test_state_symlinks_are_not_followed(tmp_path, target):
         json.dumps(
             {
                 "schema": "atlas.membership/v1",
+                "registration_id": "local-registration",
                 "member": metadata("worker"),
                 "registry": "bad;host",
                 "snapshot": None,

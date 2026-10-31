@@ -90,6 +90,7 @@ class Node:
         if value is None:
             raise ClusterError("not_joined")
         try:
+            text(value["registration_id"])
             member(value["member"])
             if value["registry"] is not None:
                 network.destination(value["registry"])
@@ -118,6 +119,7 @@ class Node:
             self.store.write(
                 dict(
                     schema="atlas.membership/v1",
+                    registration_id=str(uuid4()),
                     member=metadata,
                     registry=None,
                     snapshot=snapshot,
@@ -172,12 +174,23 @@ class Node:
         network.destination(via)
         metadata = member(metadata)
         pending = dict(
-            schema="atlas.membership/v1", registry=via, member=metadata, snapshot=None
+            schema="atlas.membership/v1",
+            registration_id=str(uuid4()),
+            registry=via,
+            member=metadata,
+            snapshot=None,
         )
         with self.store.locked():
             existing = self.store.read()
-            if existing is not None and existing != pending:
-                raise ClusterError("already_joined")
+            if existing is not None:
+                existing = self.state()
+                if (
+                    existing["registry"] != via
+                    or existing["member"] != metadata
+                    or existing["snapshot"] is not None
+                ):
+                    raise ClusterError("already_joined")
+                pending = existing
             # Retain the exact registration across a lost SSH response.
             self.store.write(pending)
         snapshot = await network.request(
@@ -192,11 +205,7 @@ class Node:
         validate_snapshot(snapshot)
         with self.store.locked():
             current = self.state()
-            if (
-                current["registry"] != original["registry"]
-                or current["member"] != original["member"]
-            ):
-                raise ClusterError("state_changed")
+            self.check_registration(current, original)
             previous = current["snapshot"]
             if previous is None and current["member"] not in snapshot["members"]:
                 # A pending join must remain retryable until registration is observed.
@@ -205,10 +214,18 @@ class Node:
                 if previous["cluster_id"] != snapshot["cluster_id"]:
                     raise ClusterError("cluster_changed")
                 if previous["revision"] > snapshot["revision"]:
-                    return previous
+                    raise ClusterError("registry_revision_regressed")
             current["snapshot"] = snapshot
             self.store.write(current)
             return snapshot
+
+    @staticmethod
+    def check_registration(current: dict, original: dict) -> None:
+        if any(
+            current[key] != original[key]
+            for key in ("registration_id", "registry", "member")
+        ):
+            raise ClusterError("state_changed")
 
     async def snapshot(self, *, cached: bool = False) -> tuple[dict, bool | None]:
         with self.store.locked():
@@ -272,10 +289,18 @@ class Node:
             snapshot = await network.request(
                 state["registry"], request, timeout=self.timeout
             )
-            self.cache(state, snapshot)
+            validate_snapshot(snapshot)
+            if (
+                state["snapshot"] is not None
+                and snapshot["cluster_id"] != state["snapshot"]["cluster_id"]
+            ):
+                raise ClusterError("cluster_changed")
+            if any(item["id"] == target for item in snapshot["members"]):
+                raise ClusterError("invalid_snapshot")
             if target == state["member"]["id"]:
                 with self.store.locked():
-                    if self.state()["member"] != state["member"]:
-                        raise ClusterError("state_changed")
+                    self.check_registration(self.state(), state)
                     self.store.clear()
+            else:
+                self.cache(state, snapshot)
         return {"removed": target}

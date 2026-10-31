@@ -29,7 +29,6 @@ async def request(address: str, payload: dict, *, timeout: float) -> dict:
     data = json.dumps(payload).encode()
     if len(data) > MAX_BYTES:
         raise ClusterError("membership_too_large")
-    process = None
     try:
         async with asyncio.timeout(timeout):
             process = await asyncio.create_subprocess_exec(
@@ -46,26 +45,28 @@ async def request(address: str, payload: dict, *, timeout: float) -> dict:
                 stderr=asyncio.subprocess.DEVNULL,
                 start_new_session=True,
             )
-            process.stdin.write(data)
-            await process.stdin.drain()
-            process.stdin.close()
             try:
-                response = await process.stdout.readexactly(MAX_BYTES + 1)
-            except asyncio.IncompleteReadError as exc:
-                response = exc.partial
-            if len(response) > MAX_BYTES:
-                raise ClusterError("invalid_response")
-            if await process.wait() != 0:
-                raise ClusterUnavailable("registry_unavailable")
+                process.stdin.write(data)
+                await process.stdin.drain()
+                process.stdin.close()
+                try:
+                    response = await process.stdout.readexactly(MAX_BYTES + 1)
+                except asyncio.IncompleteReadError as exc:
+                    response = exc.partial
+                if len(response) > MAX_BYTES:
+                    raise ClusterError("invalid_response")
+                returncode = await process.wait()
+                if returncode != 0:
+                    raise ClusterUnavailable("registry_unavailable")
+            finally:
+                # A ProxyCommand can retain stdout after the SSH parent has exited.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                await process.wait()
     except (OSError, TimeoutError):
         raise ClusterUnavailable("registry_unavailable") from None
-    finally:
-        if process is not None and process.returncode is None:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            await process.wait()
     try:
         result = json.loads(response)
         if result["schema"] != "atlas.membership-rpc/v1":

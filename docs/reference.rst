@@ -499,7 +499,10 @@ Back up the registry's ``membership.json`` while no membership commands are
 running, retaining its ownership and permissions. Restore it under the same
 account and SSH destination. Do not run two independent writable copies of a
 registry. Clients reject a different cluster ID instead of replacing a known
-registry silently. A follower cache is not a registry backup.
+registry silently. They also reject revisions older than their saved snapshot;
+a restored older backup must not be presented as current membership. Restore
+the latest registry backup or create a new registry and register hosts again.
+A follower cache is not a registry backup.
 
 CLI results are JSON on stdout. Errors use ``atlas.cluster-error/v1`` on stderr
 and exit 2. The internal ``_registry`` entry point exchanges bounded JSON over

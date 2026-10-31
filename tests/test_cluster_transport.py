@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -131,3 +133,47 @@ def test_invalid_deadlines_are_rejected(timeout):
         Node(timeout=timeout)
     with pytest.raises(ValueError):
         asyncio.run(network.request("registry", {}, timeout=timeout))
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_cleanup_kills_ssh_descendants_after_parent_exit(tmp_path, monkeypatch, cancel):
+    child_pid = tmp_path / "child.pid"
+    ssh_script(
+        tmp_path,
+        monkeypatch,
+        "sys.stdin.read()\n"
+        "if os.fork() == 0:\n"
+        f" open({str(child_pid)!r}, 'w').write(str(os.getpid()))\n"
+        " time.sleep(60)\n"
+        "os._exit(0)\n",
+    )
+
+    async def scenario():
+        task = asyncio.create_task(
+            network.request("registry", {}, timeout=0.5 if not cancel else 10)
+        )
+        async with asyncio.timeout(3):
+            while not child_pid.exists():
+                await asyncio.sleep(0.01)
+        if cancel:
+            await asyncio.sleep(0.05)
+            task.cancel()
+        try:
+            with pytest.raises(
+                asyncio.CancelledError if cancel else ClusterUnavailable
+            ):
+                await task
+            # An orphan may remain a zombie until PID 1 reaps it; it must not run.
+            status = Path(f"/proc/{child_pid.read_text()}/stat")
+            async with asyncio.timeout(3):
+                while status.exists():
+                    if status.read_text().split(")", 1)[1].split()[0] == "Z":
+                        break
+                    await asyncio.sleep(0.01)
+        finally:
+            try:
+                os.kill(int(child_pid.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    asyncio.run(scenario())

@@ -95,6 +95,22 @@ automation repositories. `atlas secret check <logical-name> ...` verifies availa
 without displaying values. See [the operator reference](docs/reference.rst) for setup,
 program integration, and recovery.
 
+## Independent daemons
+
+`atlas_core.daemon` provides an async foreground lifecycle with explicit readiness,
+SIGTERM/SIGINT handling, and bounded cooperative shutdown. Applications run directly
+with Atlas installed in their Python environment; no Atlas manager or systemd is required.
+
+```bash
+# From a checkout, with Atlas installed in this interpreter:
+cd examples/daemon
+python -m hoged
+# Ctrl-C stops the example gracefully.
+```
+
+See [the Python API](docs/api.rst) for implementation and
+[the operator reference](docs/reference.rst) for directories and shutdown limits.
+
 ## Development
 
 The repository uses mise:
@@ -105,4 +121,4 @@ mise run check
 make clean-docs html SPHINXOPTS=-W
 ```
 
-The examples under `examples/` are local program trees, not Atlas-managed distributions.
+The examples under `examples/` include local program trees and a standalone daemon.

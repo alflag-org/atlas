@@ -294,3 +294,54 @@ retain their logical names. Atlas does not currently ship other adapters.
 Official setup details are available in the `SDK documentation
 <https://bitwarden.com/help/secrets-manager-sdk/>`_ and `machine account guidance
 <https://bitwarden.com/help/machine-accounts/>`_.
+
+Standalone daemon environment
+-----------------------------
+
+Applications using ``atlas_core.daemon`` run directly in the foreground. Install
+Atlas in that application's Python environment and invoke its executable or
+module. See :doc:`api` for the lifecycle API and standalone ``hoged`` example.
+The SDK neither reads Atlas host configuration nor registers commands or starts
+services. Existing ``atlas run``, shims, run identifiers, and JSONL records retain
+their completed-command contract.
+
+Directory selection is independent for persistent state and runtime files:
+
+.. list-table:: Daemon directories
+   :header-rows: 1
+
+   * - Purpose
+     - Service-manager override
+     - Standalone default
+   * - Persistent application state
+     - ``STATE_DIRECTORY``
+     - ``$XDG_STATE_HOME/atlas/<name>`` or ``~/.local/state/atlas/<name>``
+   * - Runtime sockets and temporary application files
+     - ``RUNTIME_DIRECTORY``
+     - ``$XDG_RUNTIME_DIR/atlas/<name>`` or a random private temporary directory
+
+The name defaults to ``daemon``; applications should provide their own name,
+using lowercase letters, digits, and single separating hyphens, starting with a
+letter. Distinct instances need distinct names or explicit directories. The SDK
+does not enforce single-instance locking.
+
+Manager overrides must each contain exactly one absolute path, not a colon-separated
+list. Directory paths must have no parent traversal or symlink components. Missing
+directories are created with mode ``0700``; the selected state/runtime directories
+must belong to the executing user and have exactly that mode. An XDG runtime base
+must also be private. Invalid paths, ownership, permissions, or filesystem access
+fail startup rather than falling back to another location. In particular, relative
+XDG overrides are rejected. Empty XDG variables use the standalone defaults;
+empty service-manager overrides are errors. Existing permissions are never changed.
+
+Persistent state and explicitly selected runtime directories are retained on exit.
+Without a runtime override, the random temporary directory is removed when ``run``
+returns. Its path is available through ``ctx.runtime_dir``; it is not a stable
+endpoint between starts. SIGKILL or host failure may leave temporary files behind.
+The fallback is not guaranteed to be memory-backed: do not use it as a secret store.
+
+When an operator provides a systemd unit, set directory modes to ``0700`` and use
+``Type=notify`` with ``NotifyAccess=main`` for readiness. Start the application's
+executable directly. Process ownership and authorization remain with the OS;
+the SDK does not change users. Daemon management CLI, IPC, and Cluster are not
+implemented by this SDK.

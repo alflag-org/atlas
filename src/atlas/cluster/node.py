@@ -101,6 +101,15 @@ class Node:
             member(value["member"])
             if value["registry"] is not None:
                 network.destination(value["registry"])
+            else:
+                if not isinstance(value["retired"], dict):
+                    raise TypeError
+                for host_id, generations in value["retired"].items():
+                    text(host_id)
+                    if not isinstance(generations, list):
+                        raise TypeError
+                    for generation in generations:
+                        text(generation)
             if value["snapshot"] is not None:
                 validate_snapshot(value["snapshot"])
             elif value["registry"] is None:
@@ -131,6 +140,7 @@ class Node:
                     registration_id=registration_id,
                     member=metadata,
                     registry=None,
+                    retired={},
                     snapshot=snapshot,
                 )
             )
@@ -149,6 +159,8 @@ class Node:
             if method == "join":
                 addition = member(request.get("member"))
                 registration_id = text(request.get("registration_id"))
+                if registration_id in state["retired"].get(addition["id"], []):
+                    raise ClusterError("registration_retired")
                 existing = next(
                     (
                         item
@@ -178,6 +190,11 @@ class Node:
                 current = snapshot["registrations"].get(identifier)
                 if current is not None and current != expected:
                     raise ClusterError("registration_changed")
+                if expected is not None:
+                    retired = state["retired"].setdefault(identifier, [])
+                    if expected not in retired:
+                        # Also retire an absent pending join: its request may arrive later.
+                        retired.append(expected)
                 remaining = [
                     item for item in snapshot["members"] if item["id"] != identifier
                 ]

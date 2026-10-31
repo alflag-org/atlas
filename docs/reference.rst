@@ -471,7 +471,9 @@ a delayed leave cannot remove a later registration of the same host. To remove
 another host, first refresh ``members``. If it has rejoined since that snapshot,
 removal fails with ``registration_changed``; inspect the latest membership before
 trying again. Generation IDs are internal membership metadata, not execution
-permissions or locks.
+permissions or locks. The registry retains removed generations and rejects a
+delayed Join for one of them with ``registration_retired``. A later registration
+uses a new generation.
 
 Joining with an existing ID but different metadata or a different registration
 generation fails with ``member_conflict``.

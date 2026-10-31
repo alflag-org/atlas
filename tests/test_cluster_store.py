@@ -121,6 +121,7 @@ def test_state_symlinks_are_not_followed(tmp_path, target):
                 "registration_id": "local-registration",
                 "member": metadata("registry"),
                 "registry": None,
+                "retired": {},
                 "snapshot": None,
             }
         ),
@@ -150,3 +151,19 @@ def test_state_location_defaults(tmp_path, monkeypatch):
     monkeypatch.delenv("XDG_STATE_HOME")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     assert Store().directory == tmp_path / ".local/state/atlas/cluster"
+
+
+@pytest.mark.parametrize("retired", [[], {"worker": {}}, {"worker": [""]}])
+def test_corrupt_retired_generations_cannot_reenable_old_joins(tmp_path, retired):
+    node = Node(tmp_path / "registry")
+    node.initialize("lab", metadata("registry"))
+    with node.store.locked():
+        state = node.state()
+        state["retired"] = retired
+        node.store.write(state)
+    saved = node.store.path.read_bytes()
+    with pytest.raises(ClusterError, match="invalid_state"):
+        node.registry_request(
+            {"method": "join", "member": metadata("worker"), "registration_id": "old"}
+        )
+    assert node.store.path.read_bytes() == saved

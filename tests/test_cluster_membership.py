@@ -544,3 +544,38 @@ def test_join_response_must_confirm_the_pending_generation(
         worker.abort_join()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("registered", [False, True])
+def test_delayed_join_cannot_restore_a_successfully_left_generation(
+    registry, tmp_path, monkeypatch, registered
+):
+    async def scenario():
+        worker = Node(tmp_path / "worker")
+        original = network.request
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def delayed(address, payload, *, timeout):
+            if payload["method"] == "join" and not started.is_set():
+                started.set()
+                await release.wait()
+            return await original(address, payload, timeout=timeout)
+
+        monkeypatch.setattr(network, "request", delayed)
+        first = asyncio.create_task(worker.join("ops@registry", metadata("worker")))
+        await started.wait()
+        if registered:
+            # A retry confirms the same generation while the first request is delayed.
+            await worker.join("ops@registry", metadata("worker"))
+        assert await worker.leave() == {"removed": "worker"}
+        release.set()
+        with pytest.raises(ClusterError, match="registration_retired"):
+            await first
+        assert not worker.store.path.exists()
+        assert registry.registry_request({"method": "members"})["members"] == [
+            metadata("registry")
+        ]
+        await worker.join("ops@registry", metadata("worker"))
+        assert (await worker.status())["joined"]
+
+    asyncio.run(scenario())

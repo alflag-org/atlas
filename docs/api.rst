@@ -108,7 +108,8 @@ message, traceback, arguments, or environment values are logged automatically.
 Application log messages and custom handlers remain the application's responsibility.
 ``ctx.logger`` is a per-run INFO logger with a stderr handler; it accepts normal
 ``logging`` methods and ``extra`` fields for application-installed formatters.
-It does not modify the root logger or write Atlas JSONL execution records.
+The logger is active only during ``run()``. It does not modify the root logger
+or write Atlas JSONL execution records.
 ``SystemExit`` and other ``BaseException`` subclasses propagate after cleanup.
 Misuse from another thread or an active event loop raises ``RuntimeError``.
 

@@ -11,14 +11,14 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
-def _absolute(value: str) -> Path:
+def _absolute_directory(value: str) -> Path:
     path = Path(value)
     if not path.is_absolute() or ".." in path.parts or "\0" in value:
         raise ValueError("daemon directory must be an absolute path without parent traversal")
     return path
 
 
-def _private_directory(path: Path) -> Path:
+def _ensure_private_directory(path: Path) -> Path:
     # Check ancestors before creating children: never write through a symlink.
     for directory in (*reversed(path.parents), path):
         try:
@@ -41,25 +41,33 @@ def _manager_directory(key: str) -> Path | None:
         return None
     if ":" in value:
         raise ValueError("daemon requires exactly one service-manager directory")
-    return _private_directory(_absolute(value))
+    return _ensure_private_directory(_absolute_directory(value))
+
+
+def _state_directory(name: str) -> Path:
+    state = _manager_directory("STATE_DIRECTORY")
+    if state is None:
+        state_home = os.environ.get("XDG_STATE_HOME")
+        base = (
+            _absolute_directory(state_home)
+            if state_home else _absolute_directory(str(Path.home())) / ".local/state"
+        )
+        state = _ensure_private_directory(base / "atlas" / name)
+    return state
 
 
 @contextmanager
 def directories(name: str) -> Iterator[tuple[Path, Path]]:
     """Retain persistent state; remove only a runtime directory created by mkdtemp."""
-    state = _manager_directory("STATE_DIRECTORY")
-    if state is None:
-        value = os.environ.get("XDG_STATE_HOME")
-        base = _absolute(value) if value else _absolute(str(Path.home())) / ".local/state"
-        state = _private_directory(base / "atlas" / name)
+    state = _state_directory(name)
     runtime = _manager_directory("RUNTIME_DIRECTORY")
     if runtime is not None:
         yield state, runtime
         return
     value = os.environ.get("XDG_RUNTIME_DIR")
     if value:
-        base = _private_directory(_absolute(value))
-        yield state, _private_directory(base / "atlas" / name)
+        base = _ensure_private_directory(_absolute_directory(value))
+        yield state, _ensure_private_directory(base / "atlas" / name)
         return
     # Random, owner-only fallback: never claim a predictable shared /tmp socket path.
     with tempfile.TemporaryDirectory(prefix=f"{name}-") as temporary:

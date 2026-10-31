@@ -73,7 +73,7 @@ def _signals(loop: asyncio.AbstractEventLoop, context: DaemonContext) -> Iterato
             signal.signal(number, handler)
 
 
-async def _lifecycle(main: DaemonMain, context: DaemonContext, timeout: float) -> int:
+async def _run_application(main: DaemonMain, context: DaemonContext, timeout: float) -> int:
     async def invoke() -> None:
         result = await main(context)
         if result is not None:
@@ -93,9 +93,15 @@ async def _lifecycle(main: DaemonMain, context: DaemonContext, timeout: float) -
             context.logger.error("application stopped before readiness")
             return 1
         return 0
+    except asyncio.CancelledError:
+        context.logger.error("application cancelled")
+    except Exception as error:
+        # Exception bodies and tracebacks can contain application secrets.
+        context.logger.error("application failed (%s)", type(error).__name__)
     finally:
         context.stopping.set()
         stop.cancel()
+    return 1
 
 
 async def _cancel_remaining(timeout: float) -> bool:
@@ -112,43 +118,81 @@ async def _cancel_remaining(timeout: float) -> bool:
     return success
 
 
+async def _shutdown(context: DaemonContext, timeout: float) -> bool:
+    """Bound task cancellation and async-generator finalization independently."""
+    cleanup_timeout = min(timeout, 1.0)
+    tasks_cleaned = await _cancel_remaining(cleanup_timeout)
+    if not tasks_cleaned:
+        context.logger.error("task cleanup failed")
+
+    loop = asyncio.get_running_loop()
+    finalizer = asyncio.create_task(loop.shutdown_asyncgens())
+    completed, _ = await asyncio.wait((finalizer,), timeout=cleanup_timeout)
+    if not completed:
+        finalizer.cancel()
+        context.logger.error("async generator cleanup timed out")
+        return False
+    return tasks_cleaned
+
+
 def _serve(main: DaemonMain, context: DaemonContext, timeout: float) -> int:
     # asyncio.run waits indefinitely for cancellation-resistant tasks on exit.
     # Owning this loop lets the SDK bound async cleanup without a supervisor.
     loop = asyncio.new_event_loop()
-    failed = False
+    loop_failed = False
 
     def unhandled(_loop: asyncio.AbstractEventLoop, _details: dict[str, object]) -> None:
-        nonlocal failed
-        failed = True
+        nonlocal loop_failed
+        loop_failed = True
         context.logger.error("unhandled event-loop failure")
         context.stopping.set()
 
     loop.set_exception_handler(unhandled)
-    status = 1
     try:
         with _signals(loop, context):
             try:
-                status = loop.run_until_complete(_lifecycle(main, context, timeout))
-            except asyncio.CancelledError:
-                context.logger.error("application cancelled")
-            except Exception as error:
-                # Exception bodies and tracebacks can contain application secrets.
-                context.logger.error("application failed (%s)", type(error).__name__)
+                status = loop.run_until_complete(_run_application(main, context, timeout))
             finally:
+                # Preserve cleanup even when SystemExit or another BaseException propagates.
                 context.stopping.set()
-                if not loop.run_until_complete(_cancel_remaining(min(timeout, 1.0))):
-                    context.logger.error("task cleanup failed")
-                    failed = True
-                closing = loop.create_task(loop.shutdown_asyncgens())
-                done, _ = loop.run_until_complete(asyncio.wait((closing,), timeout=min(timeout, 1.0)))
-                if not done:
-                    closing.cancel()
-                    context.logger.error("async generator cleanup timed out")
-                    failed = True
+                cleaned = loop.run_until_complete(_shutdown(context, timeout))
     finally:
         loop.close()
-    return 1 if failed else status
+    return 1 if loop_failed or not cleaned else status
+
+
+@contextmanager
+def _logging() -> Iterator[logging.Logger]:
+    """Own one stderr handler without changing the process-wide logging configuration."""
+    logger = logging.Logger("atlas_core.daemon", level=logging.INFO)
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(name)s: %(levelname)s: %(message)s"))
+    logger.addHandler(handler)
+    try:
+        yield logger
+    finally:
+        # Abandoned tasks may be finalized later, after the failed run has ended.
+        logger.disabled = True
+        logger.removeHandler(handler)
+        handler.close()
+
+
+def _validate_options(main: DaemonMain, name: str | None, timeout: float) -> str:
+    selected_name = "daemon" if name is None else name
+    if not isinstance(selected_name, str) or not re.fullmatch(
+        r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", selected_name
+    ):
+        raise ValueError("invalid daemon name")
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
+        raise ValueError("invalid shutdown timeout")
+    if not callable(main):
+        raise TypeError("daemon main must be callable")
+    return selected_name
 
 
 def run(main: DaemonMain, *, name: str | None = None, shutdown_timeout: float = 30.0) -> int:
@@ -176,25 +220,13 @@ def run(main: DaemonMain, *, name: str | None = None, shutdown_timeout: float = 
     else:
         raise RuntimeError("daemon run cannot nest an event loop")
 
-    selected_name = "daemon" if name is None else name
-    logger = logging.Logger("atlas_core.daemon", level=logging.INFO)
-    handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("%(name)s: %(levelname)s: %(message)s"))
-    logger.addHandler(handler)
-    try:
-        if not isinstance(selected_name, str) or not re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", selected_name):
-            raise ValueError("invalid daemon name")
-        if (isinstance(shutdown_timeout, bool) or not isinstance(shutdown_timeout, (int, float))
-                or not math.isfinite(shutdown_timeout) or shutdown_timeout <= 0):
-            raise ValueError("invalid shutdown timeout")
-        if not callable(main):
-            raise TypeError("daemon main must be callable")
-        logger.name = selected_name
-        with directories(selected_name) as (state, runtime):
-            return _serve(main, DaemonContext(selected_name, logger, state, runtime), shutdown_timeout)
-    except (OSError, ValueError, TypeError) as error:
-        logger.error("daemon configuration failed (%s)", type(error).__name__)
-        return 2
-    finally:
-        logger.removeHandler(handler)
-        handler.close()
+    with _logging() as logger:
+        try:
+            selected_name = _validate_options(main, name, shutdown_timeout)
+            logger.name = selected_name
+            with directories(selected_name) as (state_dir, runtime_dir):
+                context = DaemonContext(selected_name, logger, state_dir, runtime_dir)
+                return _serve(main, context, shutdown_timeout)
+        except (OSError, ValueError, TypeError) as error:
+            logger.error("daemon configuration failed (%s)", type(error).__name__)
+            return 2

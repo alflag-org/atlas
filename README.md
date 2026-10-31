@@ -6,7 +6,7 @@ interpreters, creates a virtual environment per Python program, and exposes comm
 produces a JSONL record.
 
 Install and update program sources and dependencies with their own tooling. Infrastructure
-state, provider operations, inventory, workflows, and scheduling belong to those programs.
+state, provider operations, inventory, and scheduling belong to those programs.
 
 ## Configuration
 
@@ -101,6 +101,11 @@ python -m sampled
 
 See [the Python API](docs/api.rst) for lifecycle and shutdown behavior, and
 [the operator reference](docs/reference.rst#standalone-daemon-environment) for directory setup.
+
+Host-owned daemon declarations can be installed and operated with `atlas daemon`.
+The optional `atlas[cluster]` extra adds `atlasd`, secure node admission, and
+Plan/Apply workflows over registered commands. See [the operator reference](docs/reference.rst)
+for configuration, permissions, failure handling, and recovery.
 
 ## Development
 

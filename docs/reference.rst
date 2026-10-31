@@ -417,3 +417,152 @@ Application output and service events stay in journald. Successful operator
 requests also emit ``atlas.daemon-event/v1`` records through syslog with the
 instance, action, and caller UID. No daemon is recorded as a permanent entry
 in the completed-command run log.
+
+Cluster setup
+-------------
+
+Cluster is optional. Install ``atlas[cluster]`` in the environment running
+``atlasd``. The extra supplies X.509 support; ordinary commands and the Daemon
+SDK do not require it. ``atlasd`` is a foreground application using the same
+SDK as ``sampled``. It manages Cluster membership and command operations;
+other services run independently.
+
+Give each instance private persistent and runtime directories. For a direct
+start, set ``STATE_DIRECTORY`` and ``RUNTIME_DIRECTORY`` as described above::
+
+    atlasd --endpoint tls://192.0.2.10:7443 --display-name control
+
+The endpoint is an explicit IPv4 or bracketed IPv6 address and TCP port.
+It is both the listening and advertised address. No TCP listener starts until
+``init`` or ``join`` succeeds. Restarted members use their persisted endpoint.
+To run under systemd, declare an ``atlasd`` instance with this executable and
+arguments, then install and start it with ``atlas daemon``.
+
+The local CLI connects to ``/run/atlas/atlasd/control.sock``. Set
+``ATLAS_CLUSTER_SOCKET`` or use ``atlas cluster --socket <path> ...`` for
+another instance. The socket and its directory admit only the daemon's OS
+account. Provision access deliberately; Atlas does not change accounts.
+
+Initialize one authority, then create a short-lived invitation::
+
+    atlas cluster init --name lab
+    atlas cluster invite create --ttl 10m --label group=app --output join.json
+
+Transfer the invitation through an authenticated confidential channel. On the
+joining node, start ``atlasd`` with its own endpoint and directories, then run::
+
+    atlas cluster join --invite-file join.json
+    atlas cluster members
+    atlas cluster status
+
+Invitations contain a secret and pinned CA certificate. Files must be owned
+by the caller with mode ``0600``; output files are created exclusively and
+never overwritten. Invitations expire within one hour and admit one node.
+The joining node generates its private key locally. Subsequent peer calls
+use TLS 1.3 with certificates plus a live membership and permission check.
+Display names and host IDs confer no authority.
+
+Invited members receive ``read`` and ``execute`` permissions by default.
+Use repeated ``--permission`` flags to set permissions explicitly; ``admin``
+permits invitations and removal. Labels are set by the inviting administrator.
+``atlas cluster leave`` revokes the calling member; ``atlas cluster remove
+<node-id>`` revokes another member. The authority cannot remove itself.
+Revocation retains local identity and audit state. Use a new isolated instance
+for a new membership.
+
+If the join reply is lost, the node retains its key and refuses another join.
+``atlas cluster join --invite-file join.json --reconcile`` retrieves an already
+committed admission using the original invitation and key. It never admits a
+new member. An unresolved admission remains unjoined.
+
+The authority serializes membership changes in SQLite with WAL and full
+synchronous commits. Local status on another node is marked ``stale``;
+``members`` obtains a current authority response. An unreachable authority
+makes new membership changes and command operations unavailable. There is no
+automatic election, failover, discovery-based admission, or promotion from a
+cached snapshot. Certificates expire after one year; automatic renewal is not
+implemented. Recommission nodes before expiry.
+
+Cluster workflows
+-----------------
+
+Workflows are operator-owned files. Commands must already be registered on
+each target. A group selects the ``group`` label assigned during admission;
+``targets: {nodes: [<node-id>, ...]}`` selects explicit members::
+
+    schema: atlas.workflow/v1
+    name: deploy
+    steps:
+      - id: check
+        targets: {group: app}
+        command: app-check
+        mutates: false
+        max_parallel: 3
+      - id: deploy
+        needs: [check]
+        targets: {group: app}
+        command: app-deploy
+        arguments: []
+        mutates: true
+        rollout: {max_parallel: 1, max_unavailable: 1}
+        timeout_seconds: 120
+        verify: {command: app-health, timeout_seconds: 30}
+
+Plan without running commands, review the file, then confirm its digest::
+
+    atlas cluster plan deploy --workflow deploy.yml --out deploy.plan.json
+    atlas cluster apply deploy.plan.json --confirm <digest>
+    atlas cluster operation inspect <operation-id>
+    atlas cluster operation reconcile <operation-id>
+
+Plans expire after ten minutes. Their digest binds resolved node IDs,
+commands, literal arguments, dependencies, concurrency, verification, required
+permission, membership revision, registration configuration, and command entry-point hashes. Entry points
+are checked again before execution. Program trees remain mutable: imported
+modules, dependencies, and concurrent edits are not immutable snapshots.
+Keep secret values out of workflows; resolve references inside applications.
+
+Apply acknowledges a durable operation; inspect reports its progress.
+Independent steps are processed in dependency order, with parallel execution
+within each step. There are at most 100 steps and 32 concurrent targets per
+step. Step IDs use up to 64 letters, digits, underscores, or hyphens and start
+with a letter. ``rollout`` bounds concurrency by both supplied limits. A command or
+verification timeout is at most 120 seconds. The first failed or unknown
+result prevents further dependent work and queued rollout targets.
+
+The authority permits one operation at a time, including read-only operations.
+It issues a monotonically increasing fencing epoch and a five-minute lease;
+workers validate the grant before execution and verification. Each worker
+records execution identity before launching ``atlas run``. Repeated requests
+return journal state. Executor arguments, cleanup, exit conventions, and run
+records retain their existing behavior; ``operation_id`` links all runs, and
+``parent_run_id`` identifies the worker step.
+
+An operation moves from ``prepared`` to ``running`` and then ``succeeded``,
+``failed``, or ``unknown``. Worker results also distinguish ``timed_out``.
+Connection loss, process crashes, and incomplete journals can leave an outcome
+unknown. The lease remains reserved and new operations are refused even after
+its deadline. Reconcile reads worker journals without re-executing commands;
+when all dispatched work has a terminal result it marks the interrupted
+operation ``cancelled`` and releases the reservation. It does not run omitted
+steps or roll back changes. A worker whose journal is still unknown requires
+application-specific investigation; Atlas cannot infer external side effects
+from a process exit or a successful health probe.
+
+Cluster state and recovery
+--------------------------
+
+``cluster.sqlite3`` contains identity, CA material on the authority, invitation
+hashes, membership, operation journals, and fencing state. Protect the entire
+state directory and its backups as credentials. One process holds the database
+lock. Database corruption fails startup; it is not replaced with an empty
+Cluster. Restart changes incomplete executions to ``unknown``.
+
+For a consistent backup, stop the instance and copy its private state directory,
+including any SQLite WAL files, to protected storage. Keep the original
+permissions. Restore only while stopped. Before restoring an authority on a
+replacement host, fence the old host and prevent it from serving requests.
+Restore the authority's complete state and original endpoint, then inspect
+membership and reconcile incomplete operations before admitting new work.
+Never reconstruct an authority from a follower's local status or clear an
+unknown operation merely to resume changes.

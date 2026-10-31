@@ -121,3 +121,29 @@ method. The example's protocol and models belong to that package, not Atlas.
 
 .. automodule:: atlas_core.ipc
    :members: Client, Peer, IPCError, Unavailable, serve
+
+Cluster client
+--------------
+
+The client talks to a separately started local ``atlasd``. Importing it does
+not start services or load the optional cryptography dependency::
+
+    from atlas_core.cluster import ClusterClient
+
+    async def show_members():
+        async with ClusterClient.connect() as cluster:
+            for member in await cluster.members():
+                print(member.node_id, member.display_name)
+
+``status()`` returns local persisted identity; ``stale`` is true on a joined
+non-authority node. ``members()`` obtains an authorized current snapshot from
+the authority. ``ClusterUnavailable`` means the daemon or authority could not
+be reached; a mutation may still have committed. Other ``ClusterError`` codes
+include ``not_joined``, ``forbidden``, ``invalid_invitation``,
+``join_outcome_unknown``, ``stale_plan``, ``stale_fence``, and
+``operation_in_progress``. ``cluster_dependency_missing`` means the server
+needs ``atlas[cluster]``. CLI errors use ``atlas.cluster-error/v1`` and exit 2.
+See :doc:`reference` for commissioning, workflow, and recovery contracts.
+
+.. automodule:: atlas_core.cluster
+   :members: ClusterClient, ClusterError, ClusterUnavailable, NodeInfo, ClusterStatus

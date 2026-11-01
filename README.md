@@ -106,3 +106,10 @@ make clean-docs html SPHINXOPTS=-W
 ```
 
 The examples under `examples/` are local program trees, not Atlas-managed distributions.
+
+## Application logging
+
+Programs can opt into `atlas_core.logging` for stderr-first text or JSON Lines
+diagnostics with Atlas execution identifiers. Standard output remains reserved for
+command results. The Executor keeps its separate metadata-only run log.
+See [logging and output](docs/logging.rst) for destinations, formats and retention.

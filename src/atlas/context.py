@@ -6,6 +6,7 @@ import json
 import os
 import stat
 from pathlib import Path
+from typing import cast
 
 from atlas_core.host import get_host
 
@@ -104,8 +105,10 @@ def child_environment(
     environment = dict(os.environ)
     for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
         environment.pop(key, None)
+    host_details = cast("dict[str, str]", payload["host"])
     environment.update(
         {
+            "ATLAS_HOST_ID": host_details["id"],
             "ATLAS_CONTEXT_FILE": str(context_file),
             "ATLAS_HOME": str(paths.home),
             "ATLAS_ETC_DIR": str(paths.etc),

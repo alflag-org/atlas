@@ -254,6 +254,11 @@ def build_parser() -> argparse.ArgumentParser:
     venv_create = venv_sub.add_parser("create")
     venv_create.add_argument("program")
     venv_create.set_defaults(func=cmd_venv_create)
+    from .cluster.cli import add_parser as add_cluster_parser
+    from .daemon.cli import add_parser as add_daemon_parser
+
+    add_daemon_parser(sub)
+    add_cluster_parser(sub)
     return parser
 
 

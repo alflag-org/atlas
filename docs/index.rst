@@ -1,9 +1,11 @@
 Atlas
 =====
 
-Atlas provides a stable execution contract for automation that is already present on a host. It
-selects a runtime, identifies the host, resolves a command, exposes a context, and records the
-result. It does not retrieve automation programs or own infrastructure lifecycle operations.
+Atlas runs local automation programs with a selected runtime and host identity,
+and records each execution. It also provides a Python SDK for independent daemons.
+
+Use the operator reference to configure a host and the Python API reference to
+write programs and daemons.
 
 .. toctree::
    :maxdepth: 2

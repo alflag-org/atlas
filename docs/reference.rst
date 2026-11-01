@@ -58,9 +58,8 @@ started without a Python intermediary. The global Python selection is used when 
 does not specify its own version. A configured Python executable may be supplied as
 ``runtime.python.executable`` when the host's managed interpreter is not exposed through pyenv.
 
-Atlas never clones, fetches, downloads, extracts, installs, updates, rolls back, or garbage
-collects program trees. Place and update those trees using the program's normal packaging or
-deployment workflow.
+Install and update program trees with the program's own packaging or deployment tools.
+Atlas uses the local files without managing their versions.
 
 Command discovery and shims
 ---------------------------
@@ -294,3 +293,241 @@ retain their logical names. Atlas does not currently ship other adapters.
 Official setup details are available in the `SDK documentation
 <https://bitwarden.com/help/secrets-manager-sdk/>`_ and `machine account guidance
 <https://bitwarden.com/help/machine-accounts/>`_.
+
+.. _daemon-environment:
+
+Standalone daemon environment
+-----------------------------
+
+Install Atlas in the daemon's Python environment and run its executable or
+module directly. See :doc:`api` for the lifecycle API and ``sampled`` example.
+
+The SDK selects state and runtime directories separately:
+
+.. list-table:: Daemon directories
+   :header-rows: 1
+
+   * - Purpose
+     - Service-manager override
+     - Standalone default
+   * - Persistent state
+     - ``STATE_DIRECTORY``
+     - ``$XDG_STATE_HOME/atlas/<name>`` or ``~/.local/state/atlas/<name>``
+   * - Runtime files and sockets
+     - ``RUNTIME_DIRECTORY``
+     - ``$XDG_RUNTIME_DIR/atlas/<name>`` or a random private temporary directory
+
+Set ``name`` when calling ``run()``; it defaults to ``daemon``. Names start with
+a lowercase letter and contain lowercase letters, digits, and single separating
+hyphens. Use different names or explicit directories for separate instances.
+The SDK does not lock instances against concurrent starts.
+
+Each manager override accepts one absolute path, not a colon-separated list.
+All directory paths must be absolute, with no parent traversal or symlink
+components. Missing directories are created with mode ``0700``. The selected
+directories and any XDG runtime base must belong to the caller and have mode ``0700``. Existing permissions are left
+unchanged. Invalid paths, ownership, permissions, or filesystem access fail startup.
+Empty XDG variables use defaults; empty manager overrides are errors.
+
+State and explicitly selected runtime directories remain after exit. The temporary
+runtime fallback is removed when ``run()`` exits. SIGKILL or host failure can leave
+temporary files behind. Read the path from ``ctx.runtime_dir``; it changes
+between starts.
+The fallback may be disk-backed, so do not store secrets there.
+
+For systemd, start the executable directly and set directory modes to ``0700``.
+Use ``Type=notify`` and ``NotifyAccess=main`` to wait for readiness. ``ctx.ready()``
+sends ``READY=1`` to ``NOTIFY_SOCKET``, which accepts a filesystem path or a Linux
+abstract socket address. Without that variable, readiness is recorded locally.
+An invalid or unavailable socket raises an error; sending a datagram does not
+confirm that the manager accepted it. Readiness reports initialization, not ongoing
+health. The SDK provides no health check or watchdog.
+
+The daemon runs as the invoking user. Provision directory ownership and service
+permissions for that account; the SDK does not change users.
+
+Managing host daemons
+---------------------
+
+An operator declares each service in ``/etc/atlas/daemons.d/<name>.yml``.
+``ATLAS_ETC_DIR`` changes this configuration root. Provision the application,
+its OS account, and its working directory before installing the service::
+
+    schema: atlas.daemon-instance/v1
+    name: sampled
+    executable: /opt/sampled/bin/sampled
+    arguments: []
+    user: sample
+    working_directory: /var/lib/sample
+    environment_files: []
+    restart: on-failure
+    restart_delay_seconds: 5
+    startup_timeout_seconds: 30
+    stop_timeout_seconds: 30
+    notify: true
+
+The filename and ``name`` must agree. Names start with a lowercase letter and
+contain at most 63 lowercase letters, digits, underscores, or hyphens. Paths
+are absolute. Configuration and environment files must be regular files owned
+by root or the caller, without group or other write access. Their directory
+components must also be owner controlled; symlinks are rejected. Executables
+may be native programs or installed Python entry points. No application code
+is imported during management.
+
+``restart`` accepts ``no`` (quote it in YAML), ``on-failure``, or ``always``.
+Timeouts and restart delays must be positive and finite. Set ``notify: false``
+for applications that do not send systemd readiness notifications; these use
+``Type=exec``. Unknown fields and invalid types are rejected.
+
+Inspect, install, and start are separate operations::
+
+    atlas daemon list
+    atlas daemon inspect sampled --json
+    atlas daemon validate sampled
+    atlas daemon install sampled
+    atlas daemon enable sampled
+    atlas daemon start sampled
+    atlas daemon status sampled --json
+    atlas daemon logs sampled --since today
+
+``install`` atomically writes ``atlas-daemon-sampled.service`` in
+``/etc/systemd/system`` and reloads systemd. It restores the previous unit if
+reload fails. It does not enable or start the service, and will not overwrite
+an unmanaged unit. The system manager runs the executable directly as the
+configured user, with private state and runtime directories at
+``/var/lib/atlas/sampled`` and ``/run/atlas/sampled``. Arguments are literal;
+systemd variable and specifier expansion is escaped. See the upstream
+`command-line rules <https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html#Command%20lines>`_.
+
+Use ``stop``, ``restart``, and ``disable`` explicitly. ``remove`` refuses an
+active or enabled unit, removes only the managed unit, and retains application
+state. Calls use the caller's OS authorization without ``sudo`` or an
+interactive privilege prompt. ``status`` and ``stop`` still work when the
+configured executable has disappeared.
+
+Status JSON uses ``atlas.daemon-status/v1``. ``active`` and ``enabled`` retain
+systemd's state strings; ``installed`` reports a loaded unit. ``ready`` is a
+boolean for notify services and ``null`` when readiness is unsupported.
+``health`` is ``unknown``: running is not evidence of application health.
+``inspect --json`` returns the instance schema. Failures exit 2; JSON diagnostics
+use ``atlas.daemon-error/v1`` with ``invalid_configuration`` or
+``operation_failed``. ``logs`` returns journalctl's exit code.
+
+Application output and service events stay in journald. Successful operator
+requests also emit ``atlas.daemon-event/v1`` records through syslog with the
+instance, action, and caller UID. No daemon is recorded as a permanent entry
+in the completed-command run log.
+
+Cluster membership
+------------------
+
+Atlas Cluster maintains a list of hosts and their connection information. The
+first host is the registry; other hosts register and read it over SSH. No
+Cluster daemon, network listener, or additional Python dependency is required.
+Applications use this information to choose their own targets and execution
+policy. Cluster neither runs commands on members nor checks application health.
+
+Setup
+~~~~~
+
+Install Atlas on each host and configure its existing ``/etc/atlas/host.yml``
+with a unique ``id``, ``role``, and ``site``. ``ATLAS_HOST_FILE`` selects another
+host profile. Initialize the registry under the account that will own it::
+
+    atlas cluster init --name homelab --address ops@atlas-01
+
+On another host, verify the registry's SSH host key through your normal
+administration process and configure authentication for the intended account.
+``atlas`` must be on that account's non-interactive SSH command path. Then join::
+
+    atlas cluster join --via ops@atlas-01 --address ops@atlas-02 --label role=app
+    atlas cluster members
+    atlas cluster status
+
+The ``--address`` value is advertised metadata and defaults to the host's FQDN.
+Choose an address that consuming applications can use; Atlas does not probe it.
+SSH aliases and ports belong in the operator's SSH configuration. Connections
+use batch mode and strict host-key verification: unknown or changed host keys,
+password prompts, and failed authentication cause an error. Atlas never invokes
+``sudo`` or accepts host keys automatically.
+
+The registry's OS account owns membership administration. Anyone authorized to
+run commands as that account can register, read, or remove members. Use a
+dedicated account if this access should be restricted. Membership IDs, addresses,
+roles, sites, and labels are descriptive values supplied by authorized operators;
+they are not authenticated machine identities. SSH authenticates the registry
+host and the connecting OS user.
+
+Membership changes
+~~~~~~~~~~~~~~~~~~
+
+``atlas cluster leave`` removes the local member. An authorized operator can
+remove another host with ``atlas cluster leave --member <host-id>``. The registry
+itself cannot be removed with this command. Removing a member does not revoke SSH
+credentials or delete copies of cached metadata; manage OS access separately.
+
+Each registration has a generation ID. Removal must match that generation, so
+a delayed leave cannot remove a later registration of the same host. To remove
+another host, first refresh ``members``. If it has rejoined since that snapshot,
+removal fails with ``registration_changed``; inspect the latest membership before
+trying again. Generation IDs are internal membership metadata, not execution
+permissions or locks. The registry retains removed generations and rejects a
+delayed Join for one of them with ``registration_retired``. A later registration
+uses a new generation.
+
+Joining with an existing ID but different metadata or a different registration
+generation fails with ``member_conflict``.
+To change metadata, remove that registration and join again. To change the registry
+host's metadata, edit its host profile before creating a new registry. There is
+no automatic metadata synchronization or registry election.
+
+A failed SSH request may have committed a membership change before losing its
+response. A pending join retains its destination and metadata; retry the same
+join command. Retries retain the generation ID. Repeated removals are harmless
+once that registration is absent. Leave keeps local state until the registry
+confirms the response.
+
+If the pending join used the wrong destination, discard it explicitly before
+correcting the destination::
+
+    atlas cluster join --abort
+    atlas cluster join --via ops@atlas-02 --address ops@atlas-03
+
+``--abort`` only deletes an unconfirmed local join and makes no SSH request. It
+returns the old destination, host ID, registration generation, and a warning:
+the remote registration may already exist, or an in-flight request may still
+arrive. Inspect membership on the original registry and remove the abandoned
+registration if necessary. Aborting does not undo remote changes. A confirmed
+membership or registry cannot be discarded with this option; use ``leave`` for
+confirmed membership.
+
+Local state and freshness
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+State lives under ``$XDG_STATE_HOME/atlas/cluster`` or
+``~/.local/state/atlas/cluster``. ``atlas cluster --directory <path> ...`` selects
+a different local directory. Remote SSH requests always use the registry
+account's default directory. The directory must belong to the calling account
+and have mode 0700; files use 0600. Short local file transactions serialize
+membership edits. No lock is held across a remote request.
+
+``members`` and ``status`` normally refresh remote data. If the registry cannot
+be reached, saved membership remains available with ``stale: true`` and its
+original ``fetched_at`` timestamp. Use ``--cached`` to skip the connection.
+``status`` distinguishes an unsuccessful connection from one that was not
+attempted. Cached membership does not imply reachability, current membership,
+or application health. Consumers decide whether stale information is usable.
+Without a saved snapshot, a member-list request fails with ``no_cached_members``.
+
+Back up the registry's ``membership.json`` while no membership commands are
+running, retaining its ownership and permissions. Restore it under the same
+account and SSH destination. Do not run two independent writable copies of a
+registry. Clients reject a different cluster ID instead of replacing a known
+registry silently. They also reject revisions older than their saved snapshot;
+a restored older backup must not be presented as current membership. Restore
+the latest registry backup or create a new registry and register hosts again.
+A follower cache is not a registry backup.
+
+CLI results are JSON on stdout. Errors use ``atlas.cluster-error/v1`` on stderr
+and exit 2. The internal ``_registry`` entry point exchanges bounded JSON over
+SSH standard input/output; it is not a public command execution interface.

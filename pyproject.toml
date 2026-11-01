@@ -38,6 +38,7 @@ dependencies = {file = ["src/atlas/support-requirements.txt"]}
 
 [tool.setuptools.package-data]
 atlas = ["support-requirements.txt"]
+atlas_core = ["py.typed"]
 
 [tool.pytest.ini_options]
 pythonpath = [

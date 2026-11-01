@@ -7,7 +7,7 @@ import pytest
 
 from atlas.catalog import CommandRef
 from atlas.config import ProgramConfig, ProgramRuntime
-from atlas.context import execution_context, write_context
+from atlas.context import child_environment, execution_context, write_context
 from atlas.paths import get_paths
 from atlas_core import get_context
 
@@ -155,3 +155,25 @@ def test_context_rejects_missing_fields_and_non_object(tmp_path: Path, monkeypat
     monkeypatch.setenv("ATLAS_CONTEXT_FILE", str(path))
     with pytest.raises(RuntimeError, match="working_directory"):
         get_context()
+
+
+def test_child_environment_provides_host_id(tmp_path: Path) -> None:
+    paths = get_paths({
+        "ATLAS_HOME": str(tmp_path / "opt"),
+        "ATLAS_ETC_DIR": str(tmp_path / "etc"),
+        "ATLAS_VAR_DIR": str(tmp_path / "var"),
+    })
+    paths.host_file.parent.mkdir(parents=True, exist_ok=True)
+    paths.host_file.write_text("version: 1\nhost:\n  id: control01\n", encoding="utf-8")
+    program = ProgramConfig("tool", tmp_path / "tool", ProgramRuntime("native"))
+    command = CommandRef("run", program, program.root / "bin/run", "native")
+    payload = execution_context(
+        paths, command, run_id="run", parent_run_id=None,
+        operation_id="operation", working_directory=tmp_path,
+    )
+    env = child_environment(
+        paths, command, payload, context_file=tmp_path / "ctx.json",
+        run_id="run", parent_run_id=None, operation_id="operation",
+        python_path=None, venv_path=None,
+    )
+    assert env["ATLAS_HOST_ID"] == "control01"

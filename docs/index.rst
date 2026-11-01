@@ -9,4 +9,5 @@ result. It does not retrieve automation programs or own infrastructure lifecycle
    :maxdepth: 2
 
    reference
+   logging
    api

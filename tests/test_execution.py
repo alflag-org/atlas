@@ -117,3 +117,42 @@ def test_execution_validates_cwd_timeout_and_log_path(tmp_path: Path) -> None:
     paths.logs.write_text("not a directory", encoding="utf-8")
     with pytest.raises(ValueError, match="logs path"):
         execute(paths, command, [])
+
+
+@pytest.mark.parametrize("file_available", [True, False])
+def test_application_logging_preserves_output_status_and_run_record(tmp_path, capfd, file_available):
+    paths, config, command = prepare(tmp_path)
+    create_venv(paths, config, config.programs["tool"])
+    log_path = tmp_path / ("app.log" if file_available else "missing/app.log")
+    command.path.write_text(
+        "import sys\n"
+        "from atlas_core.logging import configure_logging, get_logger\n"
+        f"configure_logging('hermes', path={str(log_path)!r})\n"
+        "print('result-json')\n"
+        "print('raw-stderr', file=sys.stderr)\n"
+        "get_logger('hermes.dns').info('application-diagnostic')\n"
+        "raise SystemExit(7)\n",
+        encoding="utf-8",
+    )
+    assert execute(paths, command, ["private-argument"]) == 7
+    output = capfd.readouterr()
+    assert output.out == "result-json\n"
+    assert output.err.count("application-diagnostic") == 1
+    assert "raw-stderr" in output.err
+    record_text = paths.run_log.read_text()
+    record = json.loads(record_text)
+    assert record["exit_code"] == 7
+    assert record["program"] == "tool"
+    assert f'run_id={record["run_id"]}' in output.err
+    assert f'operation_id={record["operation_id"]}' in output.err
+    assert "host_id=exec-host" in output.err
+    assert all(value not in record_text for value in (
+        "result-json", "raw-stderr", "application-diagnostic", "private-argument",
+    ))
+    if file_available:
+        content = log_path.read_text()
+        assert content.count("application-diagnostic") == 1
+        assert "raw-stderr" not in content and "result-json" not in content
+    else:
+        assert "file output unavailable" in output.err
+        assert not log_path.parent.exists()

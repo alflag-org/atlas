@@ -13,6 +13,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from atlas_core.logging import _warn, get_logger
+
 from ._environment import directories, notify_ready
 
 __all__ = ["DaemonContext", "DaemonMain", "run"]
@@ -161,22 +163,6 @@ def _serve(main: DaemonMain, context: DaemonContext, timeout: float) -> int:
     return 1 if loop_failed or not cleaned else status
 
 
-@contextmanager
-def _logging() -> Iterator[logging.Logger]:
-    """Own one stderr handler without changing the process-wide logging configuration."""
-    logger = logging.Logger("atlas_core.daemon", level=logging.INFO)
-    handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("%(name)s: %(levelname)s: %(message)s"))
-    logger.addHandler(handler)
-    try:
-        yield logger
-    finally:
-        # Abandoned tasks may be finalized later, after the failed run has ended.
-        logger.disabled = True
-        logger.removeHandler(handler)
-        handler.close()
-
-
 def _validate_options(main: DaemonMain, name: str | None, timeout: float) -> str:
     selected_name = "daemon" if name is None else name
     if not isinstance(selected_name, str) or not re.fullmatch(
@@ -220,13 +206,18 @@ def run(main: DaemonMain, *, name: str | None = None, shutdown_timeout: float = 
     else:
         raise RuntimeError("daemon run cannot nest an event loop")
 
-    with _logging() as logger:
-        try:
-            selected_name = _validate_options(main, name, shutdown_timeout)
-            logger.name = selected_name
-            with directories(selected_name) as (state_dir, runtime_dir):
-                context = DaemonContext(selected_name, logger, state_dir, runtime_dir)
-                return _serve(main, context, shutdown_timeout)
-        except (OSError, ValueError, TypeError) as error:
-            logger.error("daemon configuration failed (%s)", type(error).__name__)
-            return 2
+    logger: logging.Logger | None = None
+    try:
+        selected_name = _validate_options(main, name, shutdown_timeout)
+        logger = get_logger(selected_name)
+        with directories(selected_name) as (state_dir, runtime_dir):
+            context = DaemonContext(selected_name, logger, state_dir, runtime_dir)
+            return _serve(main, context, shutdown_timeout)
+    except (OSError, ValueError, TypeError) as error:
+        message = f"daemon configuration failed ({type(error).__name__})"
+        if logger is None:
+            # Logging configuration itself may be invalid; do not initialize it again.
+            _warn(message)
+        else:
+            logger.error(message)
+        return 2

@@ -1,15 +1,21 @@
-"""Membership and host metadata, without application execution policy."""
+"""Typed local observations from atlasd; importing the client starts no services."""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator
+import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
+
+from atlas_core.ipc import Client, IPCError, Unavailable
+
+API_VERSION = "atlas.cluster/v2"
 
 
 class ClusterError(Exception):
-    """A rejected request or invalid state, identified by a stable ``code``."""
+    """A rejected request, identified by a non-secret error code."""
 
     def __init__(self, code: str) -> None:
         self.code = code
@@ -17,71 +23,103 @@ class ClusterError(Exception):
 
 
 class ClusterUnavailable(ClusterError):
-    """SSH could not complete the request; a membership change may have committed."""
+    """The local daemon could not answer; a mutation may already have committed."""
+
+
+class MemberState(StrEnum):
+    UNKNOWN = "unknown"
+    ALIVE = "alive"
+    SUSPECT = "suspect"
+    UNREACHABLE = "unreachable"
+    LEFT = "left"
+
+
+@dataclass(frozen=True)
+class PeerEndpoint:
+    host: str
+    port: int
 
 
 @dataclass(frozen=True)
 class ClusterMember:
     id: str
     hostname: str
-    address: str
+    endpoint: PeerEndpoint
     role: str
     site: str
     labels: dict[str, str]
+    incarnation: int
+    state: MemberState
 
 
 @dataclass(frozen=True)
 class ClusterMembers:
-    """An iterable snapshot; ``stale`` indicates an unrefreshed local copy."""
+    """A local observation, not an authoritative or globally fresh inventory."""
 
     members: tuple[ClusterMember, ...]
-    stale: bool
     fetched_at: str
-
-    def __iter__(self) -> Iterator[ClusterMember]:
-        return iter(self.members)
+    observation: str = "local"
 
 
 @dataclass(frozen=True)
 class ClusterStatus:
+    local_id: str
     cluster_id: str | None
     name: str | None
-    member_id: str
-    joined: bool
-    registry: str | None
-    registry_reachable: bool | None
-    stale: bool
-    fetched_at: str | None
+    membership: str
+    last_peer_contact: str | None
+
+
+def socket_path() -> Path:
+    explicit = os.environ.get("ATLAS_CLUSTER_SOCKET")
+    if explicit:
+        return Path(explicit)
+    return Path("/run/atlas/cluster/control.sock")
 
 
 class ClusterClient:
-    """Read membership or refresh it over SSH, without starting a daemon.
+    """Unary IPC client. No cached-file fallback and no cryptography dependency."""
 
-    The default directory is ``$XDG_STATE_HOME/atlas/cluster`` (falling back to
-    ``~/.local/state/atlas/cluster``). ``cached=True`` skips remote requests.
-    Importing this module performs no I/O.
-    """
-
-    def __init__(self, directory: Path | None = None, *, timeout: float = 10) -> None:
-        from atlas.cluster.node import Node
-
-        self._node = Node(directory, timeout=timeout)
+    def __init__(self, path: Path | None = None, *, timeout: float = 15) -> None:
+        self._client = Client(
+            path or socket_path(), api_version=API_VERSION, timeout=timeout
+        )
 
     @classmethod
     @asynccontextmanager
     async def connect(
-        cls, directory: Path | None = None, *, timeout: float = 10
+        cls, path: Path | None = None, *, timeout: float = 15
     ) -> AsyncIterator[ClusterClient]:
-        """Provide a client; individual reads determine freshness and availability."""
-        yield cls(directory, timeout=timeout)
+        client = cls(path, timeout=timeout)
+        await client.status()
+        yield client
 
-    async def status(self, *, cached: bool = False) -> ClusterStatus:
-        return ClusterStatus(**await self._node.status(cached=cached))
+    async def request(self, method: str, params: dict | None = None) -> dict:
+        """Issue a local control request; transport failure is not a safe retry signal."""
+        try:
+            return await self._client.request(method, params)
+        except Unavailable:
+            raise ClusterUnavailable("daemon_unavailable") from None
+        except IPCError as exc:
+            raise ClusterError(exc.code) from None
 
-    async def members(self, *, cached: bool = False) -> ClusterMembers:
-        snapshot, reachable = await self._node.snapshot(cached=cached)
+    async def status(self) -> ClusterStatus:
+        return ClusterStatus(**await self.request("status"))
+
+    async def members(self) -> ClusterMembers:
+        result = await self.request("members")
         return ClusterMembers(
-            tuple(ClusterMember(**member) for member in snapshot["members"]),
-            stale=reachable is not True,
-            fetched_at=snapshot["fetched_at"],
+            tuple(
+                ClusterMember(
+                    **(
+                        member
+                        | {
+                            "endpoint": PeerEndpoint(**member["endpoint"]),
+                            "state": MemberState(member["state"]),
+                        }
+                    )
+                )
+                for member in result["members"]
+            ),
+            fetched_at=result["fetched_at"],
         )

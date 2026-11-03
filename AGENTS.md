@@ -53,13 +53,14 @@ This file supplements the global repository guidance with Atlas's execution and 
 
 - Cluster provides membership, discovery, and host metadata through `atlas_core.cluster`.
   Applications own target selection, execution order, locks, retries, verification, and results.
-- The registry stores host information under an explicitly authorized OS account. Remote access
-  uses existing SSH host keys and user authentication. Do not add a separate CA, TLS listener,
-  invitation system, execution coordinator, workflow DSL, or distributed reservation.
-- Cached membership remains readable during registry outages. Preserve explicit freshness and
-  retrieval timestamps; membership status is not application health or liveness.
-- Cluster does not require a daemon. Keep the Daemon SDK independent of membership storage and
-  transport. Host metadata is descriptive and must not be treated as authentication evidence.
+- Cluster runs as independent peer daemons using authenticated UDP probes/gossip and TCP
+  full synchronization. No peer is a registry, leader, execution coordinator, or lock owner.
+- The owner-only shared credential authenticates the cluster, not individual hosts. Host
+  metadata is descriptive and must not be treated as authorization or health evidence.
+- Local observations remain readable through atlasd during network partitions. Preserve
+  observation timestamps and unconfirmed restored state; never imply globally fresh inventory.
+- Keep the Daemon SDK, IPC, and Logging independent of Cluster storage and transport. No
+  backward-compatible SSH registry, alternate backend, or automatic old-state conversion.
 
 ## Public interfaces and documentation
 

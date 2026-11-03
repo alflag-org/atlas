@@ -227,46 +227,53 @@ method. The example's protocol and models belong to that package, not Atlas.
 Cluster membership
 ------------------
 
-Use ``atlas_core.cluster`` to discover hosts. Applications choose targets and
-implement any execution, locking, retry, or rollback policy::
+Use the local ``atlasd`` API to read host observations. Applications own target
+selection, connection failures, execution, locks, retries, and results::
 
-    from atlas_core.cluster import ClusterClient
+    from atlas_core.cluster import ClusterClient, MemberState
 
     async def targets():
         async with ClusterClient.connect() as cluster:
-            members = await cluster.members()
-        if members.stale:
-            raise RuntimeError("fresh membership required")
-        return [member for member in members if member.labels.get("role") == "app"]
+            snapshot = await cluster.members()
+        return [m for m in snapshot.members
+                if m.role == "app" and m.state is MemberState.ALIVE]
 
-``ClusterMember`` contains ``id``, ``hostname``, ``address``, ``role``, ``site``,
-and ``labels``. It describes a host; it has no execution methods or permissions.
-``id``, ``role``, and ``site`` come from the existing host profile at registration.
-Labels and the advertised SSH address are supplied when initializing or joining.
+``ClusterClient.connect(path=None, timeout=15)`` checks the local daemon with a
+status request. Each method uses one bounded Unix-socket request. It starts no
+service, performs no peer networking, and imports no cryptography or private
+Cluster implementation. ``ATLAS_CLUSTER_SOCKET`` selects an explicit path;
+otherwise the client uses ``/run/atlas/cluster/control.sock``, matching the
+standard systemd instance. ``XDG_RUNTIME_DIR`` does not change the client default.
+Run it as the daemon's OS account.
 
-``members()`` returns an iterable ``ClusterMembers`` with ``stale`` and
-``fetched_at`` (an ISO 8601 UTC timestamp). A remote read normally contacts the
-registry. If SSH fails, it returns the last saved snapshot with ``stale=True``.
-``members(cached=True)`` reads only local state. Invalid responses or a changed
-cluster identity or a lower registry revision raise an error rather than silently using cached data.
+``members()`` returns ``ClusterMembers.members`` (a tuple), ``fetched_at`` (UTC),
+and ``observation="local"``. Every ``ClusterMember`` contains ``id``, ``hostname``,
+``endpoint`` (``PeerEndpoint.host`` and ``port``), ``role``, ``site``, ``labels``,
+``incarnation``, and ``state``. The endpoint is for Cluster TCP/UDP, not SSH.
+``MemberState`` is ``ALIVE``, ``SUSPECT``, ``UNREACHABLE``, ``LEFT``, or the local
+``UNKNOWN`` used for restored alive peers until a correlated UDP probe succeeds.
+An alive observation is neither application health nor a promise that a future
+connection will succeed. Incarnations order membership, not resource ownership.
 
-``status()`` returns membership information, including ``joined`` and
-``registry_reachable``: true after a successful read, false after a connection
-failure, and ``None`` when no remote check was requested. A local registry is
-always authoritative. ``joined`` and other fields may be stale; they do not
-assert that a host or application is healthy. A pending registration without a
-cached snapshot has no cluster ID or fetch timestamp while offline.
+``status()`` returns ``local_id``, ``cluster_id``, ``name``, ``membership``
+(``uninitialized``, ``joined``, or ``left``), and ``last_peer_contact``. The last
+contact is a successful correlated probe or authenticated TCP exchange during
+this boot; it is null after restart until such contact occurs. TCP contact does
+not certify UDP reachability. There is no global freshness flag.
 
-``ClusterClient.connect(directory=None, timeout=10)`` does not start a service or
-open a persistent connection. Each read uses a short local file transaction and,
-when needed, one SSH process. Cancellation terminates that SSH process group.
-Use the same OS account and state directory as the CLI. The default directory is
-``$XDG_STATE_HOME/atlas/cluster`` or ``~/.local/state/atlas/cluster``.
+``request(method, params=None)`` exposes the same local control operations as the
+CLI: ``init`` with ``{"name": "lab"}``, ``join`` with ``{"seeds": ["peer.example.test"]}``,
+and ``leave`` without parameters. Join returns ``exchange_completed`` and
+``scope="local_and_seed"``. Leave returns ``propagated_to_peer``, which only means
+that at least one peer acknowledged an exchange. Neither implies convergence.
 
-``ClusterError.code`` includes ``not_joined``, ``invalid_state``,
-``cluster_changed``, ``registry_revision_regressed``, and ``member_conflict``. ``ClusterUnavailable`` reports
-``registry_unavailable`` or ``no_cached_members``. There are no automatic retries.
-See :doc:`reference` for SSH setup and membership changes.
+``ClusterUnavailable`` has code ``daemon_unavailable``. There is no saved-file
+fallback. ``ClusterError.code`` distinguishes ``not_joined``, ``invalid_state``,
+``legacy_state_requires_reconfiguration``, ``member_conflict``,
+``membership_too_large``, ``cluster_mismatch``, ``credential_mismatch``,
+``authentication_or_format_failed``, ``self_peer``, ``peer_unavailable``,
+``join_timeout``, and ``persistence_failed``. A failed or cancelled control request may have committed;
+inspect status before retrying. See :doc:`reference` for setup and migration.
 
 .. automodule:: atlas_core.cluster
-   :members: ClusterClient, ClusterMember, ClusterMembers, ClusterStatus, ClusterError, ClusterUnavailable
+   :members: ClusterClient, MemberState, PeerEndpoint, ClusterMember, ClusterMembers, ClusterStatus, ClusterError, ClusterUnavailable

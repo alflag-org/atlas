@@ -505,113 +505,179 @@ in the completed-command run log.
 Cluster membership
 ------------------
 
-Atlas Cluster maintains a list of hosts and their connection information. The
-first host is the registry; other hosts register and read it over SSH. No
-Cluster daemon, network listener, or additional Python dependency is required.
-Applications use this information to choose their own targets and execution
-policy. Cluster neither runs commands on members nor checks application health.
+Cluster shares host information between equal ``atlasd`` peers. UDP probes and
+gossip disseminate observations; periodic bidirectional TCP exchanges reconcile
+membership after lost packets and partitions. No initial host has special
+privileges, and no operation requires a majority. Applications own target
+selection, execution, locks, retries, and results. Cluster does not execute
+commands, check application health, or supervise other services.
 
-Setup
-~~~~~
+Setup and local control
+~~~~~~~~~~~~~~~~~~~~~~~
 
-Install Atlas on each host and configure its existing ``/etc/atlas/host.yml``
-with a unique ``id``, ``role``, and ``site``. ``ATLAS_HOST_FILE`` selects another
-host profile. Initialize the registry under the account that will own it::
+Install ``atlas[cluster]`` in the interpreter that runs ``atlasd``. The extra
+provides cryptography for the daemon; normal Atlas commands and the public
+Cluster client do not import it. Provision a unique ``host.id`` in
+``/etc/atlas/host.yml`` (or ``ATLAS_HOST_FILE``) on each host. Role and site come
+from that profile; labels come from Cluster configuration.
 
-    atlas cluster init --name homelab --address ops@atlas-01
+Create ``/etc/atlas/cluster.yml`` with strict YAML (duplicate and unknown keys
+are rejected)::
 
-On another host, verify the registry's SSH host key through your normal
-administration process and configure authentication for the intended account.
-``atlas`` must be on that account's non-interactive SSH command path. Then join::
+    bind: "192.0.2.10:7947"
+    advertise: "atlas-a.example.test:7947"
+    credentials_file: "/etc/atlas/cluster/credentials.json"
+    seeds:
+      - "atlas-b.example.test:7947"
+    labels:
+      environment: lab
 
-    atlas cluster join --via ops@atlas-01 --address ops@atlas-02 --label role=app
+``bind`` is an explicit local IP. ``advertise`` is the peer endpoint, reachable
+from every other peer. TCP and UDP use the same configured port; a collision
+fails startup. 7947 is a project default, not an official allocation. Endpoints
+accept FQDN, IPv4, and IPv6. Use brackets for IPv6 with a port, for example
+``[2001:db8::10]:7947``; bare IPv6 is a literal with the default port. SSH users,
+SSH aliases, URL schemes, scoped IPv6, and wildcard advertise addresses are not
+supported. DNS names are retained and resolved again on each attempt. Each TCP
+address candidate gets a bounded share of the exchange deadline.
+
+Provision the credential parent directory and daemon state/runtime directories
+for the intended OS account; Atlas never grants privileges or switches users.
+The first initialization creates the credential file exclusively with mode 0600.
+An existing file is never overwritten. Start the daemon in the foreground::
+
+    # Direct launch: use stable, private runtime/state directories prepared by the operator.
+    export STATE_DIRECTORY=/var/lib/atlas/cluster
+    export RUNTIME_DIRECTORY=/run/atlas/cluster
+    export ATLAS_CLUSTER_SOCKET=/run/atlas/cluster/control.sock
+    atlasd --config /etc/atlas/cluster.yml
+
+The directories must have mode 0700 and belong to the daemon account. Without
+service-manager directory variables, the Daemon SDK uses its documented XDG
+state/runtime behavior. Its random temporary-runtime fallback requires an
+explicit socket path in clients; use a stable runtime directory for operation.
+The Cluster client default remains ``/run/atlas/cluster/control.sock`` even when
+``XDG_RUNTIME_DIR`` is set.
+An uninitialized daemon only accepts local initialization/join and does not
+create a Cluster automatically. In another terminal, as that account::
+
+    atlas cluster init --name homelab
+
+Securely distribute the resulting credential file to the configured path on
+other hosts, retaining owner-only access, before joining them::
+
+    atlas cluster join atlas-a.example.test atlas-b.example.test
     atlas cluster members
     atlas cluster status
+    atlas cluster leave
 
-The ``--address`` value is advertised metadata and defaults to the host's FQDN.
-Choose an address that consuming applications can use; Atlas does not probe it.
-SSH aliases and ports belong in the operator's SSH configuration. Connections
-use batch mode and strict host-key verification: unknown or changed host keys,
-password prompts, and failed authentication cause an error. Atlas never invokes
-``sudo`` or accepts host keys automatically.
+CLI operations connect only to the local Unix socket; they never start atlasd.
+Use ``atlas cluster --socket /absolute/control.sock ...`` or
+``ATLAS_CLUSTER_SOCKET`` to explicitly select another socket. The command-line
+option takes precedence over the environment variable.
+Results are JSON on stdout; errors use ``atlas.cluster-error/v2`` on stderr and
+exit 2. Ordinary Atlas execution works without Cluster configuration or atlasd.
+Join tries multiple seeds within a ten-second total deadline and succeeds only
+after saving membership and completing an authenticated exchange. It does not
+promise propagation to all peers or inbound UDP connectivity. Known local
+endpoints are excluded from synchronization candidates, and authenticated node
+IDs reject self-connections through address aliases. Self-communication never
+updates the last peer contact or counts as acknowledged leave propagation.
+A failed request may already have saved membership; inspect local status before retrying.
 
-The registry's OS account owns membership administration. Anyone authorized to
-run commands as that account can register, read, or remove members. Use a
-dedicated account if this access should be restricted. Membership IDs, addresses,
-roles, sites, and labels are descriptive values supplied by authorized operators;
-they are not authenticated machine identities. SSH authenticates the registry
-host and the connecting OS user.
+For systemd operation, use the existing ``atlas daemon`` declaration mechanism
+with instance name ``cluster``, an absolute ``atlasd`` executable, and arguments
+``["--config", "/etc/atlas/cluster.yml"]``. The generated unit supplies
+``/var/lib/atlas/cluster`` and ``/run/atlas/cluster`` with private permissions.
+Use an explicitly provisioned OS user and working directory. The generic daemon
+manager remains responsible only for the declared process, not Cluster policy.
 
-Membership changes
-~~~~~~~~~~~~~~~~~~
+Lifecycle and observations
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``atlas cluster leave`` removes the local member. An authorized operator can
-remove another host with ``atlas cluster leave --member <host-id>``. The registry
-itself cannot be removed with this command. Removing a member does not revoke SSH
-credentials or delete copies of cached metadata; manage OS access separately.
+SIGTERM/SIGINT stop the service without leaving. Restart advances the local
+incarnation before publication and reconnects using configured seeds, saved seed
+names, and known peers, including unreachable peers. No reachable seed is needed
+to retain existing membership. Changes to the host profile, labels, or advertise
+endpoint take effect on restart and propagate with the new incarnation.
 
-Each registration has a generation ID. Removal must match that generation, so
-a delayed leave cannot remove a later registration of the same host. To remove
-another host, first refresh ``members``. If it has rejoined since that snapshot,
-removal fails with ``registration_changed``; inspect the latest membership before
-trying again. Generation IDs are internal membership metadata, not execution
-permissions or locks. The registry retains removed generations and rejects a
-delayed Join for one of them with ``registration_retired``. A later registration
-uses a new generation.
+``leave`` saves the local leave intent and a new tombstone before attempting
+bounded propagation. ``propagated_to_peer=false`` means local leave completed
+without an acknowledged peer exchange. Restart alone does not rejoin; explicitly
+``join`` to publish an incarnation above the observed tombstone. Other peers can
+still fetch the tombstone through TCP synchronization. There is no forced removal
+or permanent revocation of a shared-key holder.
 
-Joining with an existing ID but different metadata or a different registration
-generation fails with ``member_conflict``.
-To change metadata, remove that registration and join again. To change the registry
-host's metadata, edit its host profile before creating a new registry. There is
-no automatic metadata synchronization or registry election.
+Records merge by incarnation, then by ``alive < suspect < unreachable < left``.
+Conflicting metadata at the same ID/incarnation is rejected. A running owner
+refutes suspect/unreachable with a durably increased incarnation. Old acks and
+old alive gossip never roll back suspicion or leave. Restored alive peers are
+reported as local ``unknown`` until a correlated UDP probe confirms them.
 
-A failed SSH request may have committed a membership change before losing its
-response. A pending join retains its destination and metadata; retry the same
-join command. Retries retain the generation ID. Repeated removals are harmless
-once that registration is absent. Leave keeps local state until the registry
-confirms the response.
+Probes run every two seconds with one-second direct and indirect waits, up to
+three helpers, and a ten-second suspicion grace. Repeated suspicion does not
+extend that grace. Gossip runs every half second to up to three peers; TCP sync
+tries a rotating reconnect candidate every ten seconds. DNS/send failures do not
+delete records. CPU stalls or network delay can cause false suspicions. These
+are conservative failure-detection heuristics, not proof of a crash or liveness.
+TCP reachability alone does not count as a successful UDP probe.
 
-If the pending join used the wrong destination, discard it explicitly before
-correcting the destination::
+Members are local observations with a retrieval timestamp, not globally fresh
+inventory. Status reports only local membership and the last peer communication
+in this boot. Membership status gives no execution authorization or resource
+ownership. A healthy Unix socket says nothing about remote application health.
 
-    atlas cluster join --abort
-    atlas cluster join --via ops@atlas-02 --address ops@atlas-03
+Security, limits, and recovery
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``--abort`` only deletes an unconfirmed local join and makes no SSH request. It
-returns the old destination, host ID, registration generation, and a warning:
-the remote registration may already exist, or an in-flight request may still
-arrive. Inspect membership on the original registry and remove the abandoned
-registration if necessary. Aborting does not undo remote changes. A confirmed
-membership or registry cannot be discarded with this option; use ``leave`` for
-confirmed membership.
+Restrict both TCP and UDP to the management network in the host/network firewall.
+Every peer must be mutually reachable. NAT traversal, proxies, mDNS, DNS SRV,
+automatic interface selection, and multiple Clusters per daemon are unsupported.
 
-Local state and freshness
-~~~~~~~~~~~~~~~~~~~~~~~~~
+Credentials contain a random Cluster ID and a 256-bit shared key. AES-GCM protects
+both transports; version, Cluster ID, and message type are authenticated. Every
+envelope uses an independent 256-bit OS-random nonce, with negligible collision
+probability across senders and restarts. TCP uses a fresh server challenge and
+request ID; UDP acks match a pending random probe ID and target incarnation.
+Old gossip may be replayed but is merged monotonically, never counted as fresh
+communication. Encryption alone does not establish freshness or node identity.
+All key holders and the executing OS account are trusted. Metadata is descriptive,
+not authentication evidence. A compromised participant is outside this boundary.
 
-State lives under ``$XDG_STATE_HOME/atlas/cluster`` or
-``~/.local/state/atlas/cluster``. ``atlas cluster --directory <path> ...`` selects
-a different local directory. Remote SSH requests always use the registry
-account's default directory. The directory must belong to the calling account
-and have mode 0700; files use 0600. Short local file transactions serialize
-membership edits. No lock is held across a remote request.
+The daemon accepts at most 16 concurrent TCP exchanges, each with a three-second
+deadline and a 1 MiB frame limit. UDP datagrams are at most 1,200 bytes, with a
+256-packet receive queue and at most 16 indirect-probe tasks. Each member record
+is at most 700 JSON bytes, including at most 16 labels. The gossip queue holds
+only the latest changed record per ID. Larger exchanges use TCP, with at most
+256 records including tombstones. There is no fragmentation, automatic tombstone
+GC, or silently truncated snapshot. Capacity exhaustion requires an explicit
+operator decision to reconfigure; leave does not recover a record slot.
 
-``members`` and ``status`` normally refresh remote data. If the registry cannot
-be reached, saved membership remains available with ``stale: true`` and its
-original ``fetched_at`` timestamp. Use ``--cached`` to skip the connection.
-``status`` distinguishes an unsuccessful connection from one that was not
-attempted. Cached membership does not imply reachability, current membership,
-or application health. Consumers decide whether stale information is usable.
-Without a saved snapshot, a member-list request fails with ``no_cached_members``.
+State is an owner-only ``membership.json`` under the Daemon SDK state directory.
+A local process lock prevents two daemons from sharing it. Writes fsync the
+file and parent directory around atomic replacement. Storage failure blocks
+further publication; repair storage and restart. State contains membership,
+latest records/tombstones, local incarnation/leave intent, credential fingerprint,
+and seed names. It contains neither execution output nor probe history.
 
-Back up the registry's ``membership.json`` while no membership commands are
-running, retaining its ownership and permissions. Restore it under the same
-account and SSH destination. Do not run two independent writable copies of a
-registry. Clients reject a different cluster ID instead of replacing a known
-registry silently. They also reject revisions older than their saved snapshot;
-a restored older backup must not be presented as current membership. Restore
-the latest registry backup or create a new registry and register hosts again.
-A follower cache is not a registry backup.
+Stop the daemon before backing up state. Reuse the directory only for the same
+host identity and credential. Do not clone one host's ID/state onto simultaneously
+running hosts. Do not restore old snapshots while another copy is active; old
+incarnations can collide with already distributed records. Corrupt or mismatched
+state is rejected, not reset. Credential mismatch also rejects startup. Key
+changes require a planned stop and explicit reconfiguration of all peers; there
+is no online rotation or key distribution protocol.
 
-CLI results are JSON on stdout. Errors use ``atlas.cluster-error/v1`` on stderr
-and exit 2. The internal ``_registry`` entry point exchanges bounded JSON over
-SSH standard input/output; it is not a public command execution interface.
+Migration from SSH Registry
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The SSH Registry, ``_registry``, ``--via``, ``user@host``, ``--cached``,
+``--directory``, ``join --abort``, ``leave --member``, revision/registration cache,
+and the old SDK are removed. Existing external callers must adopt the local IPC
+API in :doc:`api`; the old ``address``, ``stale``, and ``registry_reachable`` fields
+have no aliases. Reconfigure every host with endpoints, credentials, and atlasd.
+
+Old ``atlas.membership/v1`` state is rejected with
+``legacy_state_requires_reconfiguration``. Stop the old tooling and explicitly
+archive its state before preparing an empty state directory. Atlas does not
+migrate, overwrite, or delete old membership automatically.

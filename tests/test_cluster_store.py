@@ -1,169 +1,162 @@
-from __future__ import annotations
+"""Credential exclusivity, strict state files and atomic durable replacement."""
 
 import json
 import os
-import subprocess
-import sys
-from pathlib import Path
+from dataclasses import replace
 
 import pytest
 
-from atlas.cluster.node import Node
-from atlas.cluster.store import Store
+from atlas.cluster.config import load_config
+from atlas.cluster.store import Credential, State, Store, private_file, read_json
 from atlas_core.cluster import ClusterError
 
-from .test_cluster_membership import metadata
+from .test_cluster_membership import member
 
 
-def test_concurrent_registry_writers_preserve_all_members(tmp_path):
-    node = Node(tmp_path / "registry")
-    node.initialize("lab", metadata("registry"))
-    source = (
-        "import json,sys; from pathlib import Path; from atlas.cluster.node import Node; "
-        "Node(Path(sys.argv[1])).registry_request(json.loads(sys.argv[2]))"
+def test_credentials_and_state(tmp_path):
+    path = tmp_path / "credentials"
+    credential = Credential.create(path)
+    assert len(credential.key) == 32 and credential == Credential.read(path)
+    assert credential.key.hex() not in repr(credential)
+    with pytest.raises(FileExistsError):
+        Credential.create(path)
+    store = Store(tmp_path)
+    assert store.read("a").membership == "uninitialized"
+    state = State(
+        "a",
+        credential.cluster_id,
+        "lab",
+        "joined",
+        {"a": member()},
+        credential_fingerprint=credential.fingerprint,
     )
-    processes = [
-        subprocess.Popen(
-            [
-                sys.executable,
-                "-c",
-                source,
-                str(node.store.directory),
-                json.dumps(
-                    {
-                        "method": "join",
-                        "registration_id": "test-registration",
-                        "member": metadata(f"worker-{i}"),
-                    }
-                ),
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        for i in range(4)
-    ]
-    for process in processes:
-        stdout, stderr = process.communicate(timeout=10)
-        assert process.returncode == 0, stderr
-        assert not stdout
-    snapshot = node.registry_request({"method": "members"})
-    assert len(snapshot["members"]) == 5 and snapshot["revision"] == 5
-    saved = node.store.path.read_bytes()
-    node.registry_request({"method": "members"})
-    assert node.store.path.read_bytes() == saved
-
-
-def test_atomic_write_failure_preserves_registry(tmp_path, monkeypatch):
-    node = Node(tmp_path / "registry")
-    node.initialize("lab", metadata("registry"))
-    saved = node.store.path.read_bytes()
-
-    def fail(*args):
-        raise OSError("disk failure")
-
-    monkeypatch.setattr(os, "replace", fail)
-    with pytest.raises(OSError):
-        node.registry_request(
-            {
-                "method": "join",
-                "registration_id": "test-registration",
-                "member": metadata("worker"),
-            }
-        )
-    assert node.store.path.read_bytes() == saved
-    assert sorted(p.name for p in node.store.directory.iterdir()) == [
-        ".lock",
-        "membership.json",
-    ]
-    with pytest.raises(ClusterError, match="membership_too_large"):
-        node.store.write({"huge": "x" * 1024 * 1024})
-    assert node.store.path.read_bytes() == saved
-
-
-@pytest.mark.parametrize("target", ["directory", "membership.json", ".lock"])
-def test_shared_state_permissions_are_rejected(tmp_path, target):
-    node = Node(tmp_path / "registry")
-    node.initialize("lab", metadata("registry"))
-    path = (
-        node.store.directory if target == "directory" else node.store.directory / target
-    )
-    path.chmod(0o755 if target == "directory" else 0o644)
-    with pytest.raises(ClusterError, match="unsafe_state"):
-        node.registry_request({"method": "members"})
-
-
-@pytest.mark.parametrize("target", ["directory", "membership.json", ".lock"])
-def test_state_symlinks_are_not_followed(tmp_path, target):
-    node = Node(tmp_path / "registry")
-    node.initialize("lab", metadata("registry"))
-    path = (
-        node.store.directory if target == "directory" else node.store.directory / target
-    )
-    saved = tmp_path / "original"
-    path.rename(saved)
-    path.symlink_to(saved)
-    with pytest.raises((ClusterError, OSError)):
-        node.registry_request({"method": "members"})
+    with store.locked():
+        with pytest.raises(ClusterError, match="already_running"), store.locked():
+            pytest.fail("lock must reject a second daemon")
+        store.write(state)
+        assert store.read("a") == state
+    with pytest.raises(ClusterError, match="invalid_state"):
+        store.read("other")
+    store.path.write_text('{"schema":"atlas.membership/v1"}')
+    with pytest.raises(ClusterError, match="legacy_state_requires_reconfiguration"):
+        store.read("a")
 
 
 @pytest.mark.parametrize(
-    "data",
+    "raw",
     [
-        "{",
-        "null",
+        "[]",
+        "no json",
+        '{"cluster_id":1,"key":2}',
+        '{"cluster_id":"bad","key":"00"}',
         "{}",
-        '{"schema":"old"}',
-        "x" * (1024 * 1024 + 1),
-        json.dumps({"schema": "atlas.membership/v1"}),
-        json.dumps(
-            {
-                "schema": "atlas.membership/v1",
-                "registration_id": "local-registration",
-                "member": metadata("registry"),
-                "registry": None,
-                "retired": {},
-                "snapshot": None,
-            }
-        ),
-        json.dumps(
-            {
-                "schema": "atlas.membership/v1",
-                "registration_id": "local-registration",
-                "member": metadata("worker"),
-                "registry": "bad;host",
-                "snapshot": None,
-            }
-        ),
     ],
 )
-def test_corrupt_state_is_not_reset(tmp_path, data):
-    node = Node(tmp_path / "registry")
-    node.initialize("lab", metadata("registry"))
-    node.store.path.write_text(data)
-    with pytest.raises(ClusterError, match="invalid_state"):
-        node.registry_request({"method": "members"})
-    assert node.store.path.read_text() == data
+def test_reject_corrupt_credentials(tmp_path, raw):
+    path = tmp_path / "credentials"
+    path.write_text(raw)
+    path.chmod(0o600)
+    with pytest.raises(ClusterError):
+        Credential.read(path)
 
 
-def test_state_location_defaults(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    assert Store().directory == tmp_path / "atlas/cluster"
-    monkeypatch.delenv("XDG_STATE_HOME")
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    assert Store().directory == tmp_path / ".local/state/atlas/cluster"
+def test_private_file_and_failed_replace(tmp_path, monkeypatch):
+    path = tmp_path / "file"
+    path.write_text("{}")
+    path.chmod(0o644)
+    with pytest.raises(ClusterError, match="unsafe_state"):
+        private_file(path, os.O_RDONLY)
+    path.chmod(0o600)
+    link = tmp_path / "link"
+    link.symlink_to(path)
+    with pytest.raises(OSError):
+        read_json(link)
+    store = Store(tmp_path)
+    credential = Credential.create(tmp_path / "credentials")
+    state = State(
+        "a",
+        credential.cluster_id,
+        "lab",
+        "joined",
+        {"a": member()},
+        credential_fingerprint=credential.fingerprint,
+    )
+    store.write(state)
+    saved = store.path.read_bytes()
+
+    def fail(*args):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(os, "replace", fail)
+    with pytest.raises(OSError):
+        store.write(replace(state, name="changed"))
+    assert store.path.read_bytes() == saved
+    assert not list(tmp_path.glob("tmp*"))
 
 
-@pytest.mark.parametrize("retired", [[], {"worker": {}}, {"worker": [""]}])
-def test_corrupt_retired_generations_cannot_reenable_old_joins(tmp_path, retired):
-    node = Node(tmp_path / "registry")
-    node.initialize("lab", metadata("registry"))
-    with node.store.locked():
-        state = node.state()
-        state["retired"] = retired
-        node.store.write(state)
-    saved = node.store.path.read_bytes()
-    with pytest.raises(ClusterError, match="invalid_state"):
-        node.registry_request(
-            {"method": "join", "member": metadata("worker"), "registration_id": "old"}
+def test_config_strict_yaml(tmp_path):
+    path = tmp_path / "cluster.yml"
+    path.write_text(
+        json.dumps(
+            {
+                "bind": "0.0.0.0:7947",
+                "advertise": "a.example.test",
+                "credentials_file": str(tmp_path / "credentials"),
+                "labels": {"zone": "lab"},
+            }
         )
-    assert node.store.path.read_bytes() == saved
+    )
+    assert load_config(path).labels == {"zone": "lab"}
+    for raw in (
+        "[]",
+        "{bind: a, bind: b}",
+        "[",
+        "{}",
+        '{"registry":"old"}',
+        '{"bind":"a","advertise":"b","credentials_file":"relative"}',
+    ):
+        path.write_text(raw)
+        with pytest.raises(ClusterError):
+            load_config(path)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"extra": True},
+        {"credential_fingerprint": "00"},
+        {"membership": "unknown"},
+        {"membership": "left"},
+        {"seeds": "bad"},
+        {"seeds": [None] * 33},
+    ],
+)
+def test_invalid_state_is_never_reinitialized(tmp_path, changes):
+    credential = Credential.create(tmp_path / "credential")
+    state = State(
+        "a",
+        credential.cluster_id,
+        "lab",
+        "joined",
+        {"a": member()},
+        credential_fingerprint=credential.fingerprint,
+    )
+    store = Store(tmp_path)
+    raw = json.dumps(state.document() | changes)
+    store.path.write_text(raw)
+    store.path.chmod(0o600)
+    with pytest.raises(ClusterError, match="invalid_state"):
+        store.read("a")
+    assert store.path.read_text() == raw
+
+
+def test_wrong_key_length_and_storage_size_limit(tmp_path):
+    credential = Credential.create(tmp_path / "credential")
+    path = tmp_path / "credential"
+    path.write_text(json.dumps({"cluster_id": credential.cluster_id, "key": "00"}))
+    with pytest.raises(ClusterError, match="invalid_credentials"):
+        Credential.read(path)
+    store = Store(tmp_path)
+    with pytest.raises(ClusterError, match="membership_too_large"):
+        store.write(State("a", name="x" * (1024 * 1024)))
+    assert not store.path.exists()

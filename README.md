@@ -111,9 +111,10 @@ See [the Python API](docs/api.rst) for lifecycle and shutdown behavior, and
 [the operator reference](docs/reference.rst#standalone-daemon-environment) for directory setup.
 
 Host-owned daemon declarations can be installed and operated with `atlas daemon`.
-Atlas Cluster provides host membership and metadata over existing SSH connections.
+Atlas Cluster shares host membership and metadata between independent `atlasd` peers.
+Install `atlas[cluster]` on daemon hosts and configure a shared credential plus TCP/UDP endpoints.
 Applications choose targets and manage their own execution, locking, and recovery.
-See [the operator reference](docs/reference.rst#cluster-membership) for setup and cache behavior.
+See [the operator reference](docs/reference.rst#cluster-membership) for setup, local observations, and migration from the removed SSH Registry.
 
 ## Development
 

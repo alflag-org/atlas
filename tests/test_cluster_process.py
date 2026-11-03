@@ -40,19 +40,29 @@ class Gateway(asyncio.DatagramProtocol):
         self.blocked = False
         self.drop_sources = set()
         self.tasks = set()
+        self.dropped = {"tcp": set(), "udp": set()}
+        self.forwarded = {"tcp": set(), "udp": set()}
 
     def connection_made(self, transport):
         self.transport = transport
 
+    def allows(self, source, protocol):
+        if self.blocked or source in self.drop_sources:
+            self.dropped[protocol].add(source)
+            return False
+        self.forwarded[protocol].add(source)
+        return True
+
     def datagram_received(self, data, address):
-        if not self.blocked and address[1] not in self.drop_sources:
+        if self.allows(address[0], "udp"):
             self.transport.sendto(data, (self.host, self.destination))
 
     async def forward(self, reader, writer):
         self.tasks.add(asyncio.current_task())
         upstream = None
+        peer = writer.get_extra_info("peername")[0]
         try:
-            if self.blocked:
+            if not self.allows(peer, "tcp"):
                 return
             remote, upstream = await asyncio.open_connection(
                 self.host, self.destination
@@ -60,8 +70,8 @@ class Gateway(asyncio.DatagramProtocol):
 
             async def copy(source, target):
                 while data := await source.read(65536):
-                    if self.blocked:
-                        return
+                    if not self.allows(peer, "tcp"):
+                        break
                     target.write(data)
                     await target.drain()
                 target.close()
@@ -178,21 +188,22 @@ class Host:
 
 
 @asynccontextmanager
-async def hosts(tmp_path, names="abcd", host="127.0.0.1", advertise_host=None):
+async def hosts(tmp_path, names="abcd", host=None, advertise_host=None):
     nodes = []
     servers, transports = [], []
     try:
-        for name in names:
-            node = Host(tmp_path, name, host, advertise_host)
+        for index, name in enumerate(names, start=2):
+            address = host or f"127.0.0.{index}"
+            node = Host(tmp_path, name, address, advertise_host)
             nodes.append(node)
             servers.append(
                 await asyncio.start_server(
-                    node.gateway.forward, host, node.gateway_port
+                    node.gateway.forward, address, node.gateway_port
                 )
             )
             transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
                 lambda gateway=node.gateway: gateway,
-                local_addr=(host, node.gateway_port),
+                local_addr=(address, node.gateway_port),
             )
             transports.append(transport)
             await node.start()
@@ -217,16 +228,35 @@ async def hosts(tmp_path, names="abcd", host="127.0.0.1", advertise_host=None):
                 raise result
 
 
-async def converge(nodes, expected, *, timeout=12):
-    async with asyncio.timeout(timeout):
-        while True:
-            snapshots = [await node.client.members() for node in nodes]
-            if all(
-                {m.id: m.state for m in snapshot.members} == expected
-                for snapshot in snapshots
-            ):
-                return snapshots
-            await asyncio.sleep(0.05)
+async def converge(nodes, expected, *, timeout=12, labels=None):
+    snapshots = []
+    try:
+        async with asyncio.timeout(timeout):
+            while True:
+                snapshots = [await node.client.members() for node in nodes]
+                states_match = all(
+                    {m.id: m.state for m in snapshot.members} == expected
+                    for snapshot in snapshots
+                )
+                labels_match = labels is None or all(
+                    {m.id: m.labels for m in snapshot.members if m.id in labels}
+                    == labels
+                    for snapshot in snapshots
+                )
+                if states_match and labels_match:
+                    return snapshots
+                await asyncio.sleep(0.05)
+    except TimeoutError:
+        observed = {
+            node.directory.name: {
+                m.id: (m.state.value, m.incarnation, m.labels) for m in snapshot.members
+            }
+            for node, snapshot in zip(nodes, snapshots, strict=False)
+        }
+        logs = {node.directory.name: node.logs() for node in nodes}
+        raise AssertionError(
+            f"expected={expected}, observed={observed}, logs={logs}"
+        ) from None
 
 
 def test_cluster_survives_seed_loss_crash_restart_partition_and_leave(tmp_path):
@@ -269,7 +299,7 @@ def test_cluster_survives_seed_loss_crash_restart_partition_and_leave(tmp_path):
             # Isolate one host in both directions for both protocols.
             a.gateway.blocked = True
             for node in (b, c, d):
-                node.gateway.drop_sources.add(a.port)
+                node.gateway.drop_sources.add(a.host)
             # TCP outbound is blocked by stopping forwarding to the other partition.
             # All endpoint gates below close, while Unix control remains available.
             for node in (b, c, d):
@@ -315,26 +345,6 @@ def test_cluster_survives_seed_loss_crash_restart_partition_and_leave(tmp_path):
     asyncio.run(scenario())
 
 
-def test_direct_udp_loss_uses_indirect_probe(tmp_path):
-    async def scenario():
-        async with hosts(tmp_path, "abc") as (a, b, c):
-            await a.client.request("init", {"name": "lab"})
-            await b.join(a)
-            await c.join(b)
-            await converge([a, b, c], dict.fromkeys("abc", MemberState.ALIVE))
-            b.gateway.drop_sources.add(a.port)
-            a.gateway.drop_sources.add(b.port)
-            # Observe longer than the suspicion grace; C's relayed acks keep A/B alive.
-            deadline = asyncio.get_running_loop().time() + 3
-            while asyncio.get_running_loop().time() < deadline:
-                await converge(
-                    [a, b, c], dict.fromkeys("abc", MemberState.ALIVE), timeout=0.5
-                )
-                await asyncio.sleep(0.1)
-
-    asyncio.run(scenario())
-
-
 @pytest.mark.parametrize(
     ("host", "advertise"), [("127.0.0.1", "localhost"), ("::1", "::1")]
 )
@@ -365,5 +375,126 @@ def test_bad_credentials_do_not_join(tmp_path):
                 await b.client.request("join", {"seeds": [a.endpoint]})
             assert (await b.client.status()).membership == "uninitialized"
             assert len((await a.client.members()).members) == 1
+
+    asyncio.run(scenario())
+
+
+def block_between(first, second):
+    for node in first:
+        node.gateway.drop_sources.update(peer.host for peer in second)
+    for node in second:
+        node.gateway.drop_sources.update(peer.host for peer in first)
+
+
+async def update_labels(node, labels):
+    await node.stop()
+    config = json.loads(node.config.read_text())
+    config["labels"] = labels
+    node.config.write_text(json.dumps(config))
+    await node.start()
+
+
+def test_one_broken_pair_preserves_indirect_probes_and_metadata(tmp_path):
+    async def scenario():
+        async with hosts(tmp_path) as (a, b, c, d):
+            await a.client.request("init", {"name": "lab"})
+            await b.join(a)
+            await c.join(b)
+            await d.join(c)
+            alive = dict.fromkeys("abcd", MemberState.ALIVE)
+            await converge([a, b, c, d], alive)
+            block_between([b], [c])
+            await update_labels(b, {"revision": "isolated-link"})
+            await converge(
+                [a, b, c, d], alive, labels={"b": {"revision": "isolated-link"}}
+            )
+            # Observe beyond the suspicion grace, checking states throughout.
+            deadline = asyncio.get_running_loop().time() + 3
+            while asyncio.get_running_loop().time() < deadline:
+                await converge([a, b, c, d], alive, timeout=0.5)
+                await asyncio.sleep(0.05)
+            for protocol in ("tcp", "udp"):
+                assert b.host in c.gateway.dropped[protocol]
+                assert c.host in b.gateway.dropped[protocol]
+                assert a.host in d.gateway.forwarded[protocol]
+                assert d.host in a.gateway.forwarded[protocol]
+
+    asyncio.run(scenario())
+
+
+def test_partition_join_leave_and_recovery_without_a_majority(tmp_path):
+    async def scenario():
+        async with hosts(tmp_path, "abcde") as (a, b, c, d, e):
+            await a.client.request("init", {"name": "lab"})
+            await b.join(a)
+            await c.join(b)
+            await d.join(c)
+            alive = dict.fromkeys("abcd", MemberState.ALIVE)
+            await converge([a, b, c, d], alive)
+            block_between([a, b, e], [c, d])
+            await converge([a, b], alive | dict.fromkeys("cd", MemberState.UNREACHABLE))
+            await converge([c, d], alive | dict.fromkeys("ab", MemberState.UNREACHABLE))
+            await e.join(b)
+            result = await d.client.request("leave")
+            assert result == {"membership": "left", "propagated_to_peer": True}
+            await converge(
+                [a, b, e],
+                dict.fromkeys("abe", MemberState.ALIVE)
+                | dict.fromkeys("cd", MemberState.UNREACHABLE),
+            )
+            await converge(
+                [c],
+                {
+                    "a": MemberState.UNREACHABLE,
+                    "b": MemberState.UNREACHABLE,
+                    "c": MemberState.ALIVE,
+                    "d": MemberState.LEFT,
+                },
+            )
+            for left in (a, b):
+                for right in (c, d):
+                    for protocol in ("tcp", "udp"):
+                        assert left.host in right.gateway.dropped[protocol]
+                        assert right.host in left.gateway.dropped[protocol]
+            for node in (a, b, c, d, e):
+                node.gateway.drop_sources.clear()
+            expected = dict.fromkeys("abce", MemberState.ALIVE) | {
+                "d": MemberState.LEFT
+            }
+            await converge([a, b, c, e], expected, timeout=18)
+            assert (await d.client.status()).membership == "left"
+            # A normal restart and repeated synchronization must retain D's tombstone.
+            await b.stop()
+            await b.start()
+            await converge([a, b, c, e], expected)
+
+    asyncio.run(scenario())
+
+
+def test_self_seed_alias_does_not_count_as_peer_contact_or_leave(tmp_path):
+    async def scenario():
+        async with hosts(tmp_path, "ab", host="127.0.0.1") as (a, b):
+            aliases = [a.endpoint, f"localhost:{a.gateway_port}"]
+            config = json.loads(a.config.read_text())
+            config["seeds"] = aliases
+            a.config.write_text(json.dumps(config))
+            await a.stop()
+            await a.start()
+            await a.client.request("init", {"name": "lab"})
+            # The explicit self-join exercises both incoming and outgoing ID checks.
+            for alias in aliases:
+                with pytest.raises(ClusterError, match="self_peer"):
+                    await a.client.request("join", {"seeds": [alias]})
+            assert (await a.client.status()).last_peer_contact is None
+            await b.join(a)
+            await converge([a, b], dict.fromkeys("ab", MemberState.ALIVE))
+            assert (await a.client.status()).last_peer_contact is not None
+            await b.stop()
+            await a.stop()
+            await a.start()
+            assert (await a.client.status()).last_peer_contact is None
+            result = await a.client.request("leave")
+            assert result == {"membership": "left", "propagated_to_peer": False}
+            assert (await a.client.status()).last_peer_contact is None
 
     asyncio.run(scenario())

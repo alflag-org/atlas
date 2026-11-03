@@ -242,8 +242,9 @@ selection, connection failures, execution, locks, retries, and results::
 status request. Each method uses one bounded Unix-socket request. It starts no
 service, performs no peer networking, and imports no cryptography or private
 Cluster implementation. ``ATLAS_CLUSTER_SOCKET`` selects an explicit path;
-otherwise the client uses ``$XDG_RUNTIME_DIR/atlas/cluster/control.sock`` or
-``/run/atlas/cluster/control.sock``. Run it as the daemon's OS account.
+otherwise the client uses ``/run/atlas/cluster/control.sock``, matching the
+standard systemd instance. ``XDG_RUNTIME_DIR`` does not change the client default.
+Run it as the daemon's OS account.
 
 ``members()`` returns ``ClusterMembers.members`` (a tuple), ``fetched_at`` (UTC),
 and ``observation="local"``. Every ``ClusterMember`` contains ``id``, ``hostname``,
@@ -270,8 +271,8 @@ that at least one peer acknowledged an exchange. Neither implies convergence.
 fallback. ``ClusterError.code`` distinguishes ``not_joined``, ``invalid_state``,
 ``legacy_state_requires_reconfiguration``, ``member_conflict``,
 ``membership_too_large``, ``cluster_mismatch``, ``credential_mismatch``,
-``authentication_or_format_failed``, ``peer_unavailable``, ``join_timeout``, and
-``persistence_failed``. A failed or cancelled control request may have committed;
+``authentication_or_format_failed``, ``self_peer``, ``peer_unavailable``,
+``join_timeout``, and ``persistence_failed``. A failed or cancelled control request may have committed;
 inspect status before retrying. See :doc:`reference` for setup and migration.
 
 .. automodule:: atlas_core.cluster

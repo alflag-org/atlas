@@ -11,6 +11,8 @@ import pytest
 
 from atlas.cli import main
 from atlas.cluster import daemon
+from atlas.daemon.config import DaemonInstance
+from atlas.daemon.systemd import render_unit
 from atlas_core.cluster import ClusterClient, ClusterError, socket_path
 
 from .test_cluster_process import Host
@@ -20,13 +22,24 @@ def test_socket_selection(monkeypatch, tmp_path):
     monkeypatch.delenv("ATLAS_CLUSTER_SOCKET", raising=False)
     monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
     assert socket_path() == Path("/run/atlas/cluster/control.sock")
+    unit = render_unit(DaemonInstance("cluster", "/usr/bin/atlasd", (), "root", "/"))
+    runtime = next(
+        line.split("=", 1)[1]
+        for line in unit.splitlines()
+        if line.startswith("RuntimeDirectory=")
+    )
+    assert socket_path() == Path("/run") / runtime / "control.sock"
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-    assert socket_path() == tmp_path / "atlas/cluster/control.sock"
+    assert socket_path() == Path("/run/atlas/cluster/control.sock")
     monkeypatch.setenv("ATLAS_CLUSTER_SOCKET", str(tmp_path / "chosen"))
     assert socket_path() == tmp_path / "chosen"
+    assert ClusterClient(tmp_path / "explicit")._client.path == tmp_path / "explicit"
 
 
-def test_cli_and_public_models_against_real_entry_point(tmp_path, capsys):
+def test_cli_and_public_models_against_real_entry_point(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "unrelated"))
+    monkeypatch.setenv("ATLAS_CLUSTER_SOCKET", str(tmp_path / "missing.sock"))
+
     async def scenario():
         host = Host(tmp_path, "a")
         try:
@@ -42,7 +55,12 @@ def test_cli_and_public_models_against_real_entry_point(tmp_path, capsys):
                 output = capsys.readouterr()
                 assert json.loads(output.out)
                 assert output.err == ""
-            async with ClusterClient.connect(host.runtime / "control.sock") as client:
+            monkeypatch.setenv(
+                "ATLAS_CLUSTER_SOCKET", str(host.runtime / "control.sock")
+            )
+            assert await asyncio.to_thread(main, ["cluster", "status"]) == 0
+            assert json.loads(capsys.readouterr().out)["membership"] == "left"
+            async with ClusterClient.connect() as client:
                 assert (await client.status()).membership == "left"
                 assert (await client.members()).members[0].id == "a"
             assert await asyncio.to_thread(main, [*args, "join", "bad@host"]) == 2

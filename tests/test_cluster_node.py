@@ -12,7 +12,7 @@ from atlas.cluster.membership import Membership
 from atlas.cluster.network import DatagramInbox
 from atlas.cluster.node import Node, PendingProbe, Timers
 from atlas.cluster.store import Credential, State, Store
-from atlas_core.cluster import ClusterError, MemberState
+from atlas_core.cluster import ClusterError, MemberState, PeerEndpoint
 
 from .test_cluster_membership import member
 
@@ -50,7 +50,10 @@ def test_control_errors_and_credential_mismatch(tmp_path):
             node.initialize("lab")
         for raw, error in [
             ({}, "invalid_snapshot"),
-            ({"name": "other", "members": []}, "cluster_name_conflict"),
+            (
+                {"sender_id": "b", "name": "other", "members": []},
+                "cluster_name_conflict",
+            ),
         ]:
             with pytest.raises(ClusterError, match=error):
                 node.receive_snapshot(raw)
@@ -82,7 +85,17 @@ def test_join_failure_before_and_after_persistence_and_deadline(tmp_path, monkey
         async def exchange(peer, cipher, method, data, **kwargs):
             calls.append(method)
             if method == "fetch":
-                return {"name": "lab", "members": [asdict(member("b"))]}
+                return {
+                    "sender_id": "b",
+                    "name": "lab",
+                    "members": [
+                        asdict(
+                            replace(
+                                member("b"), endpoint=PeerEndpoint("127.0.0.2", 7947)
+                            )
+                        )
+                    ],
+                }
             raise ClusterError("peer_unavailable")
 
         monkeypatch.setattr(node_module, "exchange", exchange)
@@ -119,10 +132,16 @@ def test_join_failure_before_and_after_persistence_and_deadline(tmp_path, monkey
 def test_sync_storage_failure_and_successful_leave(tmp_path, monkeypatch):
     async def scenario():
         node = make_node(tmp_path)
-        node.membership.apply((member("b"),))
+        node.membership.apply(
+            (replace(member("b"), endpoint=PeerEndpoint("127.0.0.2", 7947)),)
+        )
 
         async def remote(*args, **kwargs):
-            return {"name": "lab", "members": [asdict(member("b", incarnation=2))]}
+            return {
+                "sender_id": "b",
+                "name": "lab",
+                "members": [asdict(member("b", incarnation=2))],
+            }
 
         monkeypatch.setattr(node_module, "exchange", remote)
         assert (await node.leave())["propagated_to_peer"]
@@ -134,7 +153,11 @@ def test_sync_storage_failure_and_successful_leave(tmp_path, monkeypatch):
         monkeypatch.setattr(node.membership.store, "write", fail)
 
         async def updated(*args, **kwargs):
-            return {"name": "lab", "members": [asdict(member("b", incarnation=3))]}
+            return {
+                "sender_id": "b",
+                "name": "lab",
+                "members": [asdict(member("b", incarnation=3))],
+            }
 
         monkeypatch.setattr(node_module, "exchange", updated)
         with pytest.raises(ClusterError, match="persistence_failed"):
@@ -344,5 +367,38 @@ def test_inflight_ack_cannot_confirm_replaced_incarnation(tmp_path, monkeypatch)
             assert observed["incarnation"] == 2 and observed["state"] == "unknown"
             assert node.last_contact is None
             task.cancel()
+
+    asyncio.run(scenario())
+
+
+def test_self_candidates_and_authenticated_identity_are_rejected(tmp_path, monkeypatch):
+    async def scenario():
+        node = make_node(tmp_path)
+        alias = PeerEndpoint("localhost", 7947)
+        other = PeerEndpoint("127.0.0.2", 7947)
+        node.config = replace(node.config, seeds=(node.config.bind, alias, other))
+        node.membership.state = replace(
+            node.state, seeds=(node.config.advertise, other)
+        )
+        assert node.candidates() == [other, alias]
+        original = node.membership.store.path.read_bytes()
+        for method, data in (
+            ("fetch", {"sender_id": "a"}),
+            ("sync", node.wire_snapshot()),
+        ):
+            with pytest.raises(ClusterError, match="self_peer"):
+                await node.remote(method, data)
+        assert node.last_contact is None
+        assert node.membership.store.path.read_bytes() == original
+
+        async def self_response(*args, **kwargs):
+            return node.wire_snapshot()
+
+        monkeypatch.setattr(node_module, "exchange", self_response)
+        assert not await node.synchronize(alias)
+        with pytest.raises(ClusterError, match="self_peer"):
+            await node.join((alias,))
+        await node.relay({"target": "a", "incarnation": 1})
+        assert node.last_contact is None and not node.pending
 
     asyncio.run(scenario())

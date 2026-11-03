@@ -74,9 +74,6 @@ def socket_path() -> Path:
     explicit = os.environ.get("ATLAS_CLUSTER_SOCKET")
     if explicit:
         return Path(explicit)
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
-    if runtime:
-        return Path(runtime) / "atlas/cluster/control.sock"
     return Path("/run/atlas/cluster/control.sock")
 
 

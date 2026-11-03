@@ -1,5 +1,6 @@
 """Test-only entry point: real daemon lifecycle with shorter protocol timers."""
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -36,6 +37,15 @@ def main():
     timers = Timers(0.15, 0.12, 1.2, 0.08, 0.25, 0.6, 4)
 
     async def start(ctx):
+        # Preserve each simulated host's source address through the test gateway.
+        loop = asyncio.get_running_loop()
+        connect = loop.sock_connect
+
+        async def connect_from_host(sock, address):
+            sock.bind((config.bind.host, 0))
+            await connect(sock, address)
+
+        loop.sock_connect = connect_from_host
         await application(ctx, config, timers)
 
     return run(start, name="cluster", shutdown_timeout=3)

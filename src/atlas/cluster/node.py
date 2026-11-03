@@ -82,25 +82,32 @@ class Node:
 
     def candidates(self) -> list[PeerEndpoint]:
         # Include unreachable peers and DNS names, even when every seed is down.
-        return list(
-            dict.fromkeys(
-                [
-                    *self.state.seeds,
-                    *self.config.seeds,
-                    *(item.endpoint for item in self.peers()),
-                ]
-            )
+        candidates = dict.fromkeys(
+            [
+                *self.state.seeds,
+                *self.config.seeds,
+                *(item.endpoint for item in self.peers()),
+            ]
         )
+        local_endpoints = {self.config.bind, self.config.advertise}
+        return [peer for peer in candidates if peer not in local_endpoints]
+
+    def check_peer(self, sender_id: object) -> None:
+        # Address aliases cannot identify a peer; use its authenticated node ID.
+        if text(sender_id) == self.state.local_id:
+            raise ClusterError("self_peer")
 
     def wire_snapshot(self) -> dict:
         return {
+            "sender_id": self.state.local_id,
             "name": self.state.name,
             "members": [asdict(item) for item in self.state.members.values()],
         }
 
     def receive_snapshot(self, raw: dict) -> tuple[str, tuple[ClusterMember, ...]]:
-        if set(raw) != {"name", "members"}:
+        if set(raw) != {"sender_id", "name", "members"}:
             raise ClusterError("invalid_snapshot")
+        self.check_peer(raw["sender_id"])
         name = text(raw["name"])
         if self.state.name is not None and name != self.state.name:
             raise ClusterError("cluster_name_conflict")
@@ -114,7 +121,13 @@ class Node:
         if method == "sync":
             _, members = self.receive_snapshot(data)
             self.membership.apply(members)
-        elif method != "fetch" or data or self.state.membership != "joined":
+        elif (
+            method == "fetch"
+            and set(data) == {"sender_id"}
+            and self.state.membership == "joined"
+        ):
+            self.check_peer(data["sender_id"])
+        else:
             raise ClusterError("invalid_request")
         self.last_contact = timestamp()
         return self.wire_snapshot()
@@ -175,7 +188,7 @@ class Node:
                             seed,
                             cipher,
                             "fetch",
-                            {},
+                            {"sender_id": self.state.local_id},
                             timeout=self.timers.exchange_timeout,
                         )
                         name, remote = self.receive_snapshot(raw)
@@ -322,7 +335,11 @@ class Node:
 
     async def relay(self, payload: dict) -> None:
         target = self.state.members.get(payload["target"])
-        if target is None or target.incarnation != payload["incarnation"]:
+        if (
+            target is None
+            or target.id == self.state.local_id
+            or target.incarnation != payload["incarnation"]
+        ):
             return
         if await self.probe(target, indirect=False):
             await self.send(

@@ -556,6 +556,8 @@ The directories must have mode 0700 and belong to the daemon account. Without
 service-manager directory variables, the Daemon SDK uses its documented XDG
 state/runtime behavior. Its random temporary-runtime fallback requires an
 explicit socket path in clients; use a stable runtime directory for operation.
+The Cluster client default remains ``/run/atlas/cluster/control.sock`` even when
+``XDG_RUNTIME_DIR`` is set.
 An uninitialized daemon only accepts local initialization/join and does not
 create a Cluster automatically. In another terminal, as that account::
 
@@ -570,13 +572,18 @@ other hosts, retaining owner-only access, before joining them::
     atlas cluster leave
 
 CLI operations connect only to the local Unix socket; they never start atlasd.
-Use ``atlas cluster --socket /absolute/control.sock ...`` to select a socket.
+Use ``atlas cluster --socket /absolute/control.sock ...`` or
+``ATLAS_CLUSTER_SOCKET`` to explicitly select another socket. The command-line
+option takes precedence over the environment variable.
 Results are JSON on stdout; errors use ``atlas.cluster-error/v2`` on stderr and
 exit 2. Ordinary Atlas execution works without Cluster configuration or atlasd.
 Join tries multiple seeds within a ten-second total deadline and succeeds only
 after saving membership and completing an authenticated exchange. It does not
-promise propagation to all peers or inbound UDP connectivity. A failed request
-may already have saved membership; inspect local status before retrying.
+promise propagation to all peers or inbound UDP connectivity. Known local
+endpoints are excluded from synchronization candidates, and authenticated node
+IDs reject self-connections through address aliases. Self-communication never
+updates the last peer contact or counts as acknowledged leave propagation.
+A failed request may already have saved membership; inspect local status before retrying.
 
 For systemd operation, use the existing ``atlas daemon`` declaration mechanism
 with instance name ``cluster``, an absolute ``atlasd`` executable, and arguments

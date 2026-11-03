@@ -403,6 +403,9 @@ def test_one_broken_pair_preserves_indirect_probes_and_metadata(tmp_path):
             await d.join(c)
             alive = dict.fromkeys("abcd", MemberState.ALIVE)
             await converge([a, b, c, d], alive)
+            for node in (a, b, c, d):
+                for sources in node.gateway.forwarded.values():
+                    sources.clear()
             block_between([b], [c])
             await update_labels(b, {"revision": "isolated-link"})
             await converge(

@@ -198,8 +198,10 @@ async def hosts(tmp_path, names="abcd", host="127.0.0.1", advertise_host=None):
             await node.start()
         yield nodes
     finally:
-        for node in nodes:
-            await node.stop()
+        # Reap every process even when one shutdown assertion fails.
+        stops = await asyncio.gather(
+            *(node.stop() for node in nodes), return_exceptions=True
+        )
         for server in servers:
             server.close()
             await server.wait_closed()
@@ -210,6 +212,9 @@ async def hosts(tmp_path, names="abcd", host="127.0.0.1", advertise_host=None):
                 task.cancel()
             await asyncio.gather(*node.gateway.tasks, return_exceptions=True)
             node.output.close()
+        for result in stops:
+            if isinstance(result, BaseException):
+                raise result
 
 
 async def converge(nodes, expected, *, timeout=12):

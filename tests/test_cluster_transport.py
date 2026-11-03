@@ -232,3 +232,35 @@ def test_udp_bind_conflict_closes_tcp_listener():
             probe.bind((peer.host, peer.port))
 
     asyncio.run(scenario())
+
+
+def test_shutdown_closes_accepted_connection_before_handler_starts(monkeypatch):
+    async def scenario():
+        original = asyncio.start_server
+        accepted = asyncio.get_running_loop().create_future()
+        callbacks = []
+
+        async def intercept(callback, *args, **kwargs):
+            callbacks.append(callback)
+
+            def hold(reader, writer):
+                accepted.set_result((reader, writer))
+
+            return await original(hold, *args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "start_server", intercept)
+        peer = PeerEndpoint("127.0.0.1", free_port("127.0.0.1"))
+        crypt = cipher()
+        async with asyncio.timeout(1):
+            async with listen(peer, lambda: crypt, None, timeout=10):
+                reader, writer = await asyncio.open_connection(peer.host, peer.port)
+                incoming, outgoing = await accepted
+                callbacks[0](incoming, outgoing)
+                # No yield: shutdown cancels the accepted task before its first step.
+            assert await reader.read() == b""
+            assert outgoing.is_closing()
+            # A callback already queued when shutdown starts must not allocate a task.
+            callbacks[0](incoming, outgoing)
+            writer.close()
+
+    asyncio.run(scenario())

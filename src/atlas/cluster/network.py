@@ -104,6 +104,7 @@ async def listen(
     timeout: float,
 ):
     tasks: set[asyncio.Task] = set()
+    closing = False
 
     async def accept(reader, writer) -> None:
         try:
@@ -132,19 +133,24 @@ async def listen(
                 await write_frame(writer, cipher.seal("response", reply))
         except (ClusterError, OSError, TimeoutError, asyncio.IncompleteReadError):
             pass  # Malformed connections have no trusted response channel.
-        finally:
-            writer.close()
 
     # Enforce admission before allocating a task, including unauthenticated clients.
     async with asyncio.TaskGroup() as group:
 
         def connected(reader, writer) -> None:
-            if len(tasks) >= CONNECTION_LIMIT:
+            if closing or len(tasks) >= CONNECTION_LIMIT:
                 writer.close()
                 return
             task = group.create_task(accept(reader, writer))
             tasks.add(task)
-            task.add_done_callback(tasks.discard)
+
+            def finished(task: asyncio.Task) -> None:
+                # A task cancelled before its first step never enters accept's body.
+                # The connection therefore belongs to this completion callback.
+                writer.close()
+                tasks.discard(task)
+
+            task.add_done_callback(finished)
 
         server = await asyncio.start_server(connected, bind.host, bind.port)
         transport = None
@@ -158,6 +164,7 @@ async def listen(
             )
             yield transport, inbox, family
         finally:
+            closing = True
             server.close()
             if transport is not None:
                 transport.close()

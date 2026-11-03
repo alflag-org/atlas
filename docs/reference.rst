@@ -126,6 +126,90 @@ The diagnostic command does not require a registered program:
    $ atlas status
    $ atlas check
 
+.. _application-logging-operations:
+
+Application diagnostics
+-----------------------
+
+Python applications can use :ref:`application-logging-api` for diagnostics in
+both stderr and a shared file. The default layout is flat::
+
+   /var/log/atlas/
+   ├── atlas.log
+   ├── hermes.log
+   └── ares.log
+
+Only records explicitly sent through the common logger reach these files.
+Command results and JSON data may still use stdout; raw stdout/stderr and
+subprocess output are not captured. ``/var/lib/atlas/logs/runs.jsonl`` remains
+the separate completed-command metadata log described below.
+
+The destination is selected once per logger namespace, in this order:
+
+1. An absolute ``configure_logging(path=...)`` path.
+2. ``/var/log/atlas/<program>.log``, using ``ATLAS_PROGRAM_NAME`` or, when absent,
+   the program name from an available execution context.
+3. ``/var/log/atlas/<namespace>.log``, using the logger's first name component.
+
+For example, ``hermes.dns`` and ``hermes.worker`` share ``hermes.log`` outside
+Atlas, but use ``provisioning.log`` under ``ATLAS_PROGRAM_NAME=provisioning``.
+Logger names are not rewritten. Program names used in filenames must match
+``[A-Za-z0-9_][A-Za-z0-9_.-]*`` and must not contain ``..``; unsafe names raise
+``ValueError`` unless an explicit path is supplied.
+
+Set the initial level through the environment or application API::
+
+   ATLAS_LOG_LEVEL=DEBUG atlas run dns-check
+
+The environment is read at namespace initialization, not on every record. A
+running application can change standard Logger levels through Python; Atlas
+adds no level-control CLI, signal handler, IPC, or configuration watcher.
+
+File provisioning and permissions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Provision parent directories through host configuration management. The library
+never creates them, changes users, installs ACLs, or changes existing file
+ownership or modes. When permitted, it creates the log file on first output
+with mode at most ``0640``, further restricted by the process umask. Existing
+files are opened for append without truncation. Symlinks in the file or any
+parent component and non-regular destinations are rejected, including on reopen.
+
+A root-owned ``/var/log/atlas`` with mode ``0755`` does not let an ordinary
+application account create files. Choose a host policy: pre-create each file
+owned by its application account, give a designated operational account control
+of the log directory, or configure an absolute path in another writable area.
+Atlas prescribes no production owner, shared group, ACL, or directory mode for
+this flat layout. Account separation and provisioning remain operator decisions.
+
+File failures and rotation
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A missing directory, denied access, unsafe destination, or file I/O failure emits
+a diagnostic directly to stderr. Application execution and ordinary stderr logs
+continue; file failure does not change the command exit status. The warning is
+suppressed while the same file remains unavailable. Each subsequent enabled
+record retries; successful output clears the failure, so a later outage can
+warn again. Failed records are not buffered, replayed, or saved elsewhere.
+Partial writes may leave an incomplete record after an I/O failure.
+
+Use host-managed ``logrotate`` or equivalent for rename/create rotation. The
+next record detects a different device/inode and safely opens the current path.
+If the replacement has not been created, Atlas tries to create it with the same
+permission rules; otherwise it warns and retries. Provision rotation ownership
+and modes so the application can append to the replacement. Rotation may use
+names such as ``hermes.log-20261101`` and compress older generations. Schedule,
+size thresholds, compression, naming, and retention are host policy; Atlas
+implements none of them.
+
+Multiple processes may append to one file, but strict ordering and completeness
+are not guaranteed. These files are not a transactional audit trail. Keep secrets
+out of messages and tracebacks; there is no automatic redaction guarantee.
+
+Standalone daemons use the same API and file rules. When systemd starts a daemon,
+its journal may also collect stderr; ``atlas daemon logs`` continues to read that
+journal. File retention and journald retention are separately managed by the host.
+
 Run records
 -----------
 

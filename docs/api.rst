@@ -46,6 +46,104 @@ Execution storage
 .. automodule:: atlas_core.execution
    :members:
 
+.. _application-logging-api:
+
+Application logging
+-------------------
+
+``atlas_core.logging`` provides ordinary shared ``logging.Logger`` objects for
+scripts, CLI commands, and standalone daemons. No Atlas configuration or service
+manager is required:
+
+.. code-block:: python
+
+   from atlas_core.logging import get_logger
+
+   logger = get_logger("hermes.dns")
+   logger.info("DNS validation completed")
+
+The first retrieval configures the top-level namespace (``hermes``) with file
+and stderr handlers. The file is opened only on the first enabled record, not
+on import, configuration, retrieval, or filtered DEBUG calls. Descendants share
+the file and retain their full logger names. Logger names consist of dot-separated
+components matching ``[A-Za-z_][A-Za-z0-9_-]*``; the ``root`` namespace is rejected.
+
+Configure the namespace at the application's entry point when defaults are not
+suitable:
+
+.. code-block:: python
+
+   from atlas_core.logging import configure_logging, get_logger
+
+   configure_logging(
+       "hermes", level="DEBUG", path="/var/log/atlas/hermes.worker01.log",
+   )
+   logger = get_logger("hermes.worker")
+   logger.debug("Worker initialized")
+
+``configure_logging()`` accepts a top-level name only. Initially, level precedence
+is the explicit argument, then ``ATLAS_LOG_LEVEL``, then INFO. Names are
+case-insensitive; the accepted levels are DEBUG, INFO, WARNING, ERROR, and
+CRITICAL, or their integer values 10, 20, 30, 40, and 50. NOTSET is reserved for
+standard child inheritance, not accepted as a configuration level. An invalid
+environment value warns once at namespace initialization and selects INFO.
+Invalid API arguments raise ``TypeError`` or ``ValueError`` before settings change.
+
+Once initialized, omitted or ``None`` arguments retain the current settings.
+Repeated retrieval and configuration do not duplicate handlers or reset levels.
+Changing the path closes the current file under the Atlas file handler lock.
+The handler stays attached so in-flight records are not dropped during the switch.
+Custom handlers remain installed. Use an absolute path without parent traversal or
+control characters; see :ref:`application-logging-operations` for destination
+precedence, permissions, rotation, and failure recovery.
+
+Levels can be changed using the standard API:
+
+.. code-block:: python
+
+   import logging
+
+   parent = get_logger("hermes")
+   previous = parent.level
+   try:
+       parent.setLevel(logging.DEBUG)
+       logger.debug("Detailed diagnostic")
+   finally:
+       parent.setLevel(previous)
+
+Children inherit unless given an explicit level with ``setLevel()``. Atlas
+handlers use NOTSET, so a child's explicit DEBUG level reaches both destinations
+even when its parent is INFO. Handlers live only on the top-level logger, whose
+``propagate`` is False. The root logger and unrelated loggers are unchanged.
+Normal standard-library ``isEnabledFor()``, ``exception()``, ``extra`` fields,
+filters, and custom formatters remain available. The default formatter does not
+serialize arbitrary ``extra`` fields. Caller-added handlers can introduce their
+own output and duplication.
+
+Both destinations use UTF-8 text, a UTC timestamp with milliseconds and a trailing
+``Z``, the level, full logger name, and message::
+
+   2026-11-01T12:30:00.123Z INFO hermes.dns DNS validation completed
+
+At namespace initialization, an available ``ATLAS_CONTEXT_FILE`` supplies
+``host_id``, ``run_id``, and ``operation_id``. If it is absent or unreadable,
+available ``ATLAS_HOST_ID``, ``ATLAS_RUN_ID``, and ``ATLAS_OPERATION_ID`` values
+are used. Logging never loads standalone ``host.yml`` or generates identifiers.
+Context values are captured once for the namespace and precede the message::
+
+   2026-11-01T12:30:00.123Z INFO hermes.dns host_id=control01 run_id=run-1 operation_id=op-1 DNS validation completed
+
+``logger.exception()`` includes the standard traceback; ``stack_info=True``
+includes a stack trace. Neither messages nor exception details are automatically
+redacted. Do not pass tokens, environment dumps, or sensitive responses to a
+logger. Application logging never captures stdout/stderr or changes completed-run
+history. Initialization is serialized within the process; writes from multiple
+processes to one file are best effort, without ordering or completeness guarantees.
+There is no logging server, replay buffer, or interprocess lock.
+
+.. automodule:: atlas_core.logging
+   :members: get_logger, configure_logging
+
 Independent daemons
 -------------------
 
@@ -90,9 +188,13 @@ These deadlines require a responsive event loop. The application must stop its
 own threads, subprocesses, and executors. Configure the service manager's hard
 stop deadline for code that may block or ignore cancellation.
 
-``ctx.logger`` writes INFO and higher levels to stderr during ``run()``. It uses
-standard ``logging`` methods and accepts ``extra`` fields for custom formatters.
+``ctx.logger`` is ``atlas_core.logging.get_logger(ctx.name)`` and uses the shared
+file and stderr configuration described above. Configure that name before
+``run()`` to select a level or instance-specific path. The logger stays usable
+after ``run()`` returns; shutdown does not disable it or remove shared handlers.
 It leaves the root logger unchanged and writes no Atlas execution records.
+Configuration failures before the application logger is available are reported
+directly to stderr, including failures in logging configuration itself.
 SDK diagnostics include exception class names, but omit exception messages,
 tracebacks, arguments, and environment values. Applications must keep secrets
 out of their own messages and handlers.

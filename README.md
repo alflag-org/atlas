@@ -78,6 +78,14 @@ Execution facts are appended to `/var/lib/atlas/logs/runs.jsonl`. Atlas records 
 host, user, program, command, identifiers, duration, and exit status; command output remains the
 responsibility of the invoking terminal, service manager, or CI system.
 
+## Application logging
+
+Use `atlas_core.logging.get_logger("hermes.dns")` for diagnostics in stderr and
+`/var/log/atlas/<program>.log`. Configure a level or absolute path with
+`configure_logging()`. Provision file access on the host; unavailable file output
+warns and continues on stderr. See [the Python API](docs/api.rst#application-logging)
+and [the operator reference](docs/reference.rst#application-diagnostics).
+
 ## External secrets
 
 Programs can use `atlas_core.secrets` to retrieve logical secret names from an external

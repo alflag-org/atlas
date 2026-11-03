@@ -13,6 +13,9 @@ import pytest
 
 from atlas_core.daemon import _environment as environment
 from atlas_core.daemon import run
+from atlas_core.logging import configure_logging, get_logger
+
+pytestmark = pytest.mark.usefixtures("application_logging")
 
 
 @pytest.fixture(autouse=True)
@@ -26,7 +29,12 @@ async def ready(ctx):
     ctx.ready()
 
 
-def test_standalone_readiness_logging_and_directory_lifetime(capsys):
+@pytest.mark.parametrize("program", [None, "invalid/program"])
+def test_standalone_readiness_logging_and_directory_lifetime(capsys, tmp_path, monkeypatch, program):
+    if program is not None:
+        monkeypatch.setenv("ATLAS_PROGRAM_NAME", program)
+    path = tmp_path / "instance.log"
+    configure_logging("daemon", level="DEBUG", path=path)
     observed = []
 
     async def main(ctx):
@@ -41,11 +49,13 @@ def test_standalone_readiness_logging_and_directory_lifetime(capsys):
     state, runtime, logger = observed
     assert (state / "checkpoint").read_text() == "saved"
     assert not runtime.exists()
-    logger.error("late message from a completed run")
+    assert logger is get_logger("daemon")
+    logger.debug("message after a completed run")
     output = capsys.readouterr()
     assert not output.out
     assert "application initialized" in output.err
-    assert "late message" not in output.err
+    assert "message after a completed run" in output.err
+    assert path.read_text() == output.err
 
 
 def test_stop_handlers_are_idempotent_and_restored(monkeypatch):
@@ -383,3 +393,13 @@ def test_filesystem_denial_does_not_start_application(monkeypatch, capsys):
     monkeypatch.setattr(Path, "mkdir", readonly)
     assert run(ready) == 2
     assert "synthetic-secret-value" not in capsys.readouterr().err
+
+
+def test_invalid_logging_environment_returns_configuration_error(monkeypatch, capsys):
+    monkeypatch.setenv("ATLAS_PROGRAM_NAME", "invalid/private-name")
+    main = Mock()
+    assert run(main) == 2
+    main.assert_not_called()
+    error = capsys.readouterr().err
+    assert "daemon configuration failed (ValueError)" in error
+    assert "private-name" not in error

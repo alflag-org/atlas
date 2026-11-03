@@ -27,7 +27,13 @@ def daemon_process(tmp_path, *, source=None):
     }
     environment["XDG_STATE_HOME"] = str(tmp_path / "state")
     environment["PYTHONPATH"] = str(ROOT / "src")
-    argv = [sys.executable, "-m", "sampled"] if source is None else [sys.executable, "-c", source]
+    logging_setup = (
+        "from atlas_core.logging import configure_logging\n"
+        f"configure_logging('sampled', path={str(tmp_path / 'sampled.log')!r})\n"
+        f"configure_logging('daemon', path={str(tmp_path / 'daemon.log')!r})\n"
+    )
+    application = "import runpy; runpy.run_module('sampled', run_name='__main__')" if source is None else source
+    argv = [sys.executable, "-c", logging_setup + application]
     with subprocess.Popen(
         argv,
         cwd=ROOT / "examples/daemon",
@@ -49,7 +55,7 @@ def wait_ready(process):
         selector.register(process.stderr, selectors.EVENT_READ)
         deadline = time.monotonic() + 5
         output = b""
-        while b"sampled: INFO: ready\n" not in output:
+        while b"INFO sampled ready\n" not in output:
             remaining = max(0, deadline - time.monotonic())
             assert selector.select(timeout=remaining), "daemon did not initialize"
             chunk = os.read(process.stderr.fileno(), 4096)

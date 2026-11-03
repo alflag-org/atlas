@@ -302,7 +302,7 @@ class Node:
                     await self.send(
                         helper.endpoint,
                         "ping_req",
-                        payload | {"endpoint": asdict(target.endpoint)},
+                        payload,
                     )
                 try:
                     await asyncio.wait_for(
@@ -310,6 +310,10 @@ class Node:
                     )
                 except TimeoutError:
                     return False
+            # A concurrent sync can replace the record while this probe is waiting.
+            # Its older ack must not confirm the replacement incarnation.
+            if self.state.members[target.id].incarnation != target.incarnation:
+                return False
             self.last_contact = timestamp()
             self.membership.unconfirmed.discard(target.id)
             return True

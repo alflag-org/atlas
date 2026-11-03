@@ -263,3 +263,86 @@ def test_single_host_does_not_create_or_probe_other_members(tmp_path, monkeypatc
         assert node.last_contact is None
 
     asyncio.run(scenario())
+
+
+def test_long_valid_endpoints_fit_indirect_probe_datagrams(tmp_path, monkeypatch):
+    from atlas.cluster.model import record
+    from atlas.cluster.wire import MAX_DATAGRAM
+    from atlas_core.cluster import PeerEndpoint
+
+    async def scenario():
+        node = make_node(tmp_path)
+        long_host = ".".join(["a" * 63] * 3 + ["a" * 61])
+        peer = PeerEndpoint(long_host, 65535)
+        target = record(asdict(replace(member("i" * 128), endpoint=peer)))
+        helper = member("helper")
+        node.membership.apply((target, helper))
+        node.config = replace(node.config, advertise=peer)
+        packets = []
+
+        async def send(endpoint, kind, payload):
+            packets.append((kind, node.cipher.seal(kind, payload, limit=MAX_DATAGRAM)))
+
+        monkeypatch.setattr(node, "send", send)
+        assert not await node.probe(target)
+        assert {kind for kind, _ in packets} == {"ping", "ping_req"}
+        assert all(len(packet) <= MAX_DATAGRAM for _, packet in packets)
+
+    asyncio.run(scenario())
+
+
+def test_invalid_unicode_gossip_does_not_stop_worker(tmp_path):
+    async def scenario():
+        node = make_node(tmp_path)
+        inbox = DatagramInbox()
+        malformed = asdict(member("b")) | {"id": "\ud800"}
+        inbox.datagram_received(node.cipher.seal("gossip", {"member": malformed}), ())
+        inbox.datagram_received(
+            node.cipher.seal("gossip", {"member": asdict(member("b"))}), ()
+        )
+        async with asyncio.TaskGroup() as group:
+            task = group.create_task(node.datagrams(inbox, group))
+            async with asyncio.timeout(1):
+                while "b" not in node.state.members:
+                    await asyncio.sleep(0.01)
+            assert set(node.state.members) == {"a", "b"}
+            assert not task.done()
+            task.cancel()
+
+    asyncio.run(scenario())
+
+
+def test_inflight_ack_cannot_confirm_replaced_incarnation(tmp_path, monkeypatch):
+    async def scenario():
+        node = make_node(tmp_path)
+        target = member("b")
+        node.membership.apply((target,))
+        node.membership.unconfirmed.add("b")
+        inbox = DatagramInbox()
+
+        async def send(peer, kind, payload):
+            assert kind == "ping"
+            node.membership.apply((replace(target, incarnation=2),))
+            inbox.datagram_received(
+                node.cipher.seal(
+                    "ack",
+                    {
+                        "id": payload["id"],
+                        "target": "b",
+                        "incarnation": 1,
+                    },
+                ),
+                (),
+            )
+
+        monkeypatch.setattr(node, "send", send)
+        async with asyncio.TaskGroup() as group:
+            task = group.create_task(node.datagrams(inbox, group))
+            assert not await node.probe(target)
+            snapshot = node.membership.snapshot()
+            observed = next(m for m in snapshot["members"] if m["id"] == "b")
+            assert observed["incarnation"] == 2 and observed["state"] == "unknown"
+            assert node.last_contact is None
+            task.cancel()
+
+    asyncio.run(scenario())

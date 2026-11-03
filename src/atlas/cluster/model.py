@@ -32,12 +32,13 @@ def encoded(value: object) -> bytes:
 
 
 def text(value: object, limit: int = 128, *, empty: bool = False) -> str:
-    if (
-        not isinstance(value, str)
-        or len(value.encode()) > limit
-        or (not value and not empty)
-        or any(ord(c) < 32 for c in value)
-    ):
+    if not isinstance(value, str):
+        raise ClusterError("invalid_text")
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeError:
+        raise ClusterError("invalid_text") from None
+    if size > limit or (not value and not empty) or any(ord(c) < 32 for c in value):
         raise ClusterError("invalid_text")
     return value
 

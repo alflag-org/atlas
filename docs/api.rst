@@ -277,3 +277,28 @@ inspect status before retrying. See :doc:`reference` for setup and migration.
 
 .. automodule:: atlas_core.cluster
    :members: ClusterClient, MemberState, PeerEndpoint, ClusterMember, ClusterMembers, ClusterStatus, ClusterError, ClusterUnavailable
+
+Perl execution context
+----------------------
+
+Install the independent ``Atlas::Context`` distribution from ``src/perl`` using the program's
+selected Perl and dependency environment. Its only runtime dependency is core ``JSON::PP``:
+
+.. code-block:: perl
+
+   use Atlas::Context;
+   my $context = Atlas::Context->current;
+   print $context->{host}{id}, "\n";
+   print $context->{execution}{run_id}, "\n";
+
+``current`` reads ``ATLAS_CONTEXT_FILE`` on every call and returns an unblessed hash reference.
+It requires a version 1 JSON execution context and dies on missing files, symlinks, malformed
+JSON, unsupported versions, or incomplete required fields. It preserves additional fields and
+maps JSON null to ``undef``. There is no environment-variable or host-configuration fallback.
+
+Both SDKs read the same host, paths, program, command, execution identifiers, and working directory.
+Program runtime fields are ``type`` (``python``, ``perl``, or ``native``), optional configured
+``version``, and optional absolute ``environment``. The Python ``ProgramInfo`` exposes these as
+``runtime_type``, ``runtime_version``, and ``environment``. The run and operation identifiers
+retain their meaning across language boundaries. Perl Cluster, Daemon, and Logging APIs are
+not provided.

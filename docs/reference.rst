@@ -2,7 +2,7 @@ Operator reference
 ==================
 
 Install Atlas as the host-side runtime and keep the automation programs it executes outside the
-Atlas directory. Atlas owns runtime links, Python venvs, generated shims, context files, and run
+Atlas directory. Atlas owns runtime links, dependency environments, generated shims, context files, and run
 records.
 
 Filesystem layout
@@ -17,8 +17,12 @@ The default layout is:
    └── host.yml
 
    /opt/atlas/
-   ├── runtimes/python/
-   ├── venvs/
+   ├── runtimes/
+   │   ├── python/
+   │   └── perl/
+   ├── environments/
+   │   ├── python/
+   │   └── perl/
    ├── shims/
    └── launchers/
 
@@ -27,7 +31,7 @@ The default layout is:
    └── runtime-state/
 
 The paths can be redirected for tests with ``ATLAS_HOME``, ``ATLAS_ETC_DIR``,
-``ATLAS_VAR_DIR``, ``ATLAS_RUNTIMES_DIR``, ``ATLAS_VENVS_DIR``, ``ATLAS_SHIMS_DIR``,
+``ATLAS_VAR_DIR``, ``ATLAS_RUNTIMES_DIR``, ``ATLAS_ENVIRONMENTS_DIR``, ``ATLAS_SHIMS_DIR``,
 ``ATLAS_LAUNCHERS_DIR``, ``ATLAS_CONFIG_FILE``, and ``ATLAS_HOST_FILE``.
 
 Register programs
@@ -40,23 +44,35 @@ Register programs
    runtime:
      python:
        version: "3.13"
+     perl:
+       version: "5.40.0"
 
    programs:
      provisioning:
        root: /srv/provisioning
        runtime:
          type: python
-         python: "3.13"
-         venv: provisioning
+         environment: provisioning
+     inventory:
+       root: /srv/inventory
+       runtime:
+         type: perl
+         environment: inventory
      image-tool:
        root: /opt/image-tool
        runtime:
          type: native
 
-``root`` must be an absolute path. A Python program uses its own named venv. A native program is
-started without a Python intermediary. The global Python selection is used when a Python program
-does not specify its own version. A configured Python executable may be supplied as
-``runtime.python.executable`` when the host's managed interpreter is not exposed through pyenv.
+``root`` must be an absolute path. Python and Perl programs use a named dependency
+environment, defaulting to the program name. Environment names are unique within each
+language; Python and Perl may use the same name. Native programs run executables directly.
+``runtime.version`` on a program overrides its language's host default. If it differs,
+Atlas uses the language's version manager instead of the host default executable.
+
+Set ``runtime.python.executable`` or ``runtime.perl.executable`` to an absolute interpreter
+path to use an administrator-provisioned installation. Neither the system interpreter nor
+a version manager is installed implicitly. The configured version labels an explicit
+executable; the executable's actual build identity determines environment compatibility.
 
 Install and update program trees with the program's own packaging or deployment tools.
 Atlas uses the local files without managing their versions.
@@ -64,7 +80,9 @@ Atlas uses the local files without managing their versions.
 Command discovery and shims
 ---------------------------
 
-Python files below ``program-root/commands`` are commands. Executable files below
+Python ``.py`` files and Perl ``.pl`` files below ``program-root/commands`` are commands
+for programs of the matching language. They need no executable bit or shebang; Atlas
+invokes the selected interpreter directly. Executable files below
 ``program-root/commands`` and, for native programs, ``program-root/bin`` are native commands.
 Path segments use lowercase letters, digits, and hyphens. Nested paths are joined with hyphens.
 Atlas rejects symlinks and duplicate command names.
@@ -81,23 +99,118 @@ Generate shims after registering or changing a program:
 Generated shims call ``python -m atlas.cli run <command>``. They do not contain a second
 execution implementation.
 
-Runtime and venvs
------------------
+Runtimes and dependency environments
+------------------------------------
 
-``atlas runtime install`` resolves each configured Python version and exposes it below
-``/opt/atlas/runtimes/python``. If ``pyenv`` is available, Atlas installs a missing selected
-version through that existing runtime manager; otherwise use ``runtime.python.executable`` or an
-explicitly provisioned interpreter. Atlas does not use the host's system Python implicitly and
-does not install program dependencies. ``atlas venv create <program>`` creates the dedicated venv.
-Install dependencies using the program's existing ``pyproject.toml``, requirements file, lock
-file, or other standard tooling.
+These commands are operator actions against host-owned ``config.yml``. They do not change
+program sources, dependency declarations, lock files, or snapshots:
+
+* ``atlas runtime status`` prints language, selected version (or ``configured``), availability,
+  Atlas reference path, and resolved executable. It performs no installation or filesystem writes.
+  An unavailable interpreter is shown as ``false``; inspection itself still exits zero.
+* ``atlas runtime install`` registers the configured defaults and program overrides under
+  ``/opt/atlas/runtimes/<language>/<version>/bin/<language>``. Missing interpreters are installed
+  by an existing ``pyenv`` or ``plenv``. plenv needs its ``perl-build`` plugin. Explicit
+  executables are referenced without invoking a version manager. Atlas never installs the managers.
+* ``atlas env create <program>`` creates or validates one program's environment under
+  ``/opt/atlas/environments/<language>/<environment>``. Python delegates creation to ``venv``;
+  Perl creates a ``local::lib`` installation base. The selected Perl must already provide
+  ``local::lib``. No application dependencies or SDK distributions are installed.
+* ``atlas env list`` prints program, language, absolute environment path, and ``ready``,
+  ``missing``, or ``invalid``. It does not create environments. Use ``atlas check`` to fail a
+  health check when an interpreter or environment is unavailable or invalid.
+
+Creation and installation exit zero on success and print affected paths. Unknown programs,
+native programs passed to ``env create``, invalid configuration, missing tools, failed manager
+commands, and incompatible environments exit 2 with diagnostics on stderr. Partially completed
+runtime installation may leave earlier successful references in place. A newly created dependency
+environment is removed on failure; an existing environment is never silently rebuilt.
 
 .. code-block:: console
 
    $ atlas runtime status
    $ atlas runtime install
-   $ atlas venv create provisioning
-   $ atlas venv list
+   $ atlas env create provisioning
+   $ atlas env create inventory
+   $ atlas env list
+
+Install Python dependencies explicitly with the program's existing declarations. Include Atlas
+when a program imports ``atlas_core``; Atlas does not expose its host site-packages to commands.
+For example, from this checkout::
+
+   /opt/atlas/environments/python/provisioning/bin/python -m pip install ./src/python
+
+Then install the application's requirements::
+
+   /opt/atlas/environments/python/provisioning/bin/python -m pip install -r /srv/provisioning/requirements.txt
+
+Perl dependency installation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Use the same selected Perl for dependency installation and execution. For an explicit
+``/usr/bin/perl`` selection, activate local::lib in the operator's shell::
+
+   eval "$(/usr/bin/perl -Mlocal::lib=/opt/atlas/environments/perl/inventory)"
+   /usr/bin/perl /path/to/cpanm --local-lib /opt/atlas/environments/perl/inventory Module::Name
+
+To install the SDK from this checkout::
+
+   cd src/perl
+   /usr/bin/perl Makefile.PL INSTALL_BASE=/opt/atlas/environments/perl/inventory
+   make test install
+
+Carton can resolve a program's ``cpanfile`` and maintain its ``cpanfile.snapshot``. Invoke Carton
+with the selected Perl and explicitly choose Atlas's environment instead of Carton's default
+``local/`` directory::
+
+   cd /srv/inventory
+   /usr/bin/perl /path/to/carton install --path /opt/atlas/environments/perl/inventory
+
+cpanm, Carton, and the application own dependency installation, upgrades, and snapshots.
+Atlas does not invoke them. Install their executables with the selected interpreter and follow
+their own setup instructions.
+
+During Perl execution Atlas removes inherited ``PERL5LIB``, ``PERLLIB``, ``PERL5OPT``,
+``PERL_LOCAL_LIB_ROOT``, ``PERL_MM_OPT``, and ``PERL_MB_OPT``. It obtains fresh settings from
+``local::lib`` and prepends the program's ``lib/`` directory to ``PERL5LIB``. The environment's
+``bin/`` and the selected interpreter's directory precede the caller's ``PATH``. Perl expands
+version and architecture directories in its module search path. Interpreter-owned site and core
+libraries remain visible: local::lib is not a venv or a security sandbox. Program-provided
+search paths, startup code, and native libraries remain the program owner's responsibility.
+
+Interpreter consistency
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Each environment records the resolved interpreter path and SHA-256 of the executable. Perl also
+records its actual version, architecture, and a digest of ``Config::config_sh()``. Before reuse,
+``env create``, ``env list``, ``check``, and command execution compare this identity against the
+current selection. A changed executable, build configuration, or selection is rejected before
+loading environment modules, including XS extensions. This does not protect against concurrent
+operator mutations: stop using an environment before modifying its interpreter or dependencies.
+
+Recreate an incompatible environment at the same configured path after stopping its users,
+then reinstall dependencies and rebuild XS modules with the selected interpreter. Atlas never
+migrates modules, deletes an existing environment automatically, or treats an old environment as
+compatible without its identity file. Python command execution preserves the venv interpreter
+path and sets ``VIRTUAL_ENV``; it does not resolve that symlink to the base interpreter.
+
+Breaking migration
+~~~~~~~~~~~~~~~~~~
+
+The supported CLI is ``atlas env create/list``. ``atlas venv`` is removed. Replace program
+runtime fields ``python`` and ``venv`` with ``version`` and ``environment``, respectively.
+Install the Python SDK explicitly in each program environment if it imports ``atlas_core``;
+the framework no longer injects its own package directory into command module search paths.
+Replace ``ATLAS_VENVS_DIR`` with ``ATLAS_ENVIRONMENTS_DIR`` and recreate environments beneath
+the language directories; do not copy an old venv or local library tree. Regenerate shims.
+Context runtime keys are now ``type``, optional ``version``, and optional absolute
+``environment``; use ``ATLAS_RUNTIME_VERSION`` and ``ATLAS_ENVIRONMENT`` for environment fallback.
+Update Python consumers of ``ProgramInfo.python_version`` and ``ProgramInfo.venv`` to
+``runtime_version`` and ``environment``. Path consumers use ``environments`` instead of ``venvs``
+and ``runtime(language, version)`` instead of ``python_runtime(version)``.
+
+Python distributions now build and install from ``src/python``; the repository root is not a
+Python distribution. Perl distributions build and test independently from ``src/perl``.
 
 Execution context
 -----------------
@@ -115,8 +228,9 @@ Execution context
 During execution Atlas writes a short-lived JSON document and sets ``ATLAS_CONTEXT_FILE``. The
 document contains the host, standard paths, program, command, working directory, and
 ``run_id``, ``parent_run_id``, and ``operation_id``. The same identifiers are available as
-environment variables. Python code can call ``atlas_core.get_context()``; other languages can
-parse the JSON file directly.
+environment variables. Python code can call ``atlas_core.get_context()`` and Perl code can call
+``Atlas::Context->current``. Install the respective SDK in the application environment.
+Other languages can parse the JSON file directly.
 
 The diagnostic command does not require a registered program:
 

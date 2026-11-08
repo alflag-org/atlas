@@ -1,7 +1,7 @@
 # Atlas
 
-Atlas runs locally installed Python and native automation programs. It selects Python
-interpreters, creates a virtual environment per Python program, and exposes commands through
+Atlas runs locally installed Python, Perl, and native automation programs. It selects
+interpreters, creates a dependency environment per program, and exposes commands through
 `atlas run` and generated shims. Each run receives host identity and execution context and
 produces a JSONL record.
 
@@ -16,21 +16,28 @@ state, provider operations, inventory, and scheduling belong to those programs.
 runtime:
   python:
     version: "3.13"
+  perl:
+    version: "5.40.0"
 
 programs:
   provisioning:
     root: /srv/provisioning
     runtime:
       type: python
-      python: "3.13"
-      venv: provisioning
+      environment: provisioning
+  inventory:
+    root: /srv/inventory
+    runtime:
+      type: perl
+      environment: inventory
   pve-tools:
     root: /opt/pve-tools
     runtime:
       type: native
 ```
 
-Python commands are discovered below `commands/**/*.py`. Native commands are executable files
+Python and Perl commands are discovered below `commands/**/*.py` and `commands/**/*.pl`,
+respectively. Native commands are executable files
 below `commands/` or `bin/`. Nested paths become hyphenated command names, so
 `commands/host/diff.py` becomes `host-diff`. Duplicate names fail closed.
 
@@ -51,7 +58,11 @@ secret store.
 
 ```bash
 atlas runtime install
-atlas venv create provisioning
+atlas env create provisioning
+atlas env create inventory
+# From this checkout: install the Python SDK as a program dependency.
+/opt/atlas/environments/python/provisioning/bin/python -m pip install ./src/python
+# Install the Perl SDK as described in the operator reference.
 atlas command list
 atlas shim generate
 export PATH="/opt/atlas/shims:$PATH"
@@ -59,11 +70,12 @@ atlas run host-diff web01
 host-diff web01
 ```
 
-Both invocations resolve the current registered program and enter the same executor. A Python
-command runs with its program venv; a native command runs directly. The child receives
+Both invocations resolve the current registered program and enter the same executor. Python uses pyenv + venv; Perl uses plenv + local::lib. An administrator can also select an
+explicit interpreter. Install dependencies with the program's tooling; Atlas creates empty
+environments. A native command runs directly. The child receives
 `ATLAS_CONTEXT_FILE` plus the `ATLAS_*` identifiers. The JSON context contains the host, Atlas
 paths, program, command, working directory, and run identifiers, so non-Python programs can read
-the same information without importing `atlas_core`.
+the same information.
 
 Python programs can read the context through `atlas_core`:
 
@@ -73,6 +85,17 @@ from atlas_core import get_context
 context = get_context()
 print(context.host.id, context.execution.run_id)
 ```
+
+Perl programs use the independently installed SDK:
+
+```perl
+use Atlas::Context;
+my $context = Atlas::Context->current;
+print $context->{host}{id}, "\n";
+```
+
+See [the operator reference](docs/reference.rst) for interpreter setup, dependency installation,
+and migration from the removed `atlas venv` command.
 
 Execution facts are appended to `/var/lib/atlas/logs/runs.jsonl`. Atlas records the timestamp,
 host, user, program, command, identifiers, duration, and exit status; command output remains the
@@ -118,6 +141,9 @@ See [the operator reference](docs/reference.rst#cluster-membership) for setup, l
 
 ## Development
 
+Python sources, tests, and packaging live in `src/python`; the Perl SDK lives in `src/perl`.
+Both distributions build independently. Development requires a C compiler and a Perl interpreter
+with `local::lib` (for example, Debian packages `build-essential` and `liblocal-lib-perl`).
 The repository uses mise:
 
 ```bash

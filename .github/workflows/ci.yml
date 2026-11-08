@@ -26,6 +26,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+          cache-dependency-path: src/python/pyproject.toml
+      - name: Install Perl environment and XS build prerequisites
+        run: sudo apt-get update && sudo apt-get install --yes liblocal-lib-perl libperl-dev build-essential
       - run: |
           set -euxo pipefail
           python -m pip install --upgrade pip==26.2
@@ -36,6 +39,7 @@ jobs:
           python -m coverage report
       - run: cd src/python && ruff check atlas atlas_core tests examples
       - run: python -m build src/python
+      - run: cd src/perl && perl Makefile.PL && make test dist && prove -v integration/atlas.t
       - if: matrix.python-version == '3.14'
         run: make clean-docs html SPHINXOPTS=-W
       - name: Smoke test local programs
@@ -44,7 +48,7 @@ jobs:
           ATLAS_ETC_DIR: ${{ github.workspace }}/.ci/etc/atlas
           ATLAS_VAR_DIR: ${{ github.workspace }}/.ci/var/lib/atlas
           ATLAS_RUNTIMES_DIR: ${{ github.workspace }}/.ci/opt/atlas/runtimes
-          ATLAS_VENVS_DIR: ${{ github.workspace }}/.ci/opt/atlas/venvs
+          ATLAS_ENVIRONMENTS_DIR: ${{ github.workspace }}/.ci/opt/atlas/environments
         run: |
           set -euxo pipefail
           mkdir -p "$ATLAS_ETC_DIR"
@@ -60,24 +64,38 @@ jobs:
             python:
               version: "${{ matrix.python-version }}"
               executable: "$(command -v python)"
+            perl:
+              executable: /usr/bin/perl
           programs:
             basic:
               root: ${{ github.workspace }}/examples/basic-program
               runtime:
                 type: python
-                python: "${{ matrix.python-version }}"
-                venv: basic
+                environment: basic
+            inventory:
+              root: ${{ github.workspace }}/examples/perl-program
+              runtime:
+                type: perl
+                environment: inventory
             native:
               root: ${{ github.workspace }}/examples/native-program
               runtime:
                 type: native
           C
           atlas runtime install
-          atlas venv create basic
+          atlas env create basic
+          "$ATLAS_ENVIRONMENTS_DIR/python/basic/bin/python" -m pip install ./src/python
+          atlas env create inventory
+          (
+            cd src/perl
+            perl Makefile.PL INSTALL_BASE="$ATLAS_ENVIRONMENTS_DIR/perl/inventory"
+            make pure_install
+          )
           atlas command list
           atlas shim generate
           atlas run hello ci-user
           atlas run native-echo from-ci
+          atlas run perl-context
           test -s "$ATLAS_VAR_DIR/logs/runs.jsonl"
 
   container:

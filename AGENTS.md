@@ -4,14 +4,15 @@
 
 This file supplements the global repository guidance with Atlas's execution and SDK contracts.
 
-- Atlas registers locally present programs, selects Python interpreters, creates per-program
-  virtual environments, discovers commands, generates shims, and records completed executions.
+- Atlas registers locally present programs, selects Python and Perl interpreters, creates per-program
+  dependency environments, discovers commands, generates shims, and records completed executions.
 - Host-owned `/etc/atlas/config.yml` registers programs. Python commands are files under
-  `commands/**/*.py`; native commands are executables under `commands/` or `bin/`. Duplicate
+  `commands/**/*.py` and Perl commands under `commands/**/*.pl`; native commands are executables under `commands/` or `bin/`. Duplicate
   command names fail closed. Keep discovery and shims consistent across all registered programs.
 - Program owners manage source history, dependencies, inventory, desired state, infrastructure
   mutations, and secrets. Atlas must not fetch, reset, publish, or version those programs.
-- Programs use `atlas_core` as their supported Python API, not private modules under `atlas`.
+- Programs use `atlas_core` as their supported Python API and `Atlas::Context` as their Perl API,
+  not private modules under `atlas`.
   Programs and the executing OS account are trusted; these APIs are not a same-UID sandbox.
 - Atlas provides shared mechanisms that applications need; it does not manage application
   workflows, resource ownership, or business logic.
@@ -33,7 +34,7 @@ This file supplements the global repository guidance with Atlas's execution and 
   nested subtree shutdown, and cleanup after descendants stop. Programs using this storage must
   stay in the inherited process group. SIGKILL and host failure cannot guarantee cleanup.
 - Do not infer immutable source selection: registered program directories are operator-managed
-  mutable trees. Runtime registration and venv creation do not install program dependencies.
+  mutable trees. Runtime registration and environment creation do not install program dependencies.
 
 ## Independent daemons
 

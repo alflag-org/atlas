@@ -102,7 +102,7 @@ in its Python environment. systemd is optional.
 
 ```bash
 # From a checkout, with Atlas installed in this interpreter:
-cd examples/daemon
+cd src/python/examples/daemon
 python -m sampled
 # Ctrl-C stops the example gracefully.
 ```

@@ -134,7 +134,7 @@ class Host:
             STATE_DIRECTORY=str(self.state),
             RUNTIME_DIRECTORY=str(self.runtime),
             ATLAS_HOST_FILE=str(self.directory / "host.yml"),
-            PYTHONPATH=str(ROOT / "src"),
+            PYTHONPATH=str(ROOT),
         )
         if entry:
             env["ATLAS_TEST_ENTRY"] = "1"

@@ -98,7 +98,7 @@ def test_cli_removed_options_and_import_isolation(capsys):
             "assert not any(n.startswith(('cryptography', 'atlas.cluster.node')) for n in sys.modules)",
         ],
         check=True,
-        env=dict(os.environ, PYTHONPATH="src"),
+        env=dict(os.environ, PYTHONPATH="."),
     )
 
 

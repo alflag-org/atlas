@@ -13,10 +13,9 @@ WORKDIR /workspace
 
 FROM base AS dev
 
-COPY pyproject.toml README.md ./
-COPY src ./src
+COPY src/python ./src/python
 RUN python -m pip install --upgrade pip==26.2 \
-    && python -m pip install -e '.[dev]'
+    && python -m pip install -e './src/python[dev]'
 
 COPY . .
 RUN mkdir -p "$ATLAS_ETC_DIR" "$ATLAS_VAR_DIR" \
@@ -25,10 +24,10 @@ RUN mkdir -p "$ATLAS_ETC_DIR" "$ATLAS_VAR_DIR" \
     && atlas runtime install \
     && atlas venv create basic
 
-CMD ["sh", "-c", "ruff check src tests && pytest -q && python -m build"]
+CMD ["sh", "-c", "cd src/python && ruff check atlas atlas_core tests examples && pytest -q && python -m build"]
 
 FROM dev AS wheel
-RUN python -m build
+RUN python -m build src/python
 
 FROM dev AS runtime
 

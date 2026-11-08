@@ -26,7 +26,7 @@ def daemon_process(tmp_path, *, source=None):
         if not key.startswith("ATLAS_") and key not in daemon_keys
     }
     environment["XDG_STATE_HOME"] = str(tmp_path / "state")
-    environment["PYTHONPATH"] = str(ROOT / "src")
+    environment["PYTHONPATH"] = str(ROOT)
     logging_setup = (
         "from atlas_core.logging import configure_logging\n"
         f"configure_logging('sampled', path={str(tmp_path / 'sampled.log')!r})\n"

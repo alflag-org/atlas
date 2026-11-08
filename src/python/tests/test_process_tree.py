@@ -101,7 +101,7 @@ time.sleep(60)
         script = tmp_path / f"nested-{index}"
         script.write_text(f'''#!{sys.executable}
 import sys
-sys.path.insert(0, {str(Path(__file__).resolve().parents[1] / 'src')!r})
+sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
 from pathlib import Path
 from atlas.catalog import CommandRef
 from atlas.config import ProgramConfig, ProgramRuntime

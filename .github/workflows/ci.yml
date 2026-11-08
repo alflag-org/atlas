@@ -29,13 +29,13 @@ jobs:
       - run: |
           set -euxo pipefail
           python -m pip install --upgrade pip==26.2
-          python -m pip install -e '.[dev,secrets]'
+          python -m pip install -e './src/python[dev,secrets]'
           python -m pip check
       - run: |
-          python -m coverage run -m pytest -q
+          cd src/python && python -m coverage run -m pytest -q
           python -m coverage report
-      - run: ruff check src tests
-      - run: python -m build
+      - run: cd src/python && ruff check atlas atlas_core tests examples
+      - run: python -m build src/python
       - if: matrix.python-version == '3.14'
         run: make clean-docs html SPHINXOPTS=-W
       - name: Smoke test local programs

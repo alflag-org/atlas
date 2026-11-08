@@ -11,7 +11,7 @@ if os.environ.get("ATLAS_TEST_COVERAGE"):
     from coverage import Coverage
 
     coverage = Coverage(
-        data_file=os.environ["ATLAS_TEST_COVERAGE"], branch=True, source=["src"]
+        data_file=os.environ["ATLAS_TEST_COVERAGE"], branch=True, source=["atlas", "atlas_core"]
     )
     coverage.start()
 

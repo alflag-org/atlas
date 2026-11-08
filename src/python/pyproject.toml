@@ -28,7 +28,7 @@ atlas = "atlas.cli:main"
 atlasd = "atlas.cluster.daemon:main"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
 include = [
   "atlas",
   "atlas.*",
@@ -37,7 +37,7 @@ include = [
 ]
 
 [tool.setuptools.dynamic]
-dependencies = {file = ["src/atlas/support-requirements.txt"]}
+dependencies = {file = ["atlas/support-requirements.txt"]}
 
 [tool.setuptools.package-data]
 atlas = ["support-requirements.txt"]
@@ -45,7 +45,7 @@ atlas_core = ["py.typed"]
 
 [tool.pytest.ini_options]
 pythonpath = [
-  "src",
+  ".",
 ]
 
 [tool.ruff]
@@ -82,9 +82,7 @@ select = [
 
 [tool.coverage.run]
 branch = true
-source = [
-  "src",
-]
+source = ["atlas", "atlas_core"]
 
 [tool.coverage.report]
 fail_under = 100

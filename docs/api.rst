@@ -151,13 +151,13 @@ Use ``atlas_core.daemon`` to run an async application in the foreground. Install
 Atlas in the application's Python environment, then call ``run()`` from its main
 thread, outside an existing event loop. No Atlas host configuration is needed.
 
-.. literalinclude:: ../examples/daemon/sampled.py
+.. literalinclude:: ../src/python/examples/daemon/sampled.py
    :language: python
    :start-at: from atlas_core.daemon
 
 Run the example from a repository checkout::
 
-    cd examples/daemon
+    cd src/python/examples/daemon
     python -m sampled
 
 Call ``ctx.ready()`` after required resources and workers have initialized.
@@ -211,10 +211,10 @@ An application owns its protocol version, handler, client models, and errors.
 credentials on every request. Messages are limited to 1 MiB; the client and
 server impose request deadlines. Transport failures are not retried.
 
-The independent example in ``examples/service/sample_service`` publishes
+The independent example in ``src/python/examples/service/sample_service`` publishes
 ``sample_service.api.SampleClient`` without registering an Atlas plugin::
 
-    cd examples/service
+    cd src/python/examples/service
     python -m sample_service
 
 Use an explicit ``RUNTIME_DIRECTORY`` to select a stable socket path. Import

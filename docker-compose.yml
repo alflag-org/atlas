@@ -24,6 +24,6 @@ services:
       && atlas runtime status
       && atlas run hello docker-check
       && atlas run native-echo docker-check
-      && ruff check src tests
+      && cd src/python && ruff check atlas atlas_core tests examples
       && pytest -q
       && python -m build"

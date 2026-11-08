@@ -1,99 +1,102 @@
-from __future__ import annotations
+"""Interpreter selection and manager failures without interpreter downloads."""
 
+import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from atlas import runtime
 from atlas.config import AtlasConfig, ProgramConfig, ProgramRuntime, RuntimeConfig
 from atlas.paths import get_paths
-from atlas.runtime import (
-    create_venv,
-    ensure_python_runtime,
-    install_configured_runtimes,
-    resolve_python,
-    runtime_status,
-    runtime_versions,
-    venv_python,
-)
 
 
-def program(root: Path, name: str = "tool", *, version: str | None = None, runtime_type: str = "python") -> ProgramConfig:
-    return ProgramConfig(
-        name=name,
-        root=root,
-        runtime=ProgramRuntime(type=runtime_type, python_version=version, venv=name if runtime_type == "python" else None),
+@pytest.mark.parametrize("language,manager", [("python", "pyenv"), ("perl", "plenv")])
+def test_manager_selection_and_install(language, manager, tmp_path, monkeypatch):
+    binary = tmp_path / "installed/bin" / language
+    calls = []
+    monkeypatch.setattr(runtime.shutil, "which", lambda name: f"/tools/{name}")
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if argv[1] == "install":
+            binary.parent.mkdir(parents=True)
+            binary.write_text("#!/bin/sh\n")
+            binary.chmod(0o755)
+            return SimpleNamespace(stdout="")
+        if not binary.exists():
+            raise subprocess.CalledProcessError(1, argv)
+        return SimpleNamespace(stdout=str(binary.parent.parent) + "\n")
+
+    monkeypatch.setattr(runtime.subprocess, "run", run)
+    selected = RuntimeConfig("5.40.0" if language == "perl" else "3.13")
+    with pytest.raises(FileNotFoundError, match="configure"):
+        runtime.resolve_runtime(language, selected)
+    assert not any(argv[1] == "install" for argv, _ in calls)
+    assert runtime.resolve_runtime(language, selected, install=True) == binary
+    assert [f"/tools/{manager}", "install", selected.version] in [
+        argv for argv, _ in calls
+    ]
+    assert runtime.resolve_runtime(language, selected) == binary
+
+
+def test_resolution_and_install_errors(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime.shutil, "which", lambda _: None)
+    with pytest.raises(ValueError, match="required"):
+        runtime.resolve_runtime("python", RuntimeConfig())
+    for install in (False, True):
+        with pytest.raises(FileNotFoundError, match="not found"):
+            runtime.resolve_runtime("perl", RuntimeConfig("5.40.0"), install=install)
+    with pytest.raises(FileNotFoundError):
+        runtime.resolve_runtime("perl", RuntimeConfig(executable=tmp_path / "missing"))
+    file = tmp_path / "not-executable"
+    file.touch()
+    with pytest.raises(PermissionError):
+        runtime.resolve_runtime("perl", RuntimeConfig(executable=file))
+    monkeypatch.setattr(runtime.shutil, "which", lambda _: "/tools/plenv")
+    monkeypatch.setattr(
+        runtime.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout="")
     )
+    with pytest.raises(FileNotFoundError):
+        runtime.resolve_runtime("perl", RuntimeConfig("5.40.0"), install=True)
+
+    def fail(*a, **kw):
+        raise subprocess.CalledProcessError(1, a[0])
+
+    monkeypatch.setattr(runtime.subprocess, "run", fail)
+    with pytest.raises(RuntimeError, match="could not install"):
+        runtime.resolve_runtime("perl", RuntimeConfig("5.40.0"), install=True)
 
 
-def config(tmp_path: Path, *programs: ProgramConfig, version: str | None = None) -> AtlasConfig:
-    return AtlasConfig(
-        path=tmp_path / "config.yml",
-        runtime=RuntimeConfig(python_version=version or f"{sys.version_info.major}.{sys.version_info.minor}", executable=Path(sys.executable)),
-        programs={item.name: item for item in programs},
+def test_defaults_overrides_links_and_status(tmp_path, monkeypatch):
+    paths = get_paths({"ATLAS_HOME": str(tmp_path)})
+    selected = RuntimeConfig("3.14", Path(sys.executable))
+    item = ProgramConfig("tool", tmp_path, ProgramRuntime("python", environment="tool"))
+    native = ProgramConfig("native", tmp_path, ProgramRuntime("native"))
+    cfg = AtlasConfig(
+        tmp_path / "config.yml", {"python": selected}, {"tool": item, "native": native}
     )
-
-
-def test_resolve_python_uses_configured_executable(tmp_path: Path) -> None:
-    assert resolve_python("ignored", executable=Path(sys.executable)) == Path(sys.executable).resolve()
-    with pytest.raises(FileNotFoundError, match="not found"):
-        resolve_python("9.9", executable=tmp_path / "missing")
-
-
-def test_runtime_links_and_status(tmp_path: Path) -> None:
-    paths = get_paths({
-        "ATLAS_HOME": str(tmp_path / "opt"),
-        "ATLAS_ETC_DIR": str(tmp_path / "etc"),
-        "ATLAS_VAR_DIR": str(tmp_path / "var"),
-    })
-    item = program(tmp_path / "program")
-    cfg = config(tmp_path, item)
-
-    selected = ensure_python_runtime(paths, cfg, item)
-    assert selected.is_symlink()
-    assert selected.resolve() == Path(sys.executable).resolve()
-    assert runtime_status(paths, cfg)[0].available is True
-    assert runtime_versions(cfg) == [(cfg.runtime.python_version, Path(sys.executable))]
-    assert install_configured_runtimes(paths, cfg) == [selected]
-
-
-def test_create_and_reuse_dedicated_venv(tmp_path: Path) -> None:
-    paths = get_paths({
-        "ATLAS_HOME": str(tmp_path / "opt"),
-        "ATLAS_ETC_DIR": str(tmp_path / "etc"),
-        "ATLAS_VAR_DIR": str(tmp_path / "var"),
-    })
-    item = program(tmp_path / "program")
-    cfg = config(tmp_path, item)
-
-    first = create_venv(paths, cfg, item)
-    second = create_venv(paths, cfg, item)
-
-    assert first == second
-    assert venv_python(paths, item).exists()
-
-
-def test_runtime_rejects_native_and_unconfigured_python(tmp_path: Path) -> None:
-    paths = get_paths({"ATLAS_HOME": str(tmp_path / "opt")})
-    native = program(tmp_path / "native", runtime_type="native")
-    cfg = config(tmp_path, native)
-    with pytest.raises(ValueError, match="does not use Python"):
-        create_venv(paths, cfg, native)
-
-    no_version = program(tmp_path / "python", version=None)
-    no_version_cfg = AtlasConfig(tmp_path / "config.yml", RuntimeConfig(), {"python": no_version})
+    assert runtime.selection(cfg, item) == selected
+    assert runtime.runtime_selections(cfg) == [("python", selected)]
+    target = runtime.install_configured_runtimes(paths, cfg)[0]
+    assert target == paths.runtime("python", "3.14")
+    assert target.resolve() == Path(sys.executable).resolve()
+    assert runtime.install_configured_runtimes(paths, cfg) == [target]
+    target.unlink()
+    target.symlink_to(tmp_path / "wrong")
+    assert runtime.ensure_runtime(paths, "python", selected) == target
+    target.unlink()
+    target.touch()
+    with pytest.raises(ValueError, match="not a symlink"):
+        runtime.ensure_runtime(paths, "python", selected)
+    assert runtime.runtime_status(paths, cfg)[0].available
+    override = ProgramConfig(
+        "other", tmp_path, ProgramRuntime("python", "3.13", "other")
+    )
+    assert runtime.selection(cfg, override) == RuntimeConfig("3.13")
+    monkeypatch.setattr(runtime.shutil, "which", lambda _: None)
+    cfg = AtlasConfig(tmp_path / "config.yml", {"perl": RuntimeConfig("5.40.0")}, {})
+    assert not runtime.runtime_status(paths, cfg)[0].available
     with pytest.raises(ValueError, match="not configured"):
-        ensure_python_runtime(paths, no_version_cfg, no_version)
-
-
-def test_venv_path_errors_and_runtime_failure(tmp_path: Path) -> None:
-    paths = get_paths({"ATLAS_HOME": str(tmp_path / "opt")})
-    item = program(tmp_path / "program")
-    cfg = config(tmp_path, item)
-    paths.venvs.mkdir(parents=True)
-    (paths.venvs / item.name).write_text("not a directory", encoding="utf-8")
-    with pytest.raises(ValueError, match="venv path must be a directory"):
-        create_venv(paths, cfg, item)
-
-    bad_cfg = AtlasConfig(tmp_path / "config.yml", RuntimeConfig(python_version="9.9"), {"tool": item})
-    assert runtime_status(paths, bad_cfg)[0].available is False
+        runtime.runtime_selections(AtlasConfig(cfg.path, {}, {"tool": item}))

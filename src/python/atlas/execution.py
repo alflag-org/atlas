@@ -21,9 +21,10 @@ from atlas_core.host import get_host
 
 from ._process_tree import nested_directory, stop_tree
 from .catalog import CommandRef
+from .config import AtlasConfig
 from .context import child_environment, execution_context, write_context
+from .environments import environment_executable, environment_path
 from .paths import AtlasPaths
-from .runtime import venv_python
 
 TIMEOUT_EXIT_CODE = 124
 MISSING_EXECUTABLE_EXIT_CODE = 127
@@ -89,13 +90,14 @@ def _exit_code(return_code: int) -> int:
 
 def _command_argv(
     paths: AtlasPaths,
+    config: AtlasConfig,
     command: CommandRef,
 ) -> tuple[list[str], Path | None, Path | None]:
     if command.type == "native":
         return [str(command.path)], None, None
-    venv = paths.venv(command.program.runtime.venv or command.program.name)
-    python = venv_python(paths, command.program)
-    return [str(python), str(command.path)], python, venv
+    target = environment_path(paths, command.program)
+    interpreter = environment_executable(paths, config, command.program)
+    return [str(interpreter), str(command.path)], interpreter, target
 
 
 def _record(
@@ -134,6 +136,7 @@ def _record(
 
 def execute(
     paths: AtlasPaths,
+    config: AtlasConfig,
     command: CommandRef,
     args: list[str],
     *,
@@ -161,7 +164,7 @@ def execute(
         operation_id=operation_id,
         working_directory=working_directory,
     )
-    argv, python_path, venv_path = _command_argv(paths, command)
+    argv, interpreter, environment_path_value = _command_argv(paths, config, command)
     argv.extend(args)
     write_context(context_file, payload)
     timed_out = False
@@ -176,11 +179,9 @@ def execute(
             run_id=run_id,
             parent_run_id=parent_run_id,
             operation_id=operation_id,
-            python_path=python_path,
-            venv_path=venv_path,
+            interpreter=interpreter,
+            environment_path=environment_path_value,
         )
-        if command.program.runtime.python_version is not None:
-            environment["ATLAS_PYTHON_VERSION"] = command.program.runtime.python_version
         parent_directory = get_run_directory() if os.environ.get("ATLAS_RUN_TEMP_DIR") else None
         storage = (temporary_run_directory() if parent_directory is None
                    else nullcontext(nested_directory(parent_directory)))

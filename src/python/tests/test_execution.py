@@ -8,11 +8,11 @@ import pytest
 
 from atlas.catalog import command_index
 from atlas.config import AtlasConfig, ProgramConfig, ProgramRuntime, RuntimeConfig
+from atlas.environments import create_environment
 from atlas.execution import execute
 from atlas.paths import ensure_dirs, get_paths
-from atlas.runtime import create_venv
 
-from .support import write_native_command, write_python_command
+from .support import install_python_sdk, write_native_command, write_python_command
 
 
 def prepare(tmp_path: Path, *, native: bool = False) -> tuple[Path, object, object]:
@@ -24,7 +24,7 @@ def prepare(tmp_path: Path, *, native: bool = False) -> tuple[Path, object, obje
         "ATLAS_ETC_DIR": str(etc),
         "ATLAS_VAR_DIR": str(var),
         "ATLAS_RUNTIMES_DIR": str(home / "runtimes"),
-        "ATLAS_VENVS_DIR": str(home / "venvs"),
+        "ATLAS_ENVIRONMENTS_DIR": str(home / "environments"),
     })
     ensure_dirs(paths)
     paths.host_file.parent.mkdir(parents=True, exist_ok=True)
@@ -47,13 +47,13 @@ def prepare(tmp_path: Path, *, native: bool = False) -> tuple[Path, object, obje
         )
         runtime = ProgramRuntime(
             "python",
-            python_version=f"{sys.version_info.major}.{sys.version_info.minor}",
-            venv="python",
+            version=f"{sys.version_info.major}.{sys.version_info.minor}",
+            environment="python",
         )
     program = ProgramConfig("tool", root, runtime)
     config = AtlasConfig(
         tmp_path / "config.yml",
-        RuntimeConfig(f"{sys.version_info.major}.{sys.version_info.minor}", Path(sys.executable)),
+        {"python": RuntimeConfig(f"{sys.version_info.major}.{sys.version_info.minor}", Path(sys.executable))},
         {"tool": program},
     )
     return paths, config, command_index(config)["sample" if not native else "native"]
@@ -61,9 +61,9 @@ def prepare(tmp_path: Path, *, native: bool = False) -> tuple[Path, object, obje
 
 def test_python_execution_records_context_and_exit_code(tmp_path: Path) -> None:
     paths, config, command = prepare(tmp_path)
-    create_venv(paths, config, config.programs["tool"])
+    install_python_sdk(create_environment(paths, config, config.programs["tool"]))
 
-    assert execute(paths, command, ["one", "two"]) == 0
+    assert execute(paths, config, command, ["one", "two"]) == 0
 
     record = json.loads(paths.run_log.read_text(encoding="utf-8").splitlines()[-1])
     assert record["host_id"] == "exec-host"
@@ -75,17 +75,17 @@ def test_python_execution_records_context_and_exit_code(tmp_path: Path) -> None:
 
 
 def test_native_execution_does_not_use_python(tmp_path: Path) -> None:
-    paths, _config, command = prepare(tmp_path, native=True)
+    paths, config, command = prepare(tmp_path, native=True)
 
-    assert execute(paths, command, ["hello", "native"]) == 0
+    assert execute(paths, config, command, ["hello", "native"]) == 0
     record = json.loads(paths.run_log.read_text(encoding="utf-8").splitlines()[-1])
     assert record["command_type"] == "native"
 
 
 def test_child_failure_and_timeout_are_recorded(tmp_path: Path, monkeypatch) -> None:
     paths, config, command = prepare(tmp_path)
-    create_venv(paths, config, config.programs["tool"])
-    assert execute(paths, command, ["fail"]) == 7
+    install_python_sdk(create_environment(paths, config, config.programs["tool"]))
+    assert execute(paths, config, command, ["fail"]) == 7
 
     slow = command.path
     slow.write_text(
@@ -93,14 +93,14 @@ def test_child_failure_and_timeout_are_recorded(tmp_path: Path, monkeypatch) -> 
         "time.sleep(10)\n",
         encoding="utf-8",
     )
-    assert execute(paths, command, [], timeout_seconds=1) == 124
+    assert execute(paths, config, command, [], timeout_seconds=1) == 124
     records = [json.loads(line) for line in paths.run_log.read_text(encoding="utf-8").splitlines()]
     assert records[-2]["exit_code"] == 7
     assert records[-1]["timed_out"] is True
     monkeypatch.setenv("ATLAS_RUN_ID", "parent")
     monkeypatch.setenv("ATLAS_OPERATION_ID", "operation")
     slow.write_text("print('done')\n", encoding="utf-8")
-    assert execute(paths, command, []) == 0
+    assert execute(paths, config, command, []) == 0
     last = json.loads(paths.run_log.read_text(encoding="utf-8").splitlines()[-1])
     assert last["parent_run_id"] == "parent"
     assert last["operation_id"] == "operation"
@@ -108,21 +108,21 @@ def test_child_failure_and_timeout_are_recorded(tmp_path: Path, monkeypatch) -> 
 
 def test_execution_validates_cwd_timeout_and_log_path(tmp_path: Path) -> None:
     paths, config, command = prepare(tmp_path)
-    create_venv(paths, config, config.programs["tool"])
+    install_python_sdk(create_environment(paths, config, config.programs["tool"]))
     with pytest.raises(ValueError, match="working directory"):
-        execute(paths, command, [], cwd=tmp_path / "missing")
+        execute(paths, config, command, [], cwd=tmp_path / "missing")
     with pytest.raises(ValueError, match="positive integer"):
-        execute(paths, command, [], timeout_seconds=0)
+        execute(paths, config, command, [], timeout_seconds=0)
     paths.logs.rmdir()
     paths.logs.write_text("not a directory", encoding="utf-8")
     with pytest.raises(ValueError, match="logs path"):
-        execute(paths, command, [])
+        execute(paths, config, command, [])
 
 
 @pytest.mark.parametrize("file_available", [True, False])
 def test_application_logging_preserves_output_status_and_run_record(tmp_path, capfd, file_available):
     paths, config, command = prepare(tmp_path)
-    create_venv(paths, config, config.programs["tool"])
+    install_python_sdk(create_environment(paths, config, config.programs["tool"]))
     log_path = tmp_path / ("app.log" if file_available else "missing/app.log")
     command.path.write_text(
         "import sys\n"
@@ -134,7 +134,7 @@ def test_application_logging_preserves_output_status_and_run_record(tmp_path, ca
         "raise SystemExit(7)\n",
         encoding="utf-8",
     )
-    assert execute(paths, command, ["private-argument"]) == 7
+    assert execute(paths, config, command, ["private-argument"]) == 7
     output = capfd.readouterr()
     assert output.out == "result-json\n"
     assert output.err.count("application-diagnostic") == 1

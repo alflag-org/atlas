@@ -16,8 +16,7 @@ class AtlasPaths:
     etc: Path
     var: Path
     runtimes: Path
-    python_runtimes: Path
-    venvs: Path
+    environments: Path
     shims: Path
     launchers: Path
     logs: Path
@@ -34,8 +33,7 @@ class AtlasPaths:
             "etc": str(self.etc),
             "var": str(self.var),
             "runtimes": str(self.runtimes),
-            "python_runtimes": str(self.python_runtimes),
-            "venvs": str(self.venvs),
+            "environments": str(self.environments),
             "shims": str(self.shims),
             "launchers": str(self.launchers),
             "logs": str(self.logs),
@@ -45,6 +43,27 @@ class AtlasPaths:
             "host_file": str(self.host_file),
             "run_log": str(self.run_log),
         }
+
+    def runtime(self, language: str, version: str) -> Path:
+        """Return the registered interpreter reference for one selection."""
+        if language not in {"python", "perl"}:
+            raise ValueError(f"invalid runtime type: {language}")
+        if (
+            not version
+            or version in {".", ".."}
+            or Path(version).name != version
+            or version.startswith("-")
+        ):
+            raise ValueError(f"invalid runtime version: {version}")
+        return self.runtimes / language / version / "bin" / language
+
+    def environment(self, language: str, name: str) -> Path:
+        """Return the dependency environment for one program."""
+        if language not in {"python", "perl"}:
+            raise ValueError(f"invalid environment type: {language}")
+        if not name or name in {".", ".."} or Path(name).name != name:
+            raise ValueError(f"invalid environment name: {name}")
+        return self.environments / language / name
 
 
 def get_paths(env: Mapping[str, str] | None = None) -> AtlasPaths:
@@ -60,8 +79,9 @@ def get_paths(env: Mapping[str, str] | None = None) -> AtlasPaths:
         etc=etc,
         var=var,
         runtimes=runtimes,
-        python_runtimes=runtimes / "python",
-        venvs=Path(read_env.get("ATLAS_VENVS_DIR", str(home / "venvs"))),
+        environments=Path(
+            read_env.get("ATLAS_ENVIRONMENTS_DIR", str(home / "environments"))
+        ),
         shims=Path(read_env.get("ATLAS_SHIMS_DIR", str(home / "shims"))),
         launchers=Path(read_env.get("ATLAS_LAUNCHERS_DIR", str(home / "launchers"))),
         logs=var / "logs",

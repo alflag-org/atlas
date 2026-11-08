@@ -4,7 +4,7 @@ import importlib
 import re
 from pathlib import Path
 
-from atlas.yamlutil import load_yaml_file
+from atlas_core._yaml import load_yaml_file
 from atlas_core.paths import get_paths
 
 from .provider import SecretConfigurationError, SecretProvider

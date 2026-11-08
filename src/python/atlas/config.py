@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .yamlutil import load_yaml_file
+from atlas_core._yaml import load_yaml_file
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 RESERVED_NAMES = {"atlas"}
@@ -15,9 +15,9 @@ RESERVED_NAMES = {"atlas"}
 
 @dataclass(frozen=True)
 class RuntimeConfig:
-    """The optional default Python runtime selected by Atlas."""
+    """The default interpreter selection for one language."""
 
-    python_version: str | None = None
+    version: str | None = None
     executable: Path | None = None
 
 
@@ -26,8 +26,8 @@ class ProgramRuntime:
     """The execution environment associated with one program."""
 
     type: str
-    python_version: str | None = None
-    venv: str | None = None
+    version: str | None = None
+    environment: str | None = None
 
 
 @dataclass(frozen=True)
@@ -44,7 +44,7 @@ class AtlasConfig:
     """Validated Atlas configuration."""
 
     path: Path
-    runtime: RuntimeConfig
+    runtime: dict[str, RuntimeConfig]
     programs: dict[str, ProgramConfig]
 
 
@@ -85,6 +85,13 @@ def _optional_string(raw: dict[str, Any], key: str, label: str) -> str | None:
     return value.strip()
 
 
+def _runtime_version(raw: dict[str, Any], label: str) -> str | None:
+    version = _optional_string(raw, "version", label)
+    if version is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", version):
+        raise ValueError(f"{label}.version must be an interpreter version or name")
+    return version
+
+
 def _absolute_path(value: str, label: str) -> Path:
     path = Path(value).expanduser()
     if not path.is_absolute():
@@ -92,26 +99,26 @@ def _absolute_path(value: str, label: str) -> Path:
     return path
 
 
-def _load_runtime(raw: Any) -> RuntimeConfig:
+def _load_runtime(raw: Any) -> dict[str, RuntimeConfig]:
     if raw is None:
-        return RuntimeConfig()
+        return {}
     runtime = _mapping(raw, "runtime")
-    _only(runtime, {"python"}, "runtime")
-    if "python" not in runtime:
-        return RuntimeConfig()
-    python_raw = runtime["python"]
-    python = _mapping(python_raw, "runtime.python")
-    _only(python, {"version", "executable"}, "runtime.python")
-    version = _optional_string(python, "version", "runtime.python")
-    executable_value = _optional_string(python, "executable", "runtime.python")
-    executable = (
-        None
-        if executable_value is None
-        else _absolute_path(executable_value, "runtime.python.executable")
-    )
-    if version is None and executable is None:
-        raise ValueError("runtime.python.version or runtime.python.executable is required")
-    return RuntimeConfig(python_version=version, executable=executable)
+    _only(runtime, {"python", "perl"}, "runtime")
+    selections = {}
+    for language, selection in runtime.items():
+        label = f"runtime.{language}"
+        entry = _mapping(selection, label)
+        _only(entry, {"version", "executable"}, label)
+        version = _runtime_version(entry, label)
+        executable_value = _optional_string(entry, "executable", label)
+        executable = (
+            None if executable_value is None
+            else _absolute_path(executable_value, f"{label}.executable")
+        )
+        if version is None and executable is None:
+            raise ValueError(f"{label}.version or {label}.executable is required")
+        selections[language] = RuntimeConfig(version=version, executable=executable)
+    return selections
 
 
 def _load_program(name: str, raw: Any) -> ProgramConfig:
@@ -124,18 +131,18 @@ def _load_program(name: str, raw: Any) -> ProgramConfig:
     if runtime_type == "native":
         _only(runtime_raw, {"type"}, f"{label}.runtime")
         runtime = ProgramRuntime(type="native")
-    elif runtime_type == "python":
-        _only(runtime_raw, {"type", "python", "venv"}, f"{label}.runtime")
-        version = _optional_string(runtime_raw, "python", f"{label}.runtime")
-        venv = _optional_string(runtime_raw, "venv", f"{label}.runtime") or name
-        validate_name(venv, kind="venv")
+    elif runtime_type in {"python", "perl"}:
+        _only(runtime_raw, {"type", "version", "environment"}, f"{label}.runtime")
+        version = _runtime_version(runtime_raw, f"{label}.runtime")
+        environment = _optional_string(runtime_raw, "environment", f"{label}.runtime") or name
+        validate_name(environment, kind="environment")
         runtime = ProgramRuntime(
-            type="python",
-            python_version=version,
-            venv=venv,
+            type=runtime_type,
+            version=version,
+            environment=environment,
         )
     else:
-        raise ValueError(f"{label}.runtime.type must be python or native")
+        raise ValueError(f"{label}.runtime.type must be python, perl or native")
     return ProgramConfig(name=name, root=root, runtime=runtime)
 
 
@@ -146,18 +153,19 @@ def load_config(path: Path) -> AtlasConfig:
     runtime = _load_runtime(raw.get("runtime"))
     programs_raw = _mapping(raw.get("programs", {}), "programs")
     programs: dict[str, ProgramConfig] = {}
-    venv_owners: dict[str, str] = {}
+    environment_owners: dict[tuple[str, str], str] = {}
     for raw_name, raw_program in programs_raw.items():
         if not isinstance(raw_name, str):
             raise TypeError("program name must be a string")
         name = validate_name(raw_name, kind="program")
         program = _load_program(name, raw_program)
-        if program.runtime.venv is not None:
-            previous = venv_owners.get(program.runtime.venv)
+        if program.runtime.environment is not None:
+            key = (program.runtime.type, program.runtime.environment)
+            previous = environment_owners.get(key)
             if previous is not None:
                 raise ValueError(
-                    f"venv is assigned to multiple programs: {previous}, {name}"
+                    f"environment is assigned to multiple programs: {previous}, {name}"
                 )
-            venv_owners[program.runtime.venv] = name
+            environment_owners[key] = name
         programs[name] = program
     return AtlasConfig(path=path, runtime=runtime, programs=programs)

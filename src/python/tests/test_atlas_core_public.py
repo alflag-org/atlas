@@ -25,6 +25,6 @@ def test_public_api_exports_context_models() -> None:
     assert get_paths is not None
     assert ProgramInfo("tool", Path("/tool"), "python", "3.13", Path("/venv")).to_dict()["runtime"] == {
         "type": "python",
-        "python": "3.13",
-        "venv": "/venv",
+        "version": "3.13",
+        "environment": "/venv",
     }

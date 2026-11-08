@@ -10,13 +10,12 @@ from atlas_core.host import get_host
 
 from .catalog import command_index, resolve_command
 from .config import AtlasConfig, ProgramConfig, load_config
+from .environments import create_environment, environment_executable, environment_path
 from .execution import execute
 from .paths import AtlasPaths, ensure_dirs, get_paths
 from .runtime import (
-    create_venv,
     install_configured_runtimes,
     runtime_status,
-    venv_python,
 )
 from .shims import generate_shims
 
@@ -48,14 +47,14 @@ def cmd_status(_: argparse.Namespace) -> int:
     print(f"programs: {len(config.programs)}")
     print(f"commands: {len(commands)}")
     print(f"runtimes: {paths.runtimes}")
-    print(f"venvs: {paths.venvs}")
+    print(f"environments: {paths.environments}")
     print(f"shims: {paths.shims}")
     print(f"run log: {paths.run_log}")
     return 0
 
 
 def cmd_check(_: argparse.Namespace) -> int:
-    """Check configured programs, runtimes, venvs, and host identity."""
+    """Check configured programs, runtimes, environments, and host identity."""
     paths = get_paths()
     config = _config(paths)
     failures: list[str] = []
@@ -70,11 +69,11 @@ def cmd_check(_: argparse.Namespace) -> int:
         failures.append(str(exc))
     for status in runtime_status(paths, config):
         if not status.available:
-            failures.append(f"Python runtime unavailable: {status.version}")
+            failures.append(f"{status.type} runtime unavailable: {status.version}")
     for program in config.programs.values():
-        if program.runtime.type == "python":
+        if program.runtime.type != "native":
             try:
-                venv_python(paths, program)
+                environment_executable(paths, config, program)
             except (FileNotFoundError, PermissionError, ValueError) as exc:
                 failures.append(str(exc))
     if failures:
@@ -110,8 +109,8 @@ def cmd_program_list(args: argparse.Namespace) -> int:
     for program in config.programs.values():
         if args.verbose:
             runtime = program.runtime.type
-            if program.runtime.venv is not None:
-                runtime += f" venv={program.runtime.venv}"
+            if program.runtime.environment is not None:
+                runtime += f" environment={program.runtime.environment}"
             print(f"{program.name}\t{program.root}\t{runtime}")
         else:
             print(program.name)
@@ -150,23 +149,24 @@ def cmd_run(args: argparse.Namespace) -> int:
     """Run one command through the shared executor."""
     paths = get_paths()
     ensure_dirs(paths)
-    command = resolve_command(_config(paths), args.command_name)
+    config = _config(paths)
+    command = resolve_command(config, args.command_name)
     command_args = args.args[1:] if args.args[:1] == ["--"] else args.args
-    return execute(paths, command, command_args, timeout_seconds=args.timeout)
+    return execute(paths, config, command, command_args, timeout_seconds=args.timeout)
 
 
 def cmd_runtime_status(_: argparse.Namespace) -> int:
-    """Print selected Python runtime status."""
+    """Print selected interpreter status."""
     paths = get_paths()
     config = _config(paths)
     for status in runtime_status(paths, config):
         executable = "unavailable" if status.executable is None else str(status.executable)
-        print(f"{status.version}\t{str(status.available).lower()}\t{status.atlas_path}\t{executable}")
+        print(f"{status.type}\t{status.version}\t{str(status.available).lower()}\t{status.atlas_path}\t{executable}")
     return 0
 
 
 def cmd_runtime_install(_: argparse.Namespace) -> int:
-    """Register configured Python interpreters below the Atlas runtime path."""
+    """Register configured interpreters below the Atlas runtime path."""
     paths = get_paths()
     ensure_dirs(paths)
     for path in install_configured_runtimes(paths, _config(paths)):
@@ -174,27 +174,31 @@ def cmd_runtime_install(_: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_venv_list(_: argparse.Namespace) -> int:
-    """List configured Python venvs and their current state."""
+def cmd_env_list(_: argparse.Namespace) -> int:
+    """List configured dependency environments and validate existing ones."""
     paths = get_paths()
     config = _config(paths)
     for program in config.programs.values():
-        if program.runtime.type != "python":
+        if program.runtime.type == "native":
             continue
-        assert program.runtime.venv is not None
-        path = paths.venv(program.runtime.venv)
-        state = "ready" if path.is_dir() else "missing"
-        print(f"{program.name}\t{program.runtime.venv}\t{state}")
+        path = environment_path(paths, program)
+        state = "missing"
+        if path.exists() or path.is_symlink():
+            try:
+                environment_executable(paths, config, program)
+                state = "ready"
+            except (OSError, RuntimeError, ValueError):
+                state = "invalid"
+        print(f"{program.name}\t{program.runtime.type}\t{path}\t{state}")
     return 0
 
 
-def cmd_venv_create(args: argparse.Namespace) -> int:
-    """Create the dedicated venv for one configured Python program."""
+def cmd_env_create(args: argparse.Namespace) -> int:
+    """Create an empty dependency environment for one registered program."""
     paths = get_paths()
     ensure_dirs(paths)
     config = _config(paths)
-    path = create_venv(paths, config, _program(config, args.program))
-    print(path)
+    print(create_environment(paths, config, _program(config, args.program)))
     return 0
 
 
@@ -247,13 +251,13 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_install = runtime_sub.add_parser("install")
     runtime_install.set_defaults(func=cmd_runtime_install)
 
-    venv = sub.add_parser("venv")
-    venv_sub = venv.add_subparsers(dest="venv_command", required=True)
-    venv_list = venv_sub.add_parser("list")
-    venv_list.set_defaults(func=cmd_venv_list)
-    venv_create = venv_sub.add_parser("create")
-    venv_create.add_argument("program")
-    venv_create.set_defaults(func=cmd_venv_create)
+    env = sub.add_parser("env")
+    env_sub = env.add_subparsers(dest="env_command", required=True)
+    env_list = env_sub.add_parser("list")
+    env_list.set_defaults(func=cmd_env_list)
+    env_create = env_sub.add_parser("create")
+    env_create.add_argument("program")
+    env_create.set_defaults(func=cmd_env_create)
     from .cluster.cli import add_parser as add_cluster_parser
     from .daemon.cli import add_parser as add_daemon_parser
 

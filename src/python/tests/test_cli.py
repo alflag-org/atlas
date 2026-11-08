@@ -25,7 +25,7 @@ def test_cli_covers_registration_runtime_shim_and_execution(tmp_path: Path, monk
         f"    root: {root}\n"
         "    runtime:\n"
         "      type: python\n"
-        "      venv: python-tool\n"
+        "      environment: python-tool\n"
         "  native-tool:\n"
         f"    root: {native_root}\n"
         "    runtime:\n"
@@ -45,8 +45,8 @@ def test_cli_covers_registration_runtime_shim_and_execution(tmp_path: Path, monk
     assert capsys.readouterr().out.strip().endswith("commands/hello.py")
 
     assert main(["runtime", "install"]) == 0
-    assert main(["venv", "create", "python-tool"]) == 0
-    assert main(["venv", "list"]) == 0
+    assert main(["env", "create", "python-tool"]) == 0
+    assert main(["env", "list"]) == 0
     assert "ready" in capsys.readouterr().out
     assert main(["runtime", "status"]) == 0
     assert "configured\ttrue" in capsys.readouterr().out
@@ -93,7 +93,7 @@ def test_cli_non_verbose_and_check_failure_paths(tmp_path: Path, monkeypatch, ca
         f"    root: {root}\n"
         "    runtime:\n"
         "      type: python\n"
-        "      venv: tool\n"
+        "      environment: tool\n"
     )
     configure_environment(monkeypatch, tmp_path, config)
     assert main(["program", "list"]) == 0
@@ -106,7 +106,7 @@ def test_cli_non_verbose_and_check_failure_paths(tmp_path: Path, monkeypatch, ca
     assert main(["status"]) == 0
     assert "unavailable" in capsys.readouterr().out
 
-    assert main(["venv", "create", "missing"]) == 2
+    assert main(["env", "create", "missing"]) == 2
     assert "unknown program" in capsys.readouterr().err
 
 
@@ -132,3 +132,9 @@ def test_cli_check_reports_command_and_host_failures(tmp_path: Path, monkeypatch
     (tmp_path / "etc/atlas/host.yml").write_text("bad: true\n", encoding="utf-8")
     assert main(["check"]) == 2
     assert "unknown key" in capsys.readouterr().err
+
+
+def test_removed_venv_command_has_no_alias():
+    with pytest.raises(SystemExit) as error:
+        main(['venv', 'list'])
+    assert error.value.code == 2

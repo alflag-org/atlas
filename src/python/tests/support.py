@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import shutil
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -21,7 +23,7 @@ def configure_environment(monkeypatch, tmp_path: Path, config: str, host: str | 
         "ATLAS_ETC_DIR": etc,
         "ATLAS_VAR_DIR": var,
         "ATLAS_RUNTIMES_DIR": home / "runtimes",
-        "ATLAS_VENVS_DIR": home / "venvs",
+        "ATLAS_ENVIRONMENTS_DIR": home / "environments",
         "ATLAS_SHIMS_DIR": home / "shims",
     }.items():
         monkeypatch.setenv(key, str(value))
@@ -42,7 +44,7 @@ def python_config(root: Path, *, executable: Path | None = None, program_name: s
         f"    root: {root}\n"
         "    runtime:\n"
         "      type: python\n"
-        f"      venv: {program_name}\n"
+        f"      environment: {program_name}\n"
     )
 
 
@@ -75,3 +77,12 @@ def write_native_command(root: Path, name: str = "native", body: str | None = No
         | stat.S_IXOTH
     )
     return path
+
+
+def install_python_sdk(environment: Path) -> None:
+    """Provide SDK test files without network access or the host's site-packages."""
+    result = subprocess.run(
+        [str(environment / "bin/python"), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+        check=True, capture_output=True, text=True,
+    )
+    shutil.copytree(Path(__file__).resolve().parents[1] / "atlas_core", Path(result.stdout.strip()) / "atlas_core")

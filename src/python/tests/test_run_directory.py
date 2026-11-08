@@ -9,6 +9,7 @@ import pytest
 
 import atlas.execution as executor
 import atlas_core.execution as storage
+from atlas.config import AtlasConfig
 from atlas_core.execution import get_run_directory, temporary_run_directory
 
 
@@ -75,7 +76,7 @@ def test_signal_during_spawn_stops_owned_child_and_removes_storage(tmp_path, mon
     monkeypatch.setattr(executor.subprocess, "Popen", spawn)
     with temporary_run_directory() as parent:
         monkeypatch.setenv("ATLAS_RUN_TEMP_DIR", str(parent))
-        assert executor.execute(paths, command, []) == 143
+        assert executor.execute(paths, AtlasConfig(paths.config_file, {}, {}), command, []) == 143
         assert parent.exists()
         assert directories[0] != parent
     assert children[0].poll() is not None
@@ -96,5 +97,5 @@ def test_storage_cleanup_precedes_log_failure(tmp_path, monkeypatch):
 
     monkeypatch.setattr(executor, "_record", failed_record)
     with pytest.raises(OSError, match="record unavailable"):
-        executor.execute(paths, command, [])
+        executor.execute(paths, AtlasConfig(paths.config_file, {}, {}), command, [])
     assert list(paths.context_dir.iterdir()) == []

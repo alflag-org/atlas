@@ -10,6 +10,7 @@ from pathlib import Path
 from atlas_core.host import get_host
 
 from .catalog import CommandRef
+from .environments import PERL_VARIABLES, perl_environment
 from .paths import AtlasPaths
 
 
@@ -39,10 +40,10 @@ def execution_context(
     """Build the context payload for one child process."""
     host = get_host(paths.host_file)
     program_runtime: dict[str, object] = {"type": command.program.runtime.type}
-    if command.program.runtime.python_version is not None:
-        program_runtime["python"] = command.program.runtime.python_version
-    if command.program.runtime.venv is not None:
-        program_runtime["venv"] = str(paths.venv(command.program.runtime.venv))
+    if command.program.runtime.version is not None:
+        program_runtime["version"] = command.program.runtime.version
+    if command.program.runtime.environment is not None:
+        program_runtime["environment"] = str(paths.environment(command.program.runtime.type, command.program.runtime.environment))
     return {
         "version": 1,
         "host": host.to_dict(),
@@ -97,12 +98,12 @@ def child_environment(
     run_id: str,
     parent_run_id: str | None,
     operation_id: str,
-    python_path: Path | None,
-    venv_path: Path | None,
+    interpreter: Path | None,
+    environment_path: Path | None,
 ) -> dict[str, str]:
     """Return the language-neutral environment exposed to a child."""
     environment = dict(os.environ)
-    for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
+    for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "ATLAS_ENVIRONMENT", "ATLAS_RUNTIME_VERSION", *PERL_VARIABLES):
         environment.pop(key, None)
     environment.update(
         {
@@ -111,7 +112,7 @@ def child_environment(
             "ATLAS_ETC_DIR": str(paths.etc),
             "ATLAS_VAR_DIR": str(paths.var),
             "ATLAS_RUNTIMES_DIR": str(paths.runtimes),
-            "ATLAS_VENVS_DIR": str(paths.venvs),
+            "ATLAS_ENVIRONMENTS_DIR": str(paths.environments),
             "ATLAS_SHIMS_DIR": str(paths.shims),
             "ATLAS_CONFIG_FILE": str(paths.config_file),
             "ATLAS_HOST_FILE": str(paths.host_file),
@@ -125,16 +126,22 @@ def child_environment(
             "ATLAS_OPERATION_ID": operation_id,
         }
     )
-    if venv_path is not None:
-        environment["ATLAS_VENV"] = str(venv_path)
-        environment["VIRTUAL_ENV"] = str(venv_path)
-        environment["PATH"] = os.pathsep.join(
-            [str(venv_path / "bin"), environment.get("PATH", "")]
-        )
-    if python_path is not None:
+    if command.program.runtime.version is not None:
+        environment["ATLAS_RUNTIME_VERSION"] = command.program.runtime.version
+    if environment_path is not None:
+        environment["ATLAS_ENVIRONMENT"] = str(environment_path)
+    if command.type == "python":
+        assert environment_path is not None
+        environment["VIRTUAL_ENV"] = str(environment_path)
+        environment["PATH"] = os.pathsep.join([str(environment_path / "bin"), environment.get("PATH", "")])
         modules = command.program.root / "modules"
-        roots = [command.program.root, Path(__file__).resolve().parents[1]]
+        roots = [command.program.root]
         if modules.is_dir():
             roots.insert(0, modules)
         environment["PYTHONPATH"] = os.pathsep.join(str(root) for root in roots)
+    elif command.type == "perl":
+        assert interpreter is not None and environment_path is not None
+        environment.update(perl_environment(interpreter, environment_path))
+        modules = command.program.root / "lib"
+        environment["PERL5LIB"] = os.pathsep.join([str(modules), environment["PERL5LIB"]])
     return environment

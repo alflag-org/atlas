@@ -20,16 +20,16 @@ class ProgramInfo:
     name: str
     root: Path
     runtime_type: str
-    python_version: str | None = None
-    venv: Path | None = None
+    runtime_version: str | None = None
+    environment: Path | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-friendly program representation."""
         runtime: dict[str, object] = {"type": self.runtime_type}
-        if self.python_version is not None:
-            runtime["python"] = self.python_version
-        if self.venv is not None:
-            runtime["venv"] = str(self.venv)
+        if self.runtime_version is not None:
+            runtime["version"] = self.runtime_version
+        if self.environment is not None:
+            runtime["environment"] = str(self.environment)
         return {"name": self.name, "root": str(self.root), "runtime": runtime}
 
 
@@ -108,7 +108,7 @@ def _from_payload(payload: Mapping[str, Any], env: Mapping[str, str]) -> AtlasCo
     runtime_raw = _required(program_raw, "runtime")
     if not isinstance(runtime_raw, dict):
         raise TypeError("context runtime must be a mapping")
-    venv_value = runtime_raw.get("venv")
+    environment_value = runtime_raw.get("environment")
     return AtlasContext(
         host=host,
         paths=get_paths(env),
@@ -116,10 +116,10 @@ def _from_payload(payload: Mapping[str, Any], env: Mapping[str, str]) -> AtlasCo
             name=str(_required(program_raw, "name")),
             root=Path(str(_required(program_raw, "root"))),
             runtime_type=str(_required(runtime_raw, "type")),
-            python_version=(
-                None if runtime_raw.get("python") is None else str(runtime_raw["python"])
+            runtime_version=(
+                None if runtime_raw.get("version") is None else str(runtime_raw["version"])
             ),
-            venv=None if venv_value is None else Path(str(venv_value)),
+            environment=None if environment_value is None else Path(str(environment_value)),
         ),
         command=CommandInfo(
             name=str(_required(command_raw, "name")),
@@ -174,8 +174,8 @@ def get_context(env: Mapping[str, str] | None = None) -> AtlasContext:
             name=read_env["ATLAS_PROGRAM_NAME"],
             root=Path(read_env["ATLAS_PROGRAM_ROOT"]),
             runtime_type=read_env["ATLAS_RUNTIME_TYPE"],
-            python_version=read_env.get("ATLAS_PYTHON_VERSION"),
-            venv=(Path(read_env["ATLAS_VENV"]) if read_env.get("ATLAS_VENV") else None),
+            runtime_version=read_env.get("ATLAS_RUNTIME_VERSION"),
+            environment=(Path(read_env["ATLAS_ENVIRONMENT"]) if read_env.get("ATLAS_ENVIRONMENT") else None),
         ),
         command=CommandInfo(
             name=read_env["ATLAS_COMMAND_NAME"],

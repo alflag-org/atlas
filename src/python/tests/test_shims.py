@@ -16,7 +16,7 @@ def test_generate_shims_replaces_stale_and_preserves_non_atlas_files(tmp_path: P
     write_python_command(root)
     config_path = tmp_path / "config.yml"
     config_path.write_text(
-        f"programs:\n  tool:\n    root: {root}\n    runtime:\n      type: python\n      venv: tool\n",
+        f"programs:\n  tool:\n    root: {root}\n    runtime:\n      type: python\n      environment: tool\n",
         encoding="utf-8",
     )
     config = load_config(config_path)
@@ -45,7 +45,7 @@ def test_shim_generation_rejects_manual_collision_and_command_collision(tmp_path
     write_python_command(root)
     config_path = tmp_path / "config.yml"
     config_path.write_text(
-        f"programs:\n  tool:\n    root: {root}\n    runtime:\n      type: python\n      venv: tool\n",
+        f"programs:\n  tool:\n    root: {root}\n    runtime:\n      type: python\n      environment: tool\n",
         encoding="utf-8",
     )
     config = load_config(config_path)
@@ -74,7 +74,7 @@ def test_shim_generation_rejects_directory_at_command_path(tmp_path: Path) -> No
     write_python_command(root)
     config_path = tmp_path / "config.yml"
     config_path.write_text(
-        f"programs:\n  tool:\n    root: {root}\n    runtime:\n      type: python\n      venv: tool\n",
+        f"programs:\n  tool:\n    root: {root}\n    runtime:\n      type: python\n      environment: tool\n",
         encoding="utf-8",
     )
     paths = get_paths(

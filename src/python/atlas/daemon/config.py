@@ -12,7 +12,7 @@ from pathlib import Path
 
 import yaml
 
-from atlas.yamlutil import load_yaml_file
+from atlas_core._yaml import load_yaml_file
 
 
 def instance_name(value: str) -> str:

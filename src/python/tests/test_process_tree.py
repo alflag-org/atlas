@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 import atlas._process_tree as tree
+from atlas.config import AtlasConfig
 from atlas_core.execution import temporary_run_directory
 
 
@@ -104,18 +105,18 @@ import sys
 sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
 from pathlib import Path
 from atlas.catalog import CommandRef
-from atlas.config import ProgramConfig, ProgramRuntime
+from atlas.config import AtlasConfig, ProgramConfig, ProgramRuntime
 from atlas.execution import execute
 from atlas.paths import get_paths
 p = ProgramConfig("nested", Path({str(tmp_path)!r}), ProgramRuntime("native"))
-raise SystemExit(execute(get_paths(), CommandRef("nested", p, Path({str(target)!r}), "native"), []))
+raise SystemExit(execute(get_paths(), AtlasConfig(Path("/unused"), {{}}, {{}}), CommandRef("nested", p, Path({str(target)!r}), "native"), []))
 ''')
         script.chmod(0o755)
         target = script
     command.path.write_text(f'#!/bin/sh\nexec "{target}"\n')
     data = None
     try:
-        assert execute(paths, command, [], timeout_seconds=2) == 124
+        assert execute(paths, AtlasConfig(paths.config_file, {}, {}), command, [], timeout_seconds=2) == 124
         data = json.loads(marker.read_text())
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
@@ -170,7 +171,7 @@ time.sleep(60)
     sender = threading.Thread(target=interrupt)
     sender.start()
     try:
-        assert execute(paths, command, [], timeout_seconds=10) == 130
+        assert execute(paths, AtlasConfig(paths.config_file, {}, {}), command, [], timeout_seconds=10) == 130
     finally:
         sender.join()
     assert received.read_text() == str(signal.SIGINT)
@@ -183,4 +184,4 @@ def test_native_command_receives_default_sigpipe(tmp_path):
 
     paths, _, command = native_command(tmp_path)
     command.path.write_text("#!/bin/sh\nkill -PIPE $$\nexit 42\n")
-    assert execute(paths, command, []) == 128 + signal.SIGPIPE
+    assert execute(paths, AtlasConfig(paths.config_file, {}, {}), command, []) == 128 + signal.SIGPIPE

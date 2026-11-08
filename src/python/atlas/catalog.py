@@ -25,9 +25,9 @@ class CommandRef:
         return self.path.relative_to(self.program.root).as_posix()
 
 
-def _command_name(relative: Path, *, python: bool) -> str:
+def _command_name(relative: Path, *, interpreted: bool) -> str:
     parts = list(relative.parts)
-    if python:
+    if interpreted:
         parts[-1] = Path(parts[-1]).stem
     for part in parts:
         validate_name(part, kind="command segment")
@@ -61,7 +61,7 @@ def _walk_files(directory: Path) -> list[Path]:
 
 
 def discover_commands(program: ProgramConfig) -> list[CommandRef]:
-    """Discover Python commands and native executables for one program."""
+    """Discover language scripts and native executables for one program."""
     root = program.root
     if root.is_symlink() or not root.is_dir():
         raise ValueError(f"program root not found: {root}")
@@ -75,17 +75,17 @@ def discover_commands(program: ProgramConfig) -> list[CommandRef]:
             directories.append((bin_dir, False))
 
     found: dict[str, CommandRef] = {}
-    for directory, python_directory in directories:
+    for directory, script_directory in directories:
         for path in _walk_files(directory):
-            is_python = (
-                python_directory
-                and program.runtime.type == "python"
-                and path.suffix == ".py"
+            language = program.runtime.type
+            is_script = script_directory and (
+                (language == "python" and path.suffix == ".py")
+                or (language == "perl" and path.suffix == ".pl")
             )
-            if not is_python and not (path.stat().st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)):
+            if not is_script and not (path.stat().st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)):
                 continue
             relative = path.relative_to(directory)
-            name = _command_name(relative, python=is_python)
+            name = _command_name(relative, interpreted=is_script)
             if name in found:
                 raise ValueError(
                     f"command name collision in program {program.name}: {name}"
@@ -94,7 +94,7 @@ def discover_commands(program: ProgramConfig) -> list[CommandRef]:
                 name=name,
                 program=program,
                 path=path,
-                type="python" if is_python else "native",
+                type=language if is_script else "native",
             )
     return [found[name] for name in sorted(found)]
 

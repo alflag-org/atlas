@@ -73,6 +73,8 @@ Set ``runtime.python.executable`` or ``runtime.perl.executable`` to an absolute 
 path to use an administrator-provisioned installation. Neither the system interpreter nor
 a version manager is installed implicitly. The configured version labels an explicit
 executable; the executable's actual build identity determines environment compatibility.
+The status label ``configured`` is reserved for executable-only selections and cannot be
+used as a version name.
 
 Install and update program trees with the program's own packaging or deployment tools.
 Atlas uses the local files without managing their versions.
@@ -207,7 +209,8 @@ Context runtime keys are now ``type``, optional ``version``, and optional absolu
 ``environment``; use ``ATLAS_RUNTIME_VERSION`` and ``ATLAS_ENVIRONMENT`` for environment fallback.
 Update Python consumers of ``ProgramInfo.python_version`` and ``ProgramInfo.venv`` to
 ``runtime_version`` and ``environment``. Path consumers use ``environments`` instead of ``venvs``
-and ``runtime(language, version)`` instead of ``python_runtime(version)``.
+and ``runtime(language, version)`` instead of ``python_runtime(version)``. Replace access to
+``python_runtimes`` with ``runtimes / "python"``.
 
 Python distributions now build and install from ``src/python``; the repository root is not a
 Python distribution. Perl distributions build and test independently from ``src/perl``.

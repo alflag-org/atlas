@@ -174,3 +174,8 @@ def test_runtime_versions_cannot_be_paths_or_manager_options(tmp_path, version):
     ):
         with pytest.raises(ValueError, match="interpreter version or name"):
             load_config(write(tmp_path / "config.yml", text))
+
+
+def test_configured_status_label_cannot_collide_with_a_version(tmp_path):
+    with pytest.raises(ValueError, match="version is reserved"):
+        load_config(write(tmp_path / "config.yml", "runtime:\n  perl:\n    version: configured\n"))

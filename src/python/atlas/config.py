@@ -87,6 +87,8 @@ def _optional_string(raw: dict[str, Any], key: str, label: str) -> str | None:
 
 def _runtime_version(raw: dict[str, Any], label: str) -> str | None:
     version = _optional_string(raw, "version", label)
+    if version == "configured":
+        raise ValueError(f"{label}.version is reserved: configured")
     if version is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", version):
         raise ValueError(f"{label}.version must be an interpreter version or name")
     return version

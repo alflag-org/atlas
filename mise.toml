@@ -1,25 +1,33 @@
 [tools]
 python = "3.14.6"
 
+[settings]
+# Match system local::lib and development headers when compiling Perl test extensions.
+disable_tools = ["perl"]
+
 [tasks.setup]
 description = "Install development dependencies for Atlas"
 run = """
 python -m pip install --upgrade pip==26.2
-python -m pip install -e '.[dev]'
+python -m pip install -e './src/python[dev]'
 """
 
 [tasks.test]
-description = "Run unit tests with 100% coverage enforcement"
+dir = "src/python"
+description = "Run Python tests with 100% coverage enforcement"
 run = """
+export ATLAS_TEST_PERL="${ATLAS_TEST_PERL:-$(perl -e 'print $^X')}"
 python -m coverage run -m pytest -q
 python -m coverage report
 """
 
 [tasks.lint]
+dir = "src/python"
 description = "Run Ruff checks"
-run = "ruff check src tests"
+run = "ruff check atlas atlas_core tests examples"
 
 [tasks.build]
+dir = "src/python"
 description = "Build package artifacts"
 run = "python -m build"
 
@@ -28,5 +36,19 @@ description = "Build Sphinx documentation"
 run = "make html"
 
 [tasks.check]
-description = "Run lint, tests, and build"
-depends = ["lint", "test", "build"]
+description = "Check Python and Perl tests, integration, and distribution builds"
+depends = ["lint", "test", "build", "test-perl", "build-perl", "integration-perl"]
+
+[tasks.test-perl]
+dir = "src/perl"
+run = "perl Makefile.PL && make test"
+
+[tasks.build-perl]
+dir = "src/perl"
+depends = ["test-perl"]
+run = "make dist"
+
+[tasks.integration-perl]
+dir = "src/perl"
+depends = ["test-perl"]
+run = "prove -v integration/atlas.t"

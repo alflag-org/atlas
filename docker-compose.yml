@@ -3,7 +3,7 @@ x-atlas-env: &atlas-env
   ATLAS_ETC_DIR: /etc/atlas
   ATLAS_VAR_DIR: /var/lib/atlas
   ATLAS_RUNTIMES_DIR: /opt/atlas/runtimes
-  ATLAS_VENVS_DIR: /opt/atlas/venvs
+  ATLAS_ENVIRONMENTS_DIR: /opt/atlas/environments
 
 services:
   atlas:
@@ -24,6 +24,12 @@ services:
       && atlas runtime status
       && atlas run hello docker-check
       && atlas run native-echo docker-check
-      && ruff check src tests
-      && pytest -q
-      && python -m build"
+      && atlas run perl-context
+      && cd src/python && ruff check atlas atlas_core tests examples
+      && python -m coverage run -m pytest -q
+      && python -m coverage report
+      && python -m build
+      && cd ../perl
+      && perl Makefile.PL
+      && make test dist
+      && prove -v integration/atlas.t"

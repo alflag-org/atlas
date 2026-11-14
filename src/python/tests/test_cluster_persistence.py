@@ -315,3 +315,42 @@ def test_gossip_overflow_keeps_ack_path_and_conflicts_do_not_stop_worker(tmp_pat
             worker.cancel()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("initializing", "sync_call"), [(False, 1), (True, 1), (True, 3)]
+)
+def test_blanket_cancellation_waits_for_inner_durable_operation(
+    tmp_path, monkeypatch, initializing, sync_call
+):
+    async def scenario():
+        node = await make_node(tmp_path, initialized=not initializing)
+        existing = asyncio.all_tasks()
+        with blocked_fsync(monkeypatch, call=sync_call) as (entered, release):
+            operation = asyncio.create_task(
+                node.initialize("lab")
+                if initializing
+                else node.membership.apply((member("b"),))
+            )
+            try:
+                await asyncio.wait_for(entered.wait(), 1)
+                tasks = asyncio.all_tasks() - existing
+                for task in tasks:
+                    task.cancel()
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                assert not operation.done()
+                assert node.membership.lock.locked()
+            finally:
+                release.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        assert operation.cancelled()
+        assert node.state.membership == "joined"
+        assert node.membership.store.read("a") == node.state
+        if initializing:
+            assert node.cipher.cluster_id == node.state.cluster_id
+        else:
+            await node.membership.apply((member("c"),))
+            assert set(node.state.members) == {"a", "b", "c"}
+
+    asyncio.run(scenario())

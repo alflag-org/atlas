@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import os
 import socket
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 
@@ -41,8 +42,12 @@ async def application(
         )
     )
     store = Store(ctx.state_dir)
-    with store.locked():
-        membership = Membership(store, store.read(host.id), local, timers.suspicion)
+    # SDK shutdown can cancel every task, including shielded tasks. Drain the
+    # actual worker before releasing the process lock, even on that exit path.
+    with store.locked(), ThreadPoolExecutor(max_workers=1) as writer:
+        membership = Membership(
+            store, store.read(host.id), local, timers.suspicion, writer
+        )
         node = Node(config, membership, timers)
         if node.state.cluster_id is not None:
             node.cipher = node.credentials()

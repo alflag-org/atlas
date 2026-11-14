@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import OrderedDict
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
+from concurrent.futures import Executor
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from typing import Any, TypeVar
@@ -34,15 +35,36 @@ async def complete(operation: Coroutine[Any, Any, T]) -> T:
     return result
 
 
+async def durable_io(
+    executor: Executor | None, operation: Callable[..., T], *args: Any
+) -> T:
+    """Keep a protected operation alive when shutdown cancels its inner task too."""
+    future = asyncio.get_running_loop().run_in_executor(executor, operation, *args)
+    while not future.done():
+        try:
+            await asyncio.shield(future)
+        except asyncio.CancelledError:
+            # complete() propagates caller cancellation after publication. No task
+            # owns this worker future, so blanket task cancellation cannot stop it.
+            continue
+    return future.result()
+
+
 def timestamp() -> str:
     return datetime.now(UTC).isoformat()
 
 
 class Membership:
     def __init__(
-        self, store: Store, state: State, local: ClusterMember, suspicion: float
+        self,
+        store: Store,
+        state: State,
+        local: ClusterMember,
+        suspicion: float,
+        executor: Executor | None = None,
     ) -> None:
         self.store = store
+        self.executor = executor
         self.state = state
         self.local = local
         self.suspicion = suspicion
@@ -65,7 +87,7 @@ class Membership:
         if self.failed:
             raise ClusterError("persistence_failed")
         try:
-            await asyncio.to_thread(self.store.write, state)
+            await durable_io(self.executor, self.store.write, state)
         except (OSError, ClusterError):
             # Block all subsequent publication until an operator repairs storage.
             self.failed = True

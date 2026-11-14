@@ -505,7 +505,10 @@ def test_self_seed_alias_does_not_count_as_peer_contact_or_leave(tmp_path):
     asyncio.run(scenario())
 
 
-def test_shutdown_during_fsync_retains_process_lock_until_publication(tmp_path):
+@pytest.mark.parametrize("beyond_grace", [False, True])
+def test_shutdown_during_fsync_retains_process_lock_until_publication(
+    tmp_path, beyond_grace
+):
     from atlas.cluster.store import Store
 
     async def scenario():
@@ -524,7 +527,14 @@ def test_shutdown_during_fsync_retains_process_lock_until_publication(tmp_path):
                     while not entered.exists():
                         await asyncio.sleep(0.005)
                 a.process.send_signal(signal.SIGTERM)
-                await asyncio.sleep(0.1)
+                if beyond_grace:
+                    async with asyncio.timeout(5):
+                        while "task cleanup failed" not in a.logs():
+                            await asyncio.sleep(0.01)
+                    # Also cross the SDK cleanup deadline and event-loop closure.
+                    await asyncio.sleep(0.1)
+                else:
+                    await asyncio.sleep(0.1)
                 assert a.process.poll() is None
                 assert store.read("a") == previous
                 with (
@@ -535,7 +545,9 @@ def test_shutdown_during_fsync_retains_process_lock_until_publication(tmp_path):
             finally:
                 gate.unlink()
                 await asyncio.gather(leaving, return_exceptions=True)
-            await a.stop()
+            await asyncio.to_thread(a.process.wait, 5)
+            assert a.process.returncode == (1 if beyond_grace else 0), a.logs()
+            await a.stop()  # Collect child coverage after the process has exited.
             assert store.read("a").membership == "left"
             with store.locked():
                 assert not (a.runtime / "control.sock").exists()

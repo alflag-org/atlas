@@ -11,7 +11,7 @@ from uuid import uuid4
 from atlas_core.cluster import ClusterError, ClusterMember, MemberState, PeerEndpoint
 
 from .config import Config
-from .membership import Membership, complete, timestamp
+from .membership import Membership, complete, durable_io, timestamp
 from .model import endpoint, merge_all, parse_endpoint, record, records, text
 from .network import exchange, resolve
 from .store import Credential, State
@@ -167,10 +167,11 @@ class Node:
     async def _initialize(self, name: str) -> dict:
         if self.state.membership != "uninitialized":
             raise ClusterError("already_initialized")
-        credential = await asyncio.to_thread(
-            Credential.create, self.config.credentials_file
+        credential = await durable_io(
+            self.membership.executor, Credential.create, self.config.credentials_file
         )
         own = self.membership.own(1)
+        self.cipher = Cipher(credential)
         await self.membership.commit(
             State(
                 own.id,
@@ -181,7 +182,6 @@ class Node:
                 credential_fingerprint=credential.fingerprint,
             )
         )
-        self.cipher = Cipher(credential)
         return {"cluster_id": credential.cluster_id, "membership": "joined"}
 
     async def join(self, seeds: tuple[PeerEndpoint, ...]) -> dict:

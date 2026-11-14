@@ -786,8 +786,10 @@ An in-flight write finishes before cancellation releases the update lock, even
 when a request times out or shutdown starts. A timed-out init, join, or leave can
 therefore still commit locally. Query local status and members before retrying;
 a pending write may initially leave the previous committed state visible.
-Cooperative shutdown waits for in-flight storage; the service manager owns hard
-termination if storage remains stuck. SIGKILL or host failure cannot guarantee
+Shutdown retains the state lock until the storage worker finishes, including
+after the SDK cancels tasks at its shutdown deadline. Waiting for that worker
+can exceed the deadline; the service manager owns hard termination if storage
+remains stuck. SIGKILL or host failure cannot guarantee
 completion.
 
 Stop the daemon before backing up state. Reuse the directory only for the same

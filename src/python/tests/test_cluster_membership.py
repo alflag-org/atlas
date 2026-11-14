@@ -1,5 +1,6 @@
 """Merge laws, ownership, bounded metadata, durable refutation and leave intent."""
 
+import asyncio
 import itertools
 from dataclasses import asdict, replace
 
@@ -125,68 +126,79 @@ def test_invalid_records(change):
 
 
 def test_refutation_deadline_restart_and_leave(tmp_path, monkeypatch):
-    now = [100.0]
-    monkeypatch.setattr("atlas.cluster.membership.time.monotonic", lambda: now[0])
-    a, b = member(), member("b")
-    store = Store(tmp_path)
-    state = State("a", "cluster", "lab", "joined", {"a": a, "b": b})
-    membership = Membership(store, state, a, 10)
-    assert membership.snapshot()["members"][1]["state"] == "unknown"
-    membership.suspect(b)
-    deadline = membership.suspected["b"]
-    membership.apply((replace(b, state=MemberState.SUSPECT),))
-    assert membership.suspected["b"] == deadline
-    membership.expire()
-    assert membership.state.members["b"].state is MemberState.SUSPECT
-    now[0] = 111
-    membership.expire()
-    assert membership.state.members["b"].state is MemberState.UNREACHABLE
-    membership.apply((b,))
-    assert membership.state.members["b"].state is MemberState.UNREACHABLE
-    membership.apply((replace(a, state=MemberState.SUSPECT),))
-    assert membership.state.members["a"] == member(incarnation=2)
-    assert '"incarnation":2' in store.path.read_text()
-    membership.apply((replace(member(incarnation=2), state=MemberState.LEFT),))
-    assert membership.state.membership == "left"
-    membership.restart()
-    membership.apply((member(incarnation=3),))
-    assert membership.state.members["a"].state is MemberState.LEFT
-    assert membership.state.members["a"].incarnation == 2
+    async def scenario():
+        now = [100.0]
+        monkeypatch.setattr("atlas.cluster.membership.time.monotonic", lambda: now[0])
+        a, b = member(), member("b")
+        store = Store(tmp_path)
+        state = State("a", "cluster", "lab", "joined", {"a": a, "b": b})
+        membership = Membership(store, state, a, 10)
+        assert membership.snapshot()["members"][1]["state"] == "unknown"
+        await membership.suspect(b)
+        deadline = membership.suspected["b"]
+        await membership.apply((replace(b, state=MemberState.SUSPECT),))
+        assert membership.suspected["b"] == deadline
+        await membership.expire()
+        assert membership.state.members["b"].state is MemberState.SUSPECT
+        now[0] = 111
+        await membership.expire()
+        assert membership.state.members["b"].state is MemberState.UNREACHABLE
+        await membership.apply((b,))
+        assert membership.state.members["b"].state is MemberState.UNREACHABLE
+        await membership.apply((replace(a, state=MemberState.SUSPECT),))
+        assert membership.state.members["a"] == member(incarnation=2)
+        assert '"incarnation":2' in store.path.read_text()
+        await membership.apply(
+            (replace(member(incarnation=2), state=MemberState.LEFT),)
+        )
+        assert membership.state.membership == "left"
+        await membership.restart()
+        await membership.apply((member(incarnation=3),))
+        assert membership.state.members["a"].state is MemberState.LEFT
+        assert membership.state.members["a"].incarnation == 2
+
+    asyncio.run(scenario())
 
 
 def test_persistence_failure_stops_publication(tmp_path, monkeypatch):
-    a = member()
-    membership = Membership(
-        Store(tmp_path), State("a", members={"a": a}, membership="joined"), a, 10
-    )
+    async def scenario():
+        a = member()
+        membership = Membership(
+            Store(tmp_path), State("a", members={"a": a}, membership="joined"), a, 10
+        )
 
-    def fail(_state):
-        raise OSError("secret storage body")
+        def fail(_state):
+            raise OSError("secret storage body")
 
-    monkeypatch.setattr(membership.store, "write", fail)
-    for _ in range(2):
-        with pytest.raises(ClusterError, match=r"^persistence_failed$"):
-            membership.apply((replace(a, state=MemberState.SUSPECT),))
-    with pytest.raises(ClusterError, match="persistence_failed"):
-        membership.commit(membership.state)
-    assert membership.state.members["a"] == a
-    assert not membership.updates
+        monkeypatch.setattr(membership.store, "write", fail)
+        for _ in range(2):
+            with pytest.raises(ClusterError, match=r"^persistence_failed$"):
+                await membership.apply((replace(a, state=MemberState.SUSPECT),))
+        with pytest.raises(ClusterError, match="persistence_failed"):
+            await membership.commit(membership.state)
+        assert membership.state.members["a"] == a
+        assert not membership.updates
+
+    asyncio.run(scenario())
 
 
 def test_restart_preserves_suspicion_and_updates_local_metadata(tmp_path, monkeypatch):
-    state = State(
-        "a",
-        members={"a": member(), "b": member("b", state=MemberState.SUSPECT)},
-        membership="joined",
-    )
-    local = replace(member(), labels={"revision": "new"})
-    membership = Membership(Store(tmp_path), state, local, 10)
-    monkeypatch.setattr("atlas.cluster.membership.time.monotonic", lambda: 100)
-    membership.restart()
-    assert membership.suspected["b"] == 110
-    assert membership.state.members["a"].incarnation == 2
-    assert membership.state.members["a"].labels == {"revision": "new"}
-    assert membership.snapshot()["members"][1]["state"] == "suspect"
+    async def scenario():
+        state = State(
+            "a",
+            members={"a": member(), "b": member("b", state=MemberState.SUSPECT)},
+            membership="joined",
+        )
+        local = replace(member(), labels={"revision": "new"})
+        membership = Membership(Store(tmp_path), state, local, 10)
+        monkeypatch.setattr("atlas.cluster.membership.time.monotonic", lambda: 100)
+        await membership.restart()
+        assert membership.suspected["b"] == 110
+        assert membership.state.members["a"].incarnation == 2
+        assert membership.state.members["a"].labels == {"revision": "new"}
+        assert membership.snapshot()["members"][1]["state"] == "suspect"
+
+    asyncio.run(scenario())
 
 
 def test_metadata_reserves_space_for_future_incarnation_and_state():

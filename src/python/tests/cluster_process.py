@@ -3,6 +3,7 @@
 import asyncio
 import os
 import sys
+import time
 from pathlib import Path
 
 # Collect coverage in actual child processes when the parent is measuring it.
@@ -11,7 +12,9 @@ if os.environ.get("ATLAS_TEST_COVERAGE"):
     from coverage import Coverage
 
     coverage = Coverage(
-        data_file=os.environ["ATLAS_TEST_COVERAGE"], branch=True, source=["atlas", "atlas_core"]
+        data_file=os.environ["ATLAS_TEST_COVERAGE"],
+        branch=True,
+        source=["atlas", "atlas_core"],
     )
     coverage.start()
 
@@ -34,6 +37,19 @@ def main():
 
     configure_logging("cluster", path=Path(sys.argv[1]).parent / "daemon.log")
     config = load_config(Path(sys.argv[1]))
+    if os.environ.get("ATLAS_TEST_HOLD_STORAGE"):
+        gate = Path(sys.argv[1]).parent / "hold-fsync"
+        entered = gate.with_name("fsync-entered")
+        fsync = os.fsync
+
+        def controlled_fsync(fd):
+            if gate.exists():
+                entered.touch()
+                while gate.exists():
+                    time.sleep(0.005)
+            fsync(fd)
+
+        os.fsync = controlled_fsync
     timers = Timers(0.15, 0.12, 1.2, 0.08, 0.25, 0.6, 4)
 
     async def start(ctx):

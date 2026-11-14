@@ -46,7 +46,7 @@ async def application(
         node = Node(config, membership, timers)
         if node.state.cluster_id is not None:
             node.cipher = node.credentials()
-            membership.restart()
+            await membership.restart()
 
         async def control(method, params, peer):
             try:
@@ -73,6 +73,7 @@ async def application(
                 async with asyncio.TaskGroup() as group:
                     tasks = [
                         group.create_task(node.datagrams(inbox, group)),
+                        group.create_task(node.receive_gossip()),
                         group.create_task(node.probes()),
                         group.create_task(node.gossip()),
                         group.create_task(node.sync()),

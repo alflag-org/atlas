@@ -11,7 +11,7 @@ from uuid import uuid4
 from atlas_core.cluster import ClusterError, ClusterMember, MemberState, PeerEndpoint
 
 from .config import Config
-from .membership import Membership, timestamp
+from .membership import Membership, complete, timestamp
 from .model import endpoint, merge_all, parse_endpoint, record, records, text
 from .network import exchange, resolve
 from .store import Credential, State
@@ -54,6 +54,7 @@ class Node:
         self.family = 0
         self.relays: set[asyncio.Task] = set()
         self.sync_cursor = 0
+        self.incoming: asyncio.Queue[ClusterMember] = asyncio.Queue(maxsize=256)
 
     @property
     def state(self) -> State:
@@ -120,7 +121,7 @@ class Node:
             raise ClusterError("not_joined")
         if method == "sync":
             _, members = self.receive_snapshot(data)
-            self.membership.apply(members)
+            await self.membership.apply(members)
         elif (
             method == "fetch"
             and set(data) == {"sender_id"}
@@ -133,23 +134,23 @@ class Node:
         return self.wire_snapshot()
 
     async def control(self, method: str, params: dict, _peer=None) -> dict:
+        if self.membership.failed:
+            raise ClusterError("persistence_failed")
+        if method == "status" and not params:
+            return {
+                "local_id": self.state.local_id,
+                "cluster_id": self.state.cluster_id,
+                "name": self.state.name,
+                "membership": self.state.membership,
+                "last_peer_contact": self.last_contact,
+            }
+        if method == "members" and not params:
+            if self.state.membership == "uninitialized":
+                raise ClusterError("not_joined")
+            return self.membership.snapshot()
         async with self.control_lock:
-            if self.membership.failed:
-                raise ClusterError("persistence_failed")
-            if method == "status" and not params:
-                return {
-                    "local_id": self.state.local_id,
-                    "cluster_id": self.state.cluster_id,
-                    "name": self.state.name,
-                    "membership": self.state.membership,
-                    "last_peer_contact": self.last_contact,
-                }
-            if method == "members" and not params:
-                if self.state.membership == "uninitialized":
-                    raise ClusterError("not_joined")
-                return self.membership.snapshot()
             if method == "init" and set(params) == {"name"}:
-                return self.initialize(text(params["name"]))
+                return await self.initialize(text(params["name"]))
             if method == "join" and set(params) == {"seeds"}:
                 seeds = params["seeds"]
                 if not isinstance(seeds, list) or not 1 <= len(seeds) <= 32:
@@ -159,12 +160,18 @@ class Node:
                 return await self.leave()
             raise ClusterError("invalid_request")
 
-    def initialize(self, name: str) -> dict:
+    async def initialize(self, name: str) -> dict:
+        async with self.membership.lock:
+            return await complete(self._initialize(name))
+
+    async def _initialize(self, name: str) -> dict:
         if self.state.membership != "uninitialized":
             raise ClusterError("already_initialized")
-        credential = Credential.create(self.config.credentials_file)
+        credential = await asyncio.to_thread(
+            Credential.create, self.config.credentials_file
+        )
         own = self.membership.own(1)
-        self.membership.commit(
+        await self.membership.commit(
             State(
                 own.id,
                 credential.cluster_id,
@@ -178,7 +185,7 @@ class Node:
         return {"cluster_id": credential.cluster_id, "membership": "joined"}
 
     async def join(self, seeds: tuple[PeerEndpoint, ...]) -> dict:
-        cipher = self.credentials()
+        cipher = await asyncio.to_thread(self.credentials)
         last_error = "peer_unavailable"
         try:
             async with asyncio.timeout(self.timers.join_timeout):
@@ -191,26 +198,27 @@ class Node:
                             {"sender_id": self.state.local_id},
                             timeout=self.timers.exchange_timeout,
                         )
-                        name, remote = self.receive_snapshot(raw)
-                        members = merge_all(self.state.members, remote)
-                        previous = members.get(self.state.local_id)
-                        own = self.membership.own(
-                            1 if previous is None else previous.incarnation + 1
-                        )
-                        members = merge_all(members, (own,))
-                        # Persist before publishing; a failed reply can leave a joined node.
-                        self.membership.commit(
-                            State(
-                                own.id,
-                                cipher.cluster_id,
-                                name,
-                                "joined",
-                                members,
-                                seeds,
-                                cipher.fingerprint,
+                        async with self.membership.lock:
+                            name, remote = self.receive_snapshot(raw)
+                            members = merge_all(self.state.members, remote)
+                            previous = members.get(self.state.local_id)
+                            own = self.membership.own(
+                                1 if previous is None else previous.incarnation + 1
                             )
-                        )
-                        self.cipher = cipher
+                            members = merge_all(members, (own,))
+                            # Persist before publishing; a failed reply can leave a joined node.
+                            self.cipher = cipher
+                            await self.membership.commit(
+                                State(
+                                    own.id,
+                                    cipher.cluster_id,
+                                    name,
+                                    "joined",
+                                    members,
+                                    seeds,
+                                    cipher.fingerprint,
+                                )
+                            )
                         reply = await exchange(
                             seed,
                             cipher,
@@ -219,7 +227,7 @@ class Node:
                             timeout=self.timers.exchange_timeout,
                         )
                         _, incoming = self.receive_snapshot(reply)
-                        self.membership.apply(incoming)
+                        await self.membership.apply(incoming)
                         self.last_contact = timestamp()
                         return {
                             "membership": "joined",
@@ -236,17 +244,18 @@ class Node:
         raise ClusterError(last_error)
 
     async def leave(self) -> dict:
-        if self.state.membership == "uninitialized":
-            raise ClusterError("not_joined")
-        if self.state.membership != "left":
-            members = self.state.members.copy()
-            current = members[self.state.local_id]
-            members[current.id] = self.membership.own(
-                current.incarnation + 1, MemberState.LEFT
-            )
-            self.membership.commit(
-                replace(self.state, membership="left", members=members)
-            )
+        async with self.membership.lock:
+            if self.state.membership == "uninitialized":
+                raise ClusterError("not_joined")
+            if self.state.membership != "left":
+                members = self.state.members.copy()
+                current = members[self.state.local_id]
+                members[current.id] = self.membership.own(
+                    current.incarnation + 1, MemberState.LEFT
+                )
+                await self.membership.commit(
+                    replace(self.state, membership="left", members=members)
+                )
         propagated = False
         try:
             async with asyncio.timeout(self.timers.exchange_timeout):
@@ -269,7 +278,7 @@ class Node:
                 timeout=self.timers.exchange_timeout,
             )
             _, incoming = self.receive_snapshot(reply)
-            self.membership.apply(incoming)
+            await self.membership.apply(incoming)
             self.last_contact = timestamp()
             return True
         except ClusterError:
@@ -366,7 +375,10 @@ class Node:
                 if kind == "gossip":
                     if set(payload) != {"member"}:
                         raise ClusterError("invalid_request")
-                    self.membership.apply((record(payload["member"]),))
+                    incoming = record(payload["member"])
+                    # UDP is lossy; TCP sync repairs overflow without blocking probes.
+                    if not self.incoming.full():
+                        self.incoming.put_nowait(incoming)
                     continue
                 if (
                     kind not in {"ping", "ack", "ping_req"}
@@ -405,21 +417,29 @@ class Node:
                         self.relays.add(task)
                         task.add_done_callback(self.relays.discard)
             except ClusterError:
+                pass  # Untrusted input cannot terminate reception or expose payloads.
+
+    async def receive_gossip(self) -> None:
+        while True:
+            incoming = await self.incoming.get()
+            try:
+                await self.membership.apply((incoming,))
+            except ClusterError:
                 if self.membership.failed:
                     raise
-                # Untrusted input cannot terminate a required task or expose payloads.
+                # Conflicting remote metadata is rejected without stopping reception.
 
     async def probes(self) -> None:
         while True:
             await asyncio.sleep(self.timers.probe_interval)
             if self.state.membership != "joined":
                 continue
-            self.membership.expire()
+            await self.membership.expire()
             peers = self.peers()
             if peers:
                 target = random.choice(peers)
                 if not await self.probe(target):
-                    self.membership.suspect(target)
+                    await self.membership.suspect(target)
 
     async def gossip(self) -> None:
         while True:

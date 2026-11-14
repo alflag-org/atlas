@@ -123,7 +123,7 @@ class Host:
         self.process = None
         self.output = (self.directory / "output").open("w+")
 
-    async def start(self, *, entry=False):
+    async def start(self, *, entry=False, hold_storage=False):
         env = {
             key: value
             for key, value in os.environ.items()
@@ -136,6 +136,8 @@ class Host:
             ATLAS_HOST_FILE=str(self.directory / "host.yml"),
             PYTHONPATH=str(ROOT),
         )
+        if hold_storage:
+            env["ATLAS_TEST_HOLD_STORAGE"] = "1"
         if entry:
             env["ATLAS_TEST_ENTRY"] = "1"
         from coverage import Coverage
@@ -499,5 +501,43 @@ def test_self_seed_alias_does_not_count_as_peer_contact_or_leave(tmp_path):
             result = await a.client.request("leave")
             assert result == {"membership": "left", "propagated_to_peer": False}
             assert (await a.client.status()).last_peer_contact is None
+
+    asyncio.run(scenario())
+
+
+def test_shutdown_during_fsync_retains_process_lock_until_publication(tmp_path):
+    from atlas.cluster.store import Store
+
+    async def scenario():
+        async with hosts(tmp_path, "a") as (a,):
+            await a.client.request("init", {"name": "lab"})
+            await a.stop()
+            await a.start(hold_storage=True)
+            store = Store(a.state)
+            previous = store.read("a")
+            gate = a.directory / "hold-fsync"
+            entered = a.directory / "fsync-entered"
+            gate.touch()
+            leaving = asyncio.create_task(a.client.request("leave"))
+            try:
+                async with asyncio.timeout(2):
+                    while not entered.exists():
+                        await asyncio.sleep(0.005)
+                a.process.send_signal(signal.SIGTERM)
+                await asyncio.sleep(0.1)
+                assert a.process.poll() is None
+                assert store.read("a") == previous
+                with (
+                    pytest.raises(ClusterError, match="already_running"),
+                    store.locked(),
+                ):
+                    pytest.fail("shutdown released state ownership during fsync")
+            finally:
+                gate.unlink()
+                await asyncio.gather(leaving, return_exceptions=True)
+            await a.stop()
+            assert store.read("a").membership == "left"
+            with store.locked():
+                assert not (a.runtime / "control.sock").exists()
 
     asyncio.run(scenario())

@@ -763,19 +763,32 @@ not authentication evidence. A compromised participant is outside this boundary.
 
 The daemon accepts at most 16 concurrent TCP exchanges, each with a three-second
 deadline and a 1 MiB frame limit. UDP datagrams are at most 1,200 bytes, with a
-256-packet receive queue and at most 16 indirect-probe tasks. Each member record
-is at most 700 JSON bytes, including at most 16 labels. The gossip queue holds
-only the latest changed record per ID. Larger exchanges use TCP, with at most
-256 records including tombstones. There is no fragmentation, automatic tombstone
+256-packet receive queue and at most 16 indirect-probe tasks. Incoming gossip
+uses a separate 256-record queue so waiting for storage does not block ping/ack
+handling. Gossip arriving when that queue is full is dropped; TCP synchronization
+repairs missed updates. Each member record is at most 700 JSON bytes, including
+at most 16 labels. The outgoing gossip queue holds only the latest changed record
+per ID. Larger exchanges use TCP, with at most 256 records including tombstones. There is no fragmentation, automatic tombstone
 GC, or silently truncated snapshot. Capacity exhaustion requires an explicit
 operator decision to reconfigure; leave does not recover a record slot.
 
 State is an owner-only ``membership.json`` under the Daemon SDK state directory.
 A local process lock prevents two daemons from sharing it. Writes fsync the
-file and parent directory around atomic replacement. Storage failure blocks
-further publication; repair storage and restart. State contains membership,
-latest records/tombstones, local incarnation/leave intent, credential fingerprint,
-and seed names. It contains neither execution output nor probe history.
+file and parent directory around atomic replacement. Writes run off the network
+event loop. Membership transitions are serialized from reading the current state
+through durable storage and publication; readers see only the last committed
+state while a write is pending. Storage failure blocks further publication;
+repair storage and restart. State contains membership, latest records/tombstones,
+local incarnation/leave intent, credential fingerprint, and seed names. It
+contains neither execution output nor probe history.
+
+An in-flight write finishes before cancellation releases the update lock, even
+when a request times out or shutdown starts. A timed-out init, join, or leave can
+therefore still commit locally. Query local status and members before retrying;
+a pending write may initially leave the previous committed state visible.
+Cooperative shutdown waits for in-flight storage; the service manager owns hard
+termination if storage remains stuck. SIGKILL or host failure cannot guarantee
+completion.
 
 Stop the daemon before backing up state. Reuse the directory only for the same
 host identity and credential. Do not clone one host's ID/state onto simultaneously

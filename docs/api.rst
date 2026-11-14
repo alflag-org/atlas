@@ -151,13 +151,13 @@ Use ``atlas_core.daemon`` to run an async application in the foreground. Install
 Atlas in the application's Python environment, then call ``run()`` from its main
 thread, outside an existing event loop. No Atlas host configuration is needed.
 
-.. literalinclude:: ../examples/daemon/sampled.py
+.. literalinclude:: ../src/python/examples/daemon/sampled.py
    :language: python
    :start-at: from atlas_core.daemon
 
 Run the example from a repository checkout::
 
-    cd examples/daemon
+    cd src/python/examples/daemon
     python -m sampled
 
 Call ``ctx.ready()`` after required resources and workers have initialized.
@@ -211,10 +211,10 @@ An application owns its protocol version, handler, client models, and errors.
 credentials on every request. Messages are limited to 1 MiB; the client and
 server impose request deadlines. Transport failures are not retried.
 
-The independent example in ``examples/service/sample_service`` publishes
+The independent example in ``src/python/examples/service/sample_service`` publishes
 ``sample_service.api.SampleClient`` without registering an Atlas plugin::
 
-    cd examples/service
+    cd src/python/examples/service
     python -m sample_service
 
 Use an explicit ``RUNTIME_DIRECTORY`` to select a stable socket path. Import
@@ -277,3 +277,28 @@ inspect status before retrying. See :doc:`reference` for setup and migration.
 
 .. automodule:: atlas_core.cluster
    :members: ClusterClient, MemberState, PeerEndpoint, ClusterMember, ClusterMembers, ClusterStatus, ClusterError, ClusterUnavailable
+
+Perl execution context
+----------------------
+
+Install the independent ``Atlas::Context`` distribution from ``src/perl`` using the program's
+selected Perl and dependency environment. Its only runtime dependency is core ``JSON::PP``:
+
+.. code-block:: perl
+
+   use Atlas::Context;
+   my $context = Atlas::Context->current;
+   print $context->{host}{id}, "\n";
+   print $context->{execution}{run_id}, "\n";
+
+``current`` reads ``ATLAS_CONTEXT_FILE`` on every call and returns an unblessed hash reference.
+It requires a version 1 JSON execution context and dies on missing files, symlinks, malformed
+JSON, unsupported versions, or incomplete required fields. It preserves additional fields and
+maps JSON null to ``undef``. There is no environment-variable or host-configuration fallback.
+
+Both SDKs read the same host, paths, program, command, execution identifiers, and working directory.
+Program runtime fields are ``type`` (``python``, ``perl``, or ``native``), optional configured
+``version``, and optional absolute ``environment``. The Python ``ProgramInfo`` exposes these as
+``runtime_type``, ``runtime_version``, and ``environment``. The run and operation identifiers
+retain their meaning across language boundaries. Perl Cluster, Daemon, and Logging APIs are
+not provided.

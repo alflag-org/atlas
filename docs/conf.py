@@ -5,12 +5,12 @@ import sys
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "src/python"))
 
 project = "Atlas"
 author = "Atlas contributors"
 language = "en"
-with (ROOT / "pyproject.toml").open("rb") as fh:
+with (ROOT / "src/python/pyproject.toml").open("rb") as fh:
     release = tomllib.load(fh)["project"]["version"]
 
 extensions = [

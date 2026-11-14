@@ -6,7 +6,7 @@ BUILDDIR = build
 .PHONY: html docs clean-docs
 
 html:
-	python -m pip install -e '.[dev]'
+	python -m pip install -e './src/python[dev]'
 	$(SPHINXBUILD) $(SPHINXOPTS) -b html $(SOURCEDIR) $(BUILDDIR)/html
 
 docs: html

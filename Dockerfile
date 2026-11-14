@@ -6,29 +6,37 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     ATLAS_ETC_DIR=/etc/atlas \
     ATLAS_VAR_DIR=/var/lib/atlas \
     ATLAS_RUNTIMES_DIR=/opt/atlas/runtimes \
-    ATLAS_VENVS_DIR=/opt/atlas/venvs \
+    ATLAS_ENVIRONMENTS_DIR=/opt/atlas/environments \
     PATH=/opt/atlas/shims:$PATH
 
 WORKDIR /workspace
 
 FROM base AS dev
 
-COPY pyproject.toml README.md ./
-COPY src ./src
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends build-essential libperl-dev liblocal-lib-perl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY src/python ./src/python
 RUN python -m pip install --upgrade pip==26.2 \
-    && python -m pip install -e '.[dev]'
+    && python -m pip install -e './src/python[dev]'
 
 COPY . .
 RUN mkdir -p "$ATLAS_ETC_DIR" "$ATLAS_VAR_DIR" \
     && cp docker/atlas/config.yml "$ATLAS_ETC_DIR/config.yml" \
     && cp docker/atlas/host.yml "$ATLAS_ETC_DIR/host.yml" \
     && atlas runtime install \
-    && atlas venv create basic
+    && atlas env create basic \
+    && /opt/atlas/environments/python/basic/bin/python -m pip install ./src/python \
+    && atlas env create inventory \
+    && cd src/perl \
+    && perl Makefile.PL INSTALL_BASE=/opt/atlas/environments/perl/inventory \
+    && make pure_install
 
-CMD ["sh", "-c", "ruff check src tests && pytest -q && python -m build"]
+CMD ["sh", "-c", "cd src/python && ruff check atlas atlas_core tests examples && python -m coverage run -m pytest -q && python -m coverage report && python -m build && cd ../perl && perl Makefile.PL && make test dist && prove -v integration/atlas.t"]
 
 FROM dev AS wheel
-RUN python -m build
+RUN python -m build src/python
 
 FROM dev AS runtime
 
@@ -38,4 +46,4 @@ RUN groupadd --system atlas \
 
 USER atlas
 
-CMD ["sh", "-c", "atlas status && atlas command list && atlas run hello docker && atlas run native-echo docker"]
+CMD ["sh", "-c", "atlas status && atlas command list && atlas run hello docker && atlas run native-echo docker && atlas run perl-context"]

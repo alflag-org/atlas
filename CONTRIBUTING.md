@@ -19,6 +19,9 @@ mise install
 mise run setup
 ```
 
+Perl tests use the system Perl, `local::lib`, MakeMaker, and a C compiler for an actual XS
+build. Install these prerequisites with the host's normal package tooling.
+
 Docker Compose is optional and is only needed for the container checks.
 
 ## Verify a change
@@ -30,8 +33,14 @@ mise run check
 make clean-docs html SPHINXOPTS=-W
 ```
 
-`mise run check` runs Ruff, the test suite with 100% line and branch coverage, and the package
-build. When container behavior changes, also run:
+`mise run check` runs Ruff, Python tests with 100% line and branch coverage, both package
+builds, Perl SDK tests, and an installed-SDK execution test against Atlas. Tests use real
+interpreters, module search paths, and a compiled XS extension. Set `ATLAS_TEST_PERL` to choose
+the Perl used by Python integration tests.
+
+For independent distribution checks, run Python tools from `src/python` and
+`perl Makefile.PL && make test dist` from `src/perl`. Python daemon and IPC examples
+live in `src/python/examples` so the Python source distribution includes its own test inputs. When container behavior changes, also run:
 
 ```bash
 docker compose build

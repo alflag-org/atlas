@@ -2,13 +2,19 @@ runtime:
   python:
     version: "3.14.6"
     executable: /usr/local/bin/python
+  perl:
+    executable: /usr/bin/perl
 programs:
   basic:
     root: /workspace/examples/basic-program
     runtime:
       type: python
-      python: "3.14.6"
-      venv: basic
+      environment: basic
+  inventory:
+    root: /workspace/examples/perl-program
+    runtime:
+      type: perl
+      environment: inventory
   native:
     root: /workspace/examples/native-program
     runtime:

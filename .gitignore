@@ -9,3 +9,11 @@ build/
 .codex
 docs/_build/
 docs/generated/
+.ruff_cache/
+src/perl/Makefile
+src/perl/Makefile.old
+src/perl/MYMETA.*
+src/perl/blib/
+src/perl/pm_to_blib
+src/perl/Atlas-Context-*/
+src/perl/Atlas-Context-*.tar*

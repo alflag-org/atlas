@@ -17,18 +17,23 @@ jobs:
         with:
           python-version: "3.14"
           cache: pip
+          cache-dependency-path: src/python/pyproject.toml
+      - name: Install Perl environment and XS build prerequisites
+        run: sudo apt-get update && sudo apt-get install --yes liblocal-lib-perl libperl-dev build-essential
       - run: |
           set -euxo pipefail
           python -m pip install --upgrade pip==26.2
-          python -m pip install -e '.[dev]'
+          python -m pip install -e './src/python[dev]'
           python -m pip check
-      - run: python -m coverage run -m pytest -q
-      - run: python -m coverage report
-      - run: python -m build
-      - run: sha256sum dist/* > release-checksums.txt
+      - run: cd src/python && python -m coverage run -m pytest -q
+      - run: cd src/python && python -m coverage report
+      - run: python -m build src/python
+      - run: cd src/perl && perl Makefile.PL && make test dist && prove -v integration/atlas.t
+      - run: sha256sum src/python/dist/* src/perl/Atlas-Context-*.tar.gz > release-checksums.txt
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           fail_on_unmatched_files: true
           files: |
-            dist/*
+            src/python/dist/*
+            src/perl/Atlas-Context-*.tar.gz
             release-checksums.txt

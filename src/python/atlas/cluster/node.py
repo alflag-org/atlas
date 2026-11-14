@@ -172,7 +172,9 @@ class Node:
         )
         own = self.membership.own(1)
         self.cipher = Cipher(credential)
-        await self.membership.commit(
+        # initialize() already protects both writes. Do not create another task
+        # that shutdown could cancel before it starts after credentials are durable.
+        await self.membership._persist(
             State(
                 own.id,
                 credential.cluster_id,

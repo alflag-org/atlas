@@ -54,6 +54,8 @@ def blocked_fsync(monkeypatch, *, fail=False, call=1):
 def test_slow_fsync_preserves_udp_tcp_and_ipc(tmp_path, monkeypatch, sync_call):
     async def scenario():
         node = await make_node(tmp_path)
+        # Use the production probe deadline for real DNS/socket scheduling.
+        node.timers = replace(node.timers, probe_timeout=1)
         peer = PeerEndpoint("127.0.0.1", free_port("127.0.0.1"))
         (
             client_transport,
@@ -352,5 +354,36 @@ def test_blanket_cancellation_waits_for_inner_durable_operation(
         else:
             await node.membership.apply((member("c"),))
             assert set(node.state.members) == {"a", "b", "c"}
+
+    asyncio.run(scenario())
+
+
+def test_init_cancellation_between_credential_and_membership_writes(
+    tmp_path, monkeypatch
+):
+    from atlas.cluster import node as node_module
+
+    async def scenario():
+        node = await make_node(tmp_path, initialized=False)
+        existing = asyncio.all_tasks()
+        durable_io = node_module.durable_io
+
+        def cancel_operations():
+            for task in asyncio.all_tasks() - existing:
+                task.cancel()
+
+        async def credentials_then_cancel(*args):
+            credential = await durable_io(*args)
+            # Run shutdown cancellation before any newly created task can start.
+            asyncio.get_running_loop().call_soon(cancel_operations)
+            return credential
+
+        monkeypatch.setattr(node_module, "durable_io", credentials_then_cancel)
+        operation = asyncio.create_task(node.initialize("lab"))
+        with pytest.raises(asyncio.CancelledError):
+            await operation
+        assert node.state.membership == "joined"
+        assert node.membership.store.read("a") == node.state
+        assert node.cipher.cluster_id == node.state.cluster_id
 
     asyncio.run(scenario())

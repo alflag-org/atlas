@@ -17,19 +17,19 @@ from atlas_core.cluster import ClusterError, MemberState, PeerEndpoint
 from .test_cluster_membership import member
 
 
-def make_node(tmp_path, *, initialized=True):
+async def make_node(tmp_path, *, initialized=True):
     own = member()
     config = Config(own.endpoint, own.endpoint, tmp_path / "credential")
     membership = Membership(Store(tmp_path), State(own.id), own, 0.1)
     node = Node(config, membership, Timers(0.02, 0.01, 0.1, 0.01, 0.01, 0.05, 0.1))
     if initialized:
-        node.initialize("lab")
+        await node.initialize("lab")
     return node
 
 
 def test_control_errors_and_credential_mismatch(tmp_path):
     async def scenario():
-        node = make_node(tmp_path, initialized=False)
+        node = await make_node(tmp_path, initialized=False)
         assert (await node.control("status", {}))["membership"] == "uninitialized"
         assert not await node.synchronize(member().endpoint)
         await node.send(member().endpoint, "ping", {})
@@ -45,9 +45,9 @@ def test_control_errors_and_credential_mismatch(tmp_path):
                 await node.control(method, params)
         with pytest.raises(ClusterError, match="not_joined"):
             await node.remote("fetch", {})
-        node.initialize("lab")
+        await node.initialize("lab")
         with pytest.raises(ClusterError, match="already_initialized"):
-            node.initialize("lab")
+            await node.initialize("lab")
         for raw, error in [
             ({}, "invalid_snapshot"),
             (
@@ -78,7 +78,7 @@ def test_control_errors_and_credential_mismatch(tmp_path):
 
 def test_join_failure_before_and_after_persistence_and_deadline(tmp_path, monkeypatch):
     async def scenario():
-        node = make_node(tmp_path)
+        node = await make_node(tmp_path)
         saved = node.membership.store.path.read_bytes()
         calls = []
 
@@ -131,8 +131,8 @@ def test_join_failure_before_and_after_persistence_and_deadline(tmp_path, monkey
 
 def test_sync_storage_failure_and_successful_leave(tmp_path, monkeypatch):
     async def scenario():
-        node = make_node(tmp_path)
-        node.membership.apply(
+        node = await make_node(tmp_path)
+        await node.membership.apply(
             (replace(member("b"), endpoint=PeerEndpoint("127.0.0.2", 7947)),)
         )
 
@@ -168,9 +168,9 @@ def test_sync_storage_failure_and_successful_leave(tmp_path, monkeypatch):
 
 def test_udp_replay_malformed_inputs_and_required_worker_failure(tmp_path, monkeypatch):
     async def scenario():
-        node = make_node(tmp_path)
-        node.membership.apply((member("b"),))
-        node.membership.suspect(member("b"))
+        node = await make_node(tmp_path)
+        await node.membership.apply((member("b"),))
+        await node.membership.suspect(member("b"))
         inbox = DatagramInbox()
         key = uuid4().hex
         pending = PendingProbe("b", 1, asyncio.Event())
@@ -182,6 +182,7 @@ def test_udp_replay_malformed_inputs_and_required_worker_failure(tmp_path, monke
 
         monkeypatch.setattr(node, "send", send)
         async with asyncio.TaskGroup() as group:
+            receiver = group.create_task(node.receive_gossip())
             worker = group.create_task(node.datagrams(inbox, group))
             for kind, payload in [
                 ("ack", {"id": "old" * 10 + "xx", "target": "b", "incarnation": 1}),
@@ -231,10 +232,11 @@ def test_udp_replay_malformed_inputs_and_required_worker_failure(tmp_path, monke
             await asyncio.sleep(0.02)
             assert len(node.relays) == 16
             worker.cancel()
+            receiver.cancel()
             for task in blockers:
                 task.cancel()
 
-        # A storage failure is fatal to the required receive loop, not silently swallowed.
+        # A storage failure is fatal to the required gossip worker, not silently swallowed.
         node.membership.failed = False
 
         def fail(_state):
@@ -247,6 +249,7 @@ def test_udp_replay_malformed_inputs_and_required_worker_failure(tmp_path, monke
         )
         with pytest.RaisesGroup(ClusterError, match="unhandled errors"):
             async with asyncio.TaskGroup() as group:
+                group.create_task(node.receive_gossip())
                 await node.datagrams(inbox, group)
         assert node.membership.failed
 
@@ -255,8 +258,8 @@ def test_udp_replay_malformed_inputs_and_required_worker_failure(tmp_path, monke
 
 def test_udp_dns_failure_is_not_removal(tmp_path, monkeypatch):
     async def scenario():
-        node = make_node(tmp_path)
-        node.membership.apply((member("b"),))
+        node = await make_node(tmp_path)
+        await node.membership.apply((member("b"),))
 
         async def fail(*args):
             raise OSError("DNS error")
@@ -270,7 +273,7 @@ def test_udp_dns_failure_is_not_removal(tmp_path, monkeypatch):
 
 def test_single_host_does_not_create_or_probe_other_members(tmp_path, monkeypatch):
     async def scenario():
-        node = make_node(tmp_path)
+        node = await make_node(tmp_path)
 
         async def unexpected(*args, **kwargs):
             pytest.fail("a solitary member has no target")
@@ -294,12 +297,12 @@ def test_long_valid_endpoints_fit_indirect_probe_datagrams(tmp_path, monkeypatch
     from atlas_core.cluster import PeerEndpoint
 
     async def scenario():
-        node = make_node(tmp_path)
+        node = await make_node(tmp_path)
         long_host = ".".join(["a" * 63] * 3 + ["a" * 61])
         peer = PeerEndpoint(long_host, 65535)
         target = record(asdict(replace(member("i" * 128), endpoint=peer)))
         helper = member("helper")
-        node.membership.apply((target, helper))
+        await node.membership.apply((target, helper))
         node.config = replace(node.config, advertise=peer)
         packets = []
 
@@ -316,7 +319,7 @@ def test_long_valid_endpoints_fit_indirect_probe_datagrams(tmp_path, monkeypatch
 
 def test_invalid_unicode_gossip_does_not_stop_worker(tmp_path):
     async def scenario():
-        node = make_node(tmp_path)
+        node = await make_node(tmp_path)
         inbox = DatagramInbox()
         malformed = asdict(member("b")) | {"id": "\ud800"}
         inbox.datagram_received(node.cipher.seal("gossip", {"member": malformed}), ())
@@ -324,6 +327,7 @@ def test_invalid_unicode_gossip_does_not_stop_worker(tmp_path):
             node.cipher.seal("gossip", {"member": asdict(member("b"))}), ()
         )
         async with asyncio.TaskGroup() as group:
+            receiver = group.create_task(node.receive_gossip())
             task = group.create_task(node.datagrams(inbox, group))
             async with asyncio.timeout(1):
                 while "b" not in node.state.members:
@@ -331,21 +335,22 @@ def test_invalid_unicode_gossip_does_not_stop_worker(tmp_path):
             assert set(node.state.members) == {"a", "b"}
             assert not task.done()
             task.cancel()
+            receiver.cancel()
 
     asyncio.run(scenario())
 
 
 def test_inflight_ack_cannot_confirm_replaced_incarnation(tmp_path, monkeypatch):
     async def scenario():
-        node = make_node(tmp_path)
+        node = await make_node(tmp_path)
         target = member("b")
-        node.membership.apply((target,))
+        await node.membership.apply((target,))
         node.membership.unconfirmed.add("b")
         inbox = DatagramInbox()
 
         async def send(peer, kind, payload):
             assert kind == "ping"
-            node.membership.apply((replace(target, incarnation=2),))
+            await node.membership.apply((replace(target, incarnation=2),))
             inbox.datagram_received(
                 node.cipher.seal(
                     "ack",
@@ -373,7 +378,7 @@ def test_inflight_ack_cannot_confirm_replaced_incarnation(tmp_path, monkeypatch)
 
 def test_self_candidates_and_authenticated_identity_are_rejected(tmp_path, monkeypatch):
     async def scenario():
-        node = make_node(tmp_path)
+        node = await make_node(tmp_path)
         alias = PeerEndpoint("localhost", 7947)
         other = PeerEndpoint("127.0.0.2", 7947)
         node.config = replace(node.config, seeds=(node.config.bind, alias, other))
